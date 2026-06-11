@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FlowSnap</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      width: 260px;
+      padding: 16px;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: #1a1a1a;
+      background: #ffffff;
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #status {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: #555;
+    }
+
+    #status.recording {
+      color: #e53935;
+    }
+
+    #step-count {
+      font-size: 12px;
+      color: #777;
+      margin-bottom: 14px;
+    }
+
+    button {
+      display: block;
+      width: 100%;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: filter 0.15s ease;
+    }
+
+    button:hover {
+      filter: brightness(0.95);
+    }
+
+    button:last-child {
+      margin-bottom: 0;
+    }
+
+    #btn-start {
+      background: #e53935;
+      color: #ffffff;
+    }
+
+    #btn-stop {
+      background: #43a047;
+      color: #ffffff;
+    }
+
+    #btn-view {
+      background: #1e88e5;
+      color: #ffffff;
+    }
+
+    #btn-clear {
+      background: #f0f0f0;
+      color: #333;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <h1>⚡ FlowSnap</h1>
+  <div id="status">Ready to record</div>
+  <div id="step-count">0 steps captured</div>
+
+  <button id="btn-start">● Start Recording</button>
+  <button id="btn-stop" class="hidden">■ Stop Recording</button>
+  <button id="btn-view" class="hidden">View Flow</button>
+  <button id="btn-clear" class="hidden">Clear Steps</button>
+
+  <script src="popup.js"></script>
+</body>
+</html>

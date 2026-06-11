@@ -1,0 +1,9 @@
+# OS
+.DS_Store
+
+# Recorded flow exports (generated output, may contain PII)
+flowsnap-flow-*/
+*.zip
+
+# Node
+node_modules/
