@@ -72,6 +72,9 @@ async function captureAndSave(step, elementBox, dpr) {
         : dataUrl;
     }
 
+    step.screenshotOriginal = dataUrl || null;
+    step.highlightBox = elementBox || null;
+    step.dpr = dpr || 1;
     step.screenshot = screenshot;
     step.stepNumber = recordedSteps.length + 1;
 
@@ -96,6 +99,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         )
       );
       return; // fire-and-forget; no response expected
+    }
+
+    case 'ANNOTATE_SCREENSHOT': {
+      const { screenshot, box, dpr } = message;
+      annotateScreenshot(screenshot, box, dpr || 1)
+        .then(annotated => sendResponse({ screenshot: annotated }))
+        .catch(() => sendResponse({ screenshot: null }));
+      return true;
     }
 
     case 'GET_STEPS': {

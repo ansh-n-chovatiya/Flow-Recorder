@@ -214,6 +214,414 @@
       background: #e53935;
       color: #ffffff;
     }
+
+    /* ── Collapsible section shell ─────────────────────────────────────── */
+    .step-details {
+      margin-top: 10px;
+      border: 1px solid #e3e5e9;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .step-details summary {
+      padding: 9px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #475569;
+      background: #f8f9fb;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .step-details summary::-webkit-details-marker { display: none; }
+
+    .step-details summary:hover { background: #f0f4ff; }
+
+    .step-details[open] summary {
+      border-bottom: 1px solid #e3e5e9;
+    }
+
+    .detail-chevron {
+      margin-left: auto;
+      font-size: 13px;
+      color: #94a3b8;
+      transition: transform 0.15s ease;
+      display: inline-block;
+    }
+
+    .step-details[open] .detail-chevron { transform: rotate(90deg); }
+
+    .detail-count {
+      background: #e8edf4;
+      color: #475569;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .step-details-inner { padding: 8px; background: #fff; }
+
+    /* ── Network call cards ─────────────────────────────────────────────── */
+    .nc-card {
+      border: 1px solid #e8eaed;
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 4px 0;
+      background: #fff;
+    }
+
+    .nc-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      cursor: pointer;
+      background: #fafbfc;
+      user-select: none;
+      transition: background 0.1s;
+    }
+
+    .nc-row:hover { background: #f0f4ff; }
+
+    .nc-method {
+      flex-shrink: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 3px 8px;
+      border-radius: 4px;
+      min-width: 52px;
+      text-align: center;
+    }
+
+    .nc-url {
+      flex: 1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: #334155;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nc-status {
+      flex-shrink: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      min-width: 38px;
+      text-align: center;
+    }
+
+    .nc-dur {
+      flex-shrink: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      color: #94a3b8;
+      min-width: 48px;
+      text-align: right;
+    }
+
+    .nc-caret {
+      flex-shrink: 0;
+      font-size: 13px;
+      color: #cbd5e1;
+      transition: transform 0.15s ease;
+      display: inline-block;
+      line-height: 1;
+    }
+
+    .nc-expand { border-top: 1px solid #e8eaed; }
+
+    .nc-tabs {
+      display: flex;
+      background: #f8f9fb;
+      border-bottom: 1px solid #e8eaed;
+      padding: 0 12px;
+      gap: 2px;
+    }
+
+    .nc-tab {
+      padding: 7px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      cursor: pointer;
+      border: none;
+      background: none;
+      font-family: inherit;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.1s;
+    }
+
+    .nc-tab:hover { color: #475569; }
+    .nc-tab.active { color: #1e88e5; border-bottom-color: #1e88e5; }
+
+    .nc-panel { display: none; padding: 12px; }
+    .nc-panel.active { display: block; }
+
+    .nc-slabel {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #94a3b8;
+      margin: 10px 0 5px;
+    }
+
+    .nc-slabel:first-child { margin-top: 0; }
+
+    .nc-htable { width: 100%; border-collapse: collapse; }
+
+    .nc-hk {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      color: #475569;
+      font-weight: 600;
+      padding: 3px 10px 3px 0;
+      vertical-align: top;
+      white-space: nowrap;
+      width: 1%;
+    }
+
+    .nc-hv {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      color: #64748b;
+      padding: 3px 0;
+      word-break: break-all;
+    }
+
+    .nc-body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #334155;
+      max-height: 220px;
+      overflow-y: auto;
+      line-height: 1.55;
+    }
+
+    .nc-empty { font-size: 11px; color: #94a3b8; font-style: italic; }
+
+    .nc-body-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 6px;
+      padding: 3px 10px;
+      font-size: 10px;
+      font-weight: 600;
+      font-family: inherit;
+      color: #1e88e5;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .nc-body-toggle:hover { background: #dbeafe; }
+
+    /* ── Console log rows ───────────────────────────────────────────────── */
+    .cl-rows { padding: 6px 8px; }
+
+    .cl-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 6px 10px;
+      border-left: 3px solid #e2e8f0;
+      border-radius: 0 6px 6px 0;
+      margin: 3px 0;
+      background: #fafbfc;
+    }
+
+    .cl-badge {
+      flex-shrink: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-top: 1px;
+    }
+
+    .cl-msg {
+      flex: 1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: #334155;
+      word-break: break-all;
+      line-height: 1.5;
+    }
+
+    .cl-ts {
+      flex-shrink: 0;
+      font-size: 10px;
+      color: #94a3b8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin-top: 2px;
+    }
+
+    /* ── Inline title editing ───────────────────────────────────────────── */
+    .step-action.editable {
+      cursor: text;
+      border-radius: 4px;
+      padding: 1px 4px;
+      margin: -1px -4px;
+      transition: background 0.1s;
+    }
+    .step-action.editable:hover { background: #f0f4ff; }
+
+    .step-edit-input {
+      font-size: 16px;
+      font-weight: 600;
+      font-family: inherit;
+      border: none;
+      border-bottom: 2px solid #1e88e5;
+      outline: none;
+      background: transparent;
+      width: 100%;
+      padding: 1px 0;
+      color: #1a1a1a;
+    }
+
+    /* ── Step notes textarea ────────────────────────────────────────────── */
+    .step-notes {
+      display: block;
+      margin-top: 12px;
+      width: 100%;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      color: #334155;
+      border: 1px solid #e3e5e9;
+      border-radius: 8px;
+      background: #f8fafc;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .step-notes:focus { border-color: #1e88e5; background: #fff; }
+    .step-notes::placeholder { color: #b0b7c3; }
+
+    /* ── Step edit bar (Edit Highlight / Replace Image) ─────────────────── */
+    .step-edit-bar {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .edit-bar-btn {
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
+      color: #374151;
+      cursor: pointer;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    .edit-bar-btn:hover { background: #f0f4ff; border-color: #93c5fd; }
+
+    /* ── Canvas image editor ────────────────────────────────────────────── */
+    .img-editor {
+      margin-top: 12px;
+      border: 1px solid #e3e5e9;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .ie-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 10px;
+      padding: 10px 12px;
+      background: #f8f9fb;
+      border-bottom: 1px solid #e3e5e9;
+    }
+
+    .ie-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .ie-group + .ie-group {
+      padding-left: 10px;
+      border-left: 1px solid #e3e5e9;
+    }
+
+    .ie-actions { margin-left: auto; }
+
+    .ie-btn {
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: inherit;
+      border: 1px solid #d1d5db;
+      border-radius: 5px;
+      background: #fff;
+      color: #374151;
+      cursor: pointer;
+      transition: background 0.1s, border-color 0.1s, color 0.1s;
+      white-space: nowrap;
+    }
+    .ie-btn:hover { background: #f0f4ff; border-color: #93c5fd; }
+    .ie-btn.active { background: #1e88e5; border-color: #1e88e5; color: #fff; }
+
+    .ie-color {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      outline: none;
+      transition: transform 0.1s, border-color 0.1s;
+      flex-shrink: 0;
+    }
+    .ie-color:hover { transform: scale(1.15); }
+    .ie-color.active { border-color: #1e88e5; transform: scale(1.15); }
+
+    .ie-save { background: #1e88e5; border-color: #1e88e5; color: #fff; }
+    .ie-save:hover { background: #1976d2; border-color: #1976d2; }
+    .ie-cancel { background: #f1f5f9; border-color: #d1d5db; color: #475569; }
+    .ie-cancel:hover { background: #e2e8f0; }
+
+    .ie-canvas-wrap {
+      background: #1a1a1a;
+      text-align: center;
+      line-height: 0;
+    }
+
+    .ie-canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      cursor: crosshair;
+    }
   </style>
 </head>
 <body>

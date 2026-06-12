@@ -4,6 +4,33 @@
 
 let isRecording = false;
 
+// Buffers for logs/network captured by page-injector.js (MAIN world).
+let pendingLogs = [];
+let pendingNetworkCalls = [];
+
+// postMessage is the reliable cross-world channel (CustomEvent.detail is null
+// when read across the MAIN/ISOLATED boundary in Chrome MV3).
+window.addEventListener('message', (event) => {
+  if (!isRecording) return;
+  const d = event.data;
+  if (!d || d.__flowsnap_source__ !== 'page-injector') return;
+  if (d.kind === 'log') {
+    pendingLogs.push({ level: d.level, args: d.args, timestamp: d.timestamp });
+  } else if (d.kind === 'network') {
+    pendingNetworkCalls.push({
+      method: d.method,
+      url: d.url,
+      requestHeaders: d.requestHeaders,
+      requestBody: d.requestBody,
+      status: d.status,
+      responseHeaders: d.responseHeaders,
+      responseBody: d.responseBody,
+      durationMs: d.durationMs,
+      timestamp: d.timestamp,
+    });
+  }
+});
+
 // --- Messaging from background/popup -----------------------------------------
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -15,6 +42,11 @@ chrome.runtime.onMessage.addListener((message) => {
   } else if (message.type === 'STOP_RECORDING') {
     isRecording = false;
     hideRecordingIndicator();
+    pendingLogs = [];
+    pendingNetworkCalls = [];
+  } else if (message.type === 'CLEAR_STEPS') {
+    pendingLogs = [];
+    pendingNetworkCalls = [];
   }
 });
 
@@ -323,7 +355,11 @@ function describeTarget(rawEl) {
 // --- Capture + persistence ---------------------------------------------------
 
 // Ask the background to capture a screenshot and persist the step.
+// Drains the pending log/network buffers and attaches them to the step.
 function requestScreenshotAndSave(step) {
+  step.consoleLogs = pendingLogs.splice(0);
+  step.networkCalls = pendingNetworkCalls.splice(0);
+
   chrome.runtime.sendMessage({
     type: 'CAPTURE_AND_SAVE_STEP',
     step: step,
