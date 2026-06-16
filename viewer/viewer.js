@@ -781,37 +781,128 @@ function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
-// Build and download a ZIP: separate image files + a Markdown + JSON manifest.
-// This is the AI-friendly export — Claude reads attached image FILES via
-// vision, but cannot see base64 embedded as text in a pasted document.
-function exportZip() {
-  if (!currentSteps.length) return;
+// ── Export opts ───────────────────────────────────────────────────────────────
 
+function getExportOpts() {
+  return {
+    images:  document.getElementById('opt-images').checked,
+    network: document.getElementById('opt-network').checked,
+    logs:    document.getElementById('opt-logs').checked,
+  };
+}
+
+function loadExportOpts() {
+  chrome.storage.local.get('exportOptions', ({ exportOptions }) => {
+    const opts = exportOptions || { images: true, network: true, logs: true };
+    document.getElementById('opt-images').checked  = opts.images  !== false;
+    document.getElementById('opt-network').checked = opts.network !== false;
+    document.getElementById('opt-logs').checked    = opts.logs    !== false;
+  });
+}
+
+// ── Per-type export implementations ──────────────────────────────────────────
+
+function doExportZip(name, opts) {
+  if (!currentSteps.length) return;
   const encoder = new TextEncoder();
   const files = [];
   const imageNames = [];
 
   currentSteps.forEach((step, i) => {
     const shot = step.screenshot;
-    if (typeof shot === 'string' && shot.startsWith('data:')) {
+    if (opts.images !== false && typeof shot === 'string' && shot.startsWith('data:')) {
       const { bytes, ext } = dataUrlToBytes(shot);
-      const name = 'images/step-' + pad2(i + 1) + '.' + ext;
-      files.push({ name: name, data: bytes });
-      imageNames.push(name);
+      const imgName = 'images/step-' + pad2(i + 1) + '.' + ext;
+      files.push({ name: imgName, data: bytes });
+      imageNames.push(imgName);
     } else {
       imageNames.push(null);
     }
   });
 
   const title = 'Flow Recording';
-  const md = exportToMarkdownWithRefs(currentSteps, title, imageNames);
+  const md = exportToMarkdownWithRefs(currentSteps, title, imageNames, opts);
   files.push({ name: 'flow.md', data: encoder.encode(md) });
 
-  const json = exportToJSON(currentSteps, imageNames);
+  const json = exportToJSON(currentSteps, imageNames, opts);
   files.push({ name: 'flow.json', data: encoder.encode(json) });
 
   const blob = createZip(files);
-  downloadBlob('flowsnap-flow-' + timestampSlug() + '.zip', blob);
+  downloadBlob(name + '.zip', blob);
+}
+
+function doExportMd(name, opts) {
+  const title = document.title || 'Flow Recording';
+  const md = exportToMarkdown(currentSteps, title, opts);
+  downloadFile(name + '.md', md, 'text/markdown');
+}
+
+function doExportJson(name, opts) {
+  const json = exportToJSON(currentSteps, undefined, opts);
+  downloadFile(name + '.json', json, 'application/json');
+}
+
+// ── Filename modal ────────────────────────────────────────────────────────────
+
+function sanitizeFilename(name) {
+  return name.replace(/[\/\\:*?"<>|]/g, '').trim().replace(/^\.+|\.+$/g, '') || 'flowsnap-flow';
+}
+
+function defaultFilename() {
+  const d = new Date();
+  return 'flowsnap-flow-' + d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+
+let _modalCleanup = null;
+
+function promptAndExport(type) {
+  if (!currentSteps.length) return;
+  if (_modalCleanup) { _modalCleanup(); _modalCleanup = null; }
+
+  const modal   = document.getElementById('filename-modal');
+  const input   = document.getElementById('filename-input');
+  const extEl   = document.getElementById('filename-ext');
+  const confirmBtn = document.getElementById('filename-confirm');
+  const cancelBtn  = document.getElementById('filename-cancel');
+
+  const ext = type === 'zip' ? '.zip' : type === 'md' ? '.md' : '.json';
+  input.value = defaultFilename();
+  extEl.textContent = ext;
+  modal.style.display = 'flex';
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+
+  function hide() {
+    modal.style.display = 'none';
+    if (_modalCleanup) { _modalCleanup(); _modalCleanup = null; }
+  }
+
+  function onConfirm() {
+    const name = sanitizeFilename(input.value);
+    hide();
+    const opts = getExportOpts();
+    if (type === 'zip')      doExportZip(name, opts);
+    else if (type === 'md')  doExportMd(name, opts);
+    else                     doExportJson(name, opts);
+  }
+
+  function onKey(e) {
+    if (e.key === 'Enter')  { e.preventDefault(); onConfirm(); }
+    if (e.key === 'Escape') hide();
+  }
+
+  function onBackdrop(e) { if (e.target === modal) hide(); }
+
+  confirmBtn.addEventListener('click', onConfirm);
+  cancelBtn.addEventListener('click', hide);
+  input.addEventListener('keydown', onKey);
+  modal.addEventListener('click', onBackdrop);
+
+  _modalCleanup = () => {
+    confirmBtn.removeEventListener('click', onConfirm);
+    cancelBtn.removeEventListener('click', hide);
+    input.removeEventListener('keydown', onKey);
+    modal.removeEventListener('click', onBackdrop);
+  };
 }
 
 // Load steps from background, falling back to storage when empty.
@@ -829,18 +920,16 @@ function loadSteps() {
 
 document.addEventListener('DOMContentLoaded', () => {
   loadSteps();
+  loadExportOpts();
 
-  document.getElementById('btn-export-zip').addEventListener('click', exportZip);
+  document.getElementById('btn-export-zip').addEventListener('click',  () => promptAndExport('zip'));
+  document.getElementById('btn-export-md').addEventListener('click',   () => promptAndExport('md'));
+  document.getElementById('btn-export-json').addEventListener('click', () => promptAndExport('json'));
 
-  document.getElementById('btn-export-md').addEventListener('click', () => {
-    const title = document.title || 'Flow Recording';
-    const md = exportToMarkdown(currentSteps, title);
-    downloadFile('flowsnap-flow-' + timestampSlug() + '.md', md, 'text/markdown');
-  });
-
-  document.getElementById('btn-export-json').addEventListener('click', () => {
-    const json = exportToJSON(currentSteps);
-    downloadFile('flowsnap-flow-' + timestampSlug() + '.json', json, 'application/json');
+  ['opt-images', 'opt-network', 'opt-logs'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => {
+      chrome.storage.local.set({ exportOptions: getExportOpts() });
+    });
   });
 
   document.getElementById('btn-clear').addEventListener('click', () => {
