@@ -85,6 +85,184 @@
       margin-left: auto;
     }
 
+    #btn-save-flow {
+      background: #ffffff;
+      color: #333;
+      border: 1px solid #cfd3da;
+    }
+
+    #btn-saved-flows {
+      background: #ffffff;
+      color: #333;
+      border: 1px solid #cfd3da;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* ── Step timing badge ──────────────────────────────────────────────── */
+    .step-timing {
+      margin-left: auto;
+      font-size: 11px;
+      color: #94a3b8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: #f1f5f9;
+      padding: 2px 8px;
+      border-radius: 10px;
+      white-space: nowrap;
+    }
+
+    /* ── Step type badge ────────────────────────────────────────────────── */
+    .step-type-badge {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 2px 7px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .step-type-badge.click    { background: #dbeafe; color: #1d4ed8; }
+    .step-type-badge.input    { background: #dcfce7; color: #15803d; }
+    .step-type-badge.navigate { background: #f3e8ff; color: #7e22ce; }
+    .step-type-badge.note     { background: #fff7ed; color: #c2410c; }
+
+    /* ── Canvas image editor (additions) ────────────────────────────────── */
+    .ie-canvas-wrap {
+      position: relative; /* needed for text-input overlay */
+    }
+
+    .ie-text-input {
+      position: absolute;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid #FF3B30;
+      outline: none;
+      font-weight: 700;
+      font-family: system-ui, sans-serif;
+      font-size: 18px;
+      color: #FF3B30;
+      padding: 2px 4px;
+      min-width: 80px;
+      z-index: 10;
+      pointer-events: all;
+    }
+
+    /* ── Saved flows panel ──────────────────────────────────────────────── */
+    .saved-flows-panel {
+      background: #fff;
+      border: 1px solid #e3e5e9;
+      border-radius: 10px;
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+
+    .saved-flows-empty {
+      padding: 16px 20px;
+      font-size: 13px;
+      color: #94a3b8;
+      font-style: italic;
+    }
+
+    .saved-flow-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 16px;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .saved-flow-item:last-child { border-bottom: none; }
+
+    .saved-flow-info { flex: 1; min-width: 0; }
+
+    .saved-flow-name {
+      font-weight: 600;
+      font-size: 14px;
+      color: #1a1a1a;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .saved-flow-meta {
+      font-size: 11px;
+      color: #94a3b8;
+      margin-top: 2px;
+    }
+
+    .saved-flow-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+    .saved-flow-actions button {
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .btn-load-flow {
+      background: #eff6ff;
+      color: #1e88e5;
+      border: 1px solid #bfdbfe;
+    }
+    .btn-load-flow:hover { background: #dbeafe; }
+
+    .btn-delete-flow {
+      background: #fff1f2;
+      color: #e53935;
+      border: 1px solid #fecdd3;
+    }
+    .btn-delete-flow:hover { background: #fee2e2; }
+
+    /* ── Viewing-mode banner ────────────────────────────────────────────── */
+    .viewing-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: #1e40af;
+    }
+
+    .viewing-banner strong { font-weight: 700; }
+
+    .btn-viewing-back {
+      margin-left: auto;
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      background: #1e88e5;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .btn-viewing-back:hover { background: #1976d2; }
+
+    /* ── Keyboard shortcut hint ─────────────────────────────────────────── */
+    .kb-hint {
+      font-size: 11px;
+      color: #b0b7c3;
+      margin-top: 4px;
+      padding-bottom: 2px;
+    }
+    .kb-hint kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: #f1f5f9;
+      border: 1px solid #d1d5db;
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 10px;
+      color: #475569;
+    }
+
     .empty-state {
       padding: 48px 20px;
       text-align: center;
@@ -741,6 +919,8 @@
       <button id="btn-export-zip">Download ZIP for Claude</button>
       <button id="btn-export-md">Export Markdown</button>
       <button id="btn-export-json">Export JSON</button>
+      <button id="btn-save-flow">Save Flow</button>
+      <button id="btn-saved-flows">Saved Flows <span id="saved-flows-count" class="detail-count">0</span></button>
       <button id="btn-clear">Clear All</button>
     </div>
 
@@ -748,6 +928,20 @@
       <label><input type="checkbox" id="opt-images" checked> Include screenshots</label>
       <label><input type="checkbox" id="opt-network" checked> Include network calls</label>
       <label><input type="checkbox" id="opt-logs" checked> Include console logs</label>
+    </div>
+    <div class="kb-hint">
+      <kbd>Del</kbd> delete focused step &nbsp;·&nbsp;
+      <kbd>Ctrl Z</kbd> undo delete &nbsp;·&nbsp;
+      <kbd>E</kbd> edit image of focused step
+    </div>
+
+    <div id="saved-flows-panel" class="saved-flows-panel" style="display:none">
+      <div id="saved-flows-list"></div>
+    </div>
+
+    <div id="viewing-banner" style="display:none" class="viewing-banner">
+      <span>Viewing saved flow: <strong id="viewing-name"></strong></span>
+      <button class="btn-viewing-back" id="btn-back-to-live">Back to recording</button>
     </div>
 
     <div id="steps-container"></div>
@@ -763,6 +957,20 @@
       <div class="modal-actions">
         <button id="filename-cancel">Cancel</button>
         <button id="filename-confirm">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="save-flow-modal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:200">
+    <div class="modal-box">
+      <p class="modal-label">Save flow as</p>
+      <div class="modal-name-row">
+        <input type="text" id="save-flow-input" autocomplete="off" spellcheck="false"
+          style="flex:1;border:none;outline:none;padding:9px 12px;font-size:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#1a1a1a;min-width:0" />
+      </div>
+      <div class="modal-actions">
+        <button id="save-flow-cancel" style="padding:9px 16px;font-size:14px;font-weight:500;font-family:inherit;background:#f1f5f9;color:#475569;border:1px solid #d1d5db;border-radius:8px;cursor:pointer">Cancel</button>
+        <button id="save-flow-confirm" style="padding:9px 20px;font-size:14px;font-weight:600;font-family:inherit;background:#1e88e5;color:#fff;border:none;border-radius:8px;cursor:pointer">Save</button>
       </div>
     </div>
   </div>

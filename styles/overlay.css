@@ -19,6 +19,12 @@
   animation: flowsnap-pulse 2s ease-in-out infinite;
 }
 
+#flowsnap-indicator.paused {
+  background: #f57c00;
+  animation: none;
+  opacity: 0.9;
+}
+
 @keyframes flowsnap-pulse {
   0% {
     opacity: 1;

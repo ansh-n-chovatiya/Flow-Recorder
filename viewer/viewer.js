@@ -1,49 +1,43 @@
 // FlowSnap — viewer page logic.
-// Loads recorded steps, renders cards, and handles export / delete / clear.
-// exportToMarkdown / exportToJSON come from ../lib/exporter.js (loaded first).
+// exportToMarkdown / exportToJSON / compactBody come from ../lib/exporter.js.
+// createZip / dataUrlToBytes come from ../lib/zip.js.
 
 let currentSteps = [];
-let _hlCleanup = null; // cleanup fn for any open highlight editor's document listeners
+let _hlCleanup = null;    // cleanup fn for the open image-editor's doc listeners
+let deleteHistory = [];   // [{index, step}] stack for Ctrl+Z undo
+let _viewingMode = null;  // null = live recording, {id, name} = saved flow
 
-// Escape text for safe insertion into innerHTML contexts.
+// ── Utility helpers ───────────────────────────────────────────────────────────
+
 function escapeHtml(value) {
   return String(value == null ? '' : value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// Append a labelled meta item to a container when the value exists.
 function appendMetaItem(container, key, value, asSelector) {
   if (!value) return;
   const item = document.createElement('span');
   item.className = 'meta-item';
-
   const keyEl = document.createElement('span');
   keyEl.className = 'meta-key';
   keyEl.textContent = key + ':';
   item.appendChild(keyEl);
-
   const valEl = document.createElement('span');
-  if (asSelector) {
-    valEl.className = 'selector';
-  }
+  if (asSelector) valEl.className = 'selector';
   valEl.textContent = value;
   item.appendChild(valEl);
-
   container.appendChild(item);
 }
 
-// ── Network & log render helpers ─────────────────────────────────────────────
+// ── Network & log render helpers ──────────────────────────────────────────────
 
 const METHOD_STYLE = {
-  GET:     { bg: '#dbeafe', fg: '#1d4ed8' },
-  POST:    { bg: '#dcfce7', fg: '#15803d' },
-  PUT:     { bg: '#ffedd5', fg: '#c2410c' },
-  PATCH:   { bg: '#f3e8ff', fg: '#7e22ce' },
-  DELETE:  { bg: '#fee2e2', fg: '#b91c1c' },
+  GET:    { bg: '#dbeafe', fg: '#1d4ed8' },
+  POST:   { bg: '#dcfce7', fg: '#15803d' },
+  PUT:    { bg: '#ffedd5', fg: '#c2410c' },
+  PATCH:  { bg: '#f3e8ff', fg: '#7e22ce' },
+  DELETE: { bg: '#fee2e2', fg: '#b91c1c' },
 };
 const METHOD_DEFAULT = { bg: '#f1f5f9', fg: '#475569' };
 
@@ -114,14 +108,11 @@ function makePanel(id, headers, body) {
   if (hasBody) {
     const lbl = document.createElement('div'); lbl.className = 'nc-slabel'; lbl.textContent = 'Body';
     p.appendChild(lbl);
-
     const compact = compactBody(body);
     const isCompacted = compact !== body;
-
     const pre = document.createElement('pre');
     pre.className = 'nc-body';
     pre.textContent = isCompacted ? compact : tryPretty(body);
-
     if (isCompacted) {
       const toggle = document.createElement('button');
       toggle.className = 'nc-body-toggle';
@@ -142,75 +133,55 @@ function makePanel(id, headers, body) {
 function buildNetworkCard(call) {
   const ms = methodStyle(call.method);
   const ss = statusStyle(call.status);
-
   const card = document.createElement('div');
   card.className = 'nc-card';
-
-  // ── summary row ──
   const row = document.createElement('div');
   row.className = 'nc-row';
-
   const mBadge = document.createElement('span');
   mBadge.className = 'nc-method';
   mBadge.textContent = (call.method || 'GET').toUpperCase();
   mBadge.style.cssText = `background:${ms.bg};color:${ms.fg}`;
-
   const urlEl = document.createElement('span');
   urlEl.className = 'nc-url';
   urlEl.textContent = shortUrl(call.url || '');
   urlEl.title = call.url || '';
-
   const sBadge = document.createElement('span');
   sBadge.className = 'nc-status';
   sBadge.textContent = call.status || 'ERR';
   sBadge.style.cssText = `background:${ss.bg};color:${ss.fg}`;
-
   const dur = document.createElement('span');
   dur.className = 'nc-dur';
   dur.textContent = (call.durationMs || 0) + 'ms';
-
   const caret = document.createElement('span');
   caret.className = 'nc-caret';
   caret.textContent = '›';
-
   row.appendChild(mBadge); row.appendChild(urlEl);
   row.appendChild(sBadge); row.appendChild(dur); row.appendChild(caret);
   card.appendChild(row);
-
-  // ── expand body ──
   const expand = document.createElement('div');
   expand.className = 'nc-expand';
   expand.style.display = 'none';
-
   const tabsEl = document.createElement('div');
   tabsEl.className = 'nc-tabs';
-
   const reqTab = document.createElement('button'); reqTab.className = 'nc-tab'; reqTab.textContent = 'Request'; reqTab.dataset.id = 'req';
   const resTab = document.createElement('button'); resTab.className = 'nc-tab'; resTab.textContent = 'Response'; resTab.dataset.id = 'res';
   tabsEl.appendChild(reqTab); tabsEl.appendChild(resTab);
-
   const reqPanel = makePanel('req', call.requestHeaders, call.requestBody);
   const resPanel = makePanel('res', call.responseHeaders, call.responseBody);
-
   function activate(id) {
     [reqTab, resTab].forEach(t => t.classList.toggle('active', t.dataset.id === id));
     [reqPanel, resPanel].forEach(p => p.classList.toggle('active', p.dataset.id === id));
   }
   activate('res');
   tabsEl.addEventListener('click', e => { const t = e.target.closest('.nc-tab'); if (t) activate(t.dataset.id); });
-
-  expand.appendChild(tabsEl);
-  expand.appendChild(reqPanel);
-  expand.appendChild(resPanel);
+  expand.appendChild(tabsEl); expand.appendChild(reqPanel); expand.appendChild(resPanel);
   card.appendChild(expand);
-
   let open = false;
   row.addEventListener('click', () => {
     open = !open;
     expand.style.display = open ? 'block' : 'none';
     caret.style.transform = open ? 'rotate(90deg)' : '';
   });
-
   return card;
 }
 
@@ -219,28 +190,38 @@ function buildLogRow(log) {
   const row = document.createElement('div');
   row.className = 'cl-row';
   row.style.borderLeftColor = s.border;
-
   const badge = document.createElement('span');
   badge.className = 'cl-badge';
   badge.textContent = log.level || 'log';
   badge.style.cssText = `background:${s.bg};color:${s.fg}`;
-
   const msg = document.createElement('span');
   msg.className = 'cl-msg';
   msg.textContent = (log.args || []).join(' ');
-
   const ts = document.createElement('span');
   ts.className = 'cl-ts';
   ts.textContent = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
-
   row.appendChild(badge); row.appendChild(msg); row.appendChild(ts);
   return row;
 }
 
+// ── Step card ─────────────────────────────────────────────────────────────────
+
+// Format millisecond delta as "+1.2s" or "+1m 3s".
+function formatDelta(ms) {
+  if (ms < 0) return '';
+  if (ms < 60000) return '+' + (ms / 1000).toFixed(1) + 's';
+  const m = Math.floor(ms / 60000);
+  const s = Math.round((ms % 60000) / 1000);
+  return '+' + m + 'm ' + s + 's';
+}
+
 // Build and return the DOM for a single step card.
-function buildStepCard(step, index) {
+// prevStep is used to calculate the timing delta shown on the card.
+function buildStepCard(step, index, prevStep) {
   const card = document.createElement('div');
   card.className = 'step';
+  card.tabIndex = 0;            // keyboard-focusable for Del/E shortcuts
+  card.dataset.index = index;
 
   const head = document.createElement('div');
   head.className = 'step-head';
@@ -250,6 +231,13 @@ function buildStepCard(step, index) {
   num.textContent = String(index + 1);
   head.appendChild(num);
 
+  // Step type badge
+  const typeBadge = document.createElement('span');
+  typeBadge.className = 'step-type-badge ' + (step.type || 'click');
+  typeBadge.textContent = step.type || 'click';
+  head.appendChild(typeBadge);
+
+  // Editable action title
   const action = document.createElement('div');
   action.className = 'step-action editable';
   action.textContent = step.action || step.type || 'Step';
@@ -266,7 +254,10 @@ function buildStepCard(step, index) {
       if (committed) return;
       committed = true;
       const val = inp.value.trim() || action.textContent;
-      persistStep(index, Object.assign({}, step, { action: val }));
+      step.action = val;
+      inp.replaceWith(action);
+      action.textContent = val;
+      saveStep(index, Object.assign({}, step, { action: val }));
     }
     inp.addEventListener('blur', commit);
     inp.addEventListener('keydown', e => {
@@ -275,6 +266,18 @@ function buildStepCard(step, index) {
     });
   });
   head.appendChild(action);
+
+  // Timing delta from the previous step
+  if (prevStep && prevStep.timestamp && step.timestamp) {
+    const delta = step.timestamp - prevStep.timestamp;
+    if (delta >= 0) {
+      const timing = document.createElement('span');
+      timing.className = 'step-timing';
+      timing.title = 'Time since previous step';
+      timing.textContent = formatDelta(delta);
+      head.appendChild(timing);
+    }
+  }
 
   card.appendChild(head);
 
@@ -302,9 +305,7 @@ function buildStepCard(step, index) {
     appendMetaItem(meta, 'Aria', el.ariaLabel);
     appendMetaItem(meta, 'CSS', el.cssSelector, true);
     appendMetaItem(meta, 'XPath', el.xpath, true);
-    if (meta.childNodes.length) {
-      card.appendChild(meta);
-    }
+    if (meta.childNodes.length) card.appendChild(meta);
   }
 
   if (step.value) {
@@ -316,20 +317,34 @@ function buildStepCard(step, index) {
     const chip = document.createElement('span');
     chip.className = 'selector';
     chip.textContent = step.value;
-    value.appendChild(key);
-    value.appendChild(chip);
+    value.appendChild(key); value.appendChild(chip);
     card.appendChild(value);
   }
 
+  // Screenshot — lazy-loaded via IntersectionObserver
   if (step.screenshot) {
     const img = document.createElement('img');
     img.className = 'step-screenshot';
-    img.src = step.screenshot;
     img.alt = 'Screenshot for step ' + (index + 1);
+    if ('IntersectionObserver' in window) {
+      img.dataset.src = step.screenshot;
+      img.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+      const obs = new IntersectionObserver(entries => {
+        entries.forEach(e => {
+          if (e.isIntersecting) {
+            e.target.src = e.target.dataset.src;
+            obs.unobserve(e.target);
+          }
+        });
+      }, { rootMargin: '300px' });
+      obs.observe(img);
+    } else {
+      img.src = step.screenshot;
+    }
     card.appendChild(img);
   }
 
-  // Edit bar: Edit Highlight (when original available) + Replace Image
+  // Edit bar
   const editBar = document.createElement('div');
   editBar.className = 'step-edit-bar';
 
@@ -376,18 +391,16 @@ function buildStepCard(step, index) {
     fileInput.click();
   });
   editBar.appendChild(replaceBtn);
-
   card.appendChild(editBar);
 
+  // Network calls
   const net = step.networkCalls;
   if (Array.isArray(net) && net.length) {
     const det = document.createElement('details');
     det.className = 'step-details';
-
     const sum = document.createElement('summary');
     sum.innerHTML = 'Network calls <span class="detail-count">' + net.length + '</span><span class="detail-chevron">›</span>';
     det.appendChild(sum);
-
     const inner = document.createElement('div');
     inner.className = 'step-details-inner';
     net.forEach(call => inner.appendChild(buildNetworkCard(call)));
@@ -395,15 +408,14 @@ function buildStepCard(step, index) {
     card.appendChild(det);
   }
 
+  // Console logs
   const logs = step.consoleLogs;
   if (Array.isArray(logs) && logs.length) {
     const det = document.createElement('details');
     det.className = 'step-details';
-
     const sum = document.createElement('summary');
     sum.innerHTML = 'Console logs <span class="detail-count">' + logs.length + '</span><span class="detail-chevron">›</span>';
     det.appendChild(sum);
-
     const rows = document.createElement('div');
     rows.className = 'cl-rows';
     logs.forEach(log => rows.appendChild(buildLogRow(log)));
@@ -411,6 +423,7 @@ function buildStepCard(step, index) {
     card.appendChild(det);
   }
 
+  // Notes
   const notesEl = document.createElement('textarea');
   notesEl.className = 'step-notes';
   notesEl.placeholder = 'Add notes…';
@@ -425,6 +438,7 @@ function buildStepCard(step, index) {
   });
   card.appendChild(notesEl);
 
+  // Delete button
   const del = document.createElement('button');
   del.className = 'delete-step';
   del.type = 'button';
@@ -436,10 +450,22 @@ function buildStepCard(step, index) {
   return card;
 }
 
-// Render the full list of steps (or an empty state).
+// ── Render ────────────────────────────────────────────────────────────────────
+
 function render(steps) {
   if (_hlCleanup) { _hlCleanup(); _hlCleanup = null; }
   currentSteps = Array.isArray(steps) ? steps : [];
+
+  // Viewing-mode banner
+  const banner = document.getElementById('viewing-banner');
+  const nameEl = document.getElementById('viewing-name');
+  if (_viewingMode) {
+    nameEl.textContent = _viewingMode.name;
+    banner.style.display = 'flex';
+  } else {
+    banner.style.display = 'none';
+  }
+
   const container = document.getElementById('steps-container');
   container.textContent = '';
 
@@ -452,38 +478,100 @@ function render(steps) {
   }
 
   currentSteps.forEach((step, i) => {
-    container.appendChild(buildStepCard(step, i));
+    container.appendChild(buildStepCard(step, i, i > 0 ? currentSteps[i - 1] : null));
   });
 }
 
-// Remove a step, persist to storage (source of truth), then re-render.
+// ── Step persistence helpers ──────────────────────────────────────────────────
+
 function deleteStep(index) {
-  currentSteps.splice(index, 1);
+  const removed = currentSteps.splice(index, 1)[0];
+  deleteHistory.push({ index, step: removed });
   const next = currentSteps.slice();
-  chrome.storage.local.set({ recordedSteps: next }, () => render(next));
+  // Only write back to recordedSteps when viewing live recording
+  if (!_viewingMode) {
+    chrome.storage.local.set({ recordedSteps: next }, () => render(next));
+  } else {
+    render(next);
+  }
 }
 
-// Persist a step update and re-render all cards.
+function undoDelete() {
+  if (!deleteHistory.length) return;
+  const { index, step } = deleteHistory.pop();
+  const restored = currentSteps.slice();
+  restored.splice(index, 0, step);
+  if (!_viewingMode) {
+    chrome.storage.local.set({ recordedSteps: restored }, () => render(restored));
+  } else {
+    render(restored);
+  }
+}
+
+// Persist a structural step change and re-render.
 function persistStep(index, updated) {
   currentSteps[index] = updated;
-  chrome.storage.local.set({ recordedSteps: currentSteps.slice() }, () => render(currentSteps));
+  const next = currentSteps.slice();
+  if (!_viewingMode) {
+    chrome.storage.local.set({ recordedSteps: next }, () => render(next));
+  } else {
+    render(next);
+  }
 }
 
-// Persist a step update without re-rendering (for in-place edits like notes textarea).
+// Persist a step update without re-rendering (lightweight: notes, inline title).
 function saveStep(index, updated) {
   currentSteps[index] = updated;
-  chrome.storage.local.set({ recordedSteps: currentSteps.slice() });
+  if (!_viewingMode) {
+    chrome.storage.local.set({ recordedSteps: currentSteps.slice() });
+  }
 }
 
-// ── Image editor helpers ──────────────────────────────────────────────────────
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+
+document.addEventListener('keydown', (e) => {
+  // Don't fire when typing in an input / textarea / editable element.
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+
+  // Del → delete focused step card (Backspace omitted: muscle-memory "back")
+  if (e.key === 'Delete') {
+    const card = document.activeElement && document.activeElement.closest('.step[data-index]');
+    if (card) {
+      e.preventDefault();
+      deleteStep(Number(card.dataset.index));
+    }
+    return;
+  }
+
+  // Ctrl+Z → undo last delete
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    e.preventDefault();
+    undoDelete();
+    return;
+  }
+
+  // E → open/close image editor for focused step (the Edit Image button, not Replace)
+  if (e.key === 'e' || e.key === 'E') {
+    const card = document.activeElement && document.activeElement.closest('.step[data-index]');
+    if (card) {
+      e.preventDefault();
+      // Find the "Edit Image" button specifically — first edit-bar-btn is "Replace
+      // Image" when the step has no screenshot, so match by text content.
+      const editBtns = card.querySelectorAll('.edit-bar-btn');
+      const editImgBtn = Array.from(editBtns).find(b => b.textContent.trim() === 'Edit Image');
+      if (editImgBtn) editImgBtn.click();
+    }
+  }
+});
+
+// ── Image editor ──────────────────────────────────────────────────────────────
 
 function drawArrow(ctx, x1, y1, x2, y2, w) {
   const headLen = Math.max(15, w * 5);
   const angle = Math.atan2(y2 - y1, x2 - x1);
   ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
+  ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   ctx.beginPath();
   ctx.moveTo(x2, y2);
   ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6));
@@ -511,8 +599,7 @@ function renderOp(ctx, op) {
     }
     case 'rect': {
       const x = Math.min(op.x1, op.x2), y = Math.min(op.y1, op.y2);
-      const w = Math.abs(op.x2 - op.x1), h = Math.abs(op.y2 - op.y1);
-      ctx.strokeRect(x, y, w, h);
+      ctx.strokeRect(x, y, Math.abs(op.x2 - op.x1), Math.abs(op.y2 - op.y1));
       break;
     }
     case 'ellipse': {
@@ -529,11 +616,41 @@ function renderOp(ctx, op) {
       break;
     case 'highlight': {
       const x = Math.min(op.x1, op.x2), y = Math.min(op.y1, op.y2);
-      const w = Math.abs(op.x2 - op.x1), h = Math.abs(op.y2 - op.y1);
       ctx.save();
       ctx.globalAlpha = 0.35;
       ctx.fillStyle = op.color;
-      ctx.fillRect(x, y, w, h);
+      ctx.fillRect(x, y, Math.abs(op.x2 - op.x1), Math.abs(op.y2 - op.y1));
+      ctx.restore();
+      break;
+    }
+    case 'blur': {
+      // Pixelate the region to obscure PII. Reads current canvas state, scales
+      // it down then back up with smoothing disabled for a mosaic effect.
+      const x = Math.min(op.x1, op.x2), y = Math.min(op.y1, op.y2);
+      const w = Math.abs(op.x2 - op.x1), h = Math.abs(op.y2 - op.y1);
+      if (w < 2 || h < 2) break;
+      const blockSize = 12;
+      const pw = Math.max(1, Math.round(w / blockSize));
+      const ph = Math.max(1, Math.round(h / blockSize));
+      const temp = document.createElement('canvas');
+      temp.width = pw; temp.height = ph;
+      const tc = temp.getContext('2d');
+      tc.imageSmoothingEnabled = true;
+      tc.drawImage(ctx.canvas, x, y, w, h, 0, 0, pw, ph);
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(temp, 0, 0, pw, ph, x, y, w, h);
+      ctx.restore();
+      break;
+    }
+    case 'text': {
+      ctx.save();
+      ctx.fillStyle = op.color;
+      ctx.font = 'bold ' + (op.fontSize || 18) + 'px system-ui, sans-serif';
+      ctx.textBaseline = 'top';
+      ctx.shadowColor = 'rgba(0,0,0,0.55)';
+      ctx.shadowBlur = 3;
+      ctx.fillText(op.text, op.x, op.y);
       ctx.restore();
       break;
     }
@@ -541,21 +658,20 @@ function renderOp(ctx, op) {
   ctx.restore();
 }
 
-// Full canvas-based image editor: pen, rect, ellipse, arrow, highlighter.
-// screenshotOriginal (if present) is used as the immutable base so repeated
-// edits never compound. The final canvas output replaces step.screenshot.
+// Full canvas-based image editor: pen, rect, ellipse, arrow, highlight,
+// blur (pixelate), and text label tools.
 function buildImageEditor(step, index) {
   const editor = document.createElement('div');
   editor.className = 'img-editor';
 
-  // ── State ─────────────────────────────────────────────────────────────
+  // ── State ──────────────────────────────────────────────────────────────
   let tool      = 'pen';
   let color     = '#FF3B30';
   let lineWidth = 3;
   let history   = [];
   let activeOp  = null;
 
-  // ── Toolbar ───────────────────────────────────────────────────────────
+  // ── Toolbar ────────────────────────────────────────────────────────────
   const toolbar = document.createElement('div');
   toolbar.className = 'ie-toolbar';
 
@@ -565,7 +681,6 @@ function buildImageEditor(step, index) {
     return g;
   }
 
-  // Tools
   const toolGroup = makeGroup();
   const TOOLS = [
     { id: 'pen',       label: 'Pen',     title: 'Freehand pen' },
@@ -573,6 +688,8 @@ function buildImageEditor(step, index) {
     { id: 'ellipse',   label: 'Ellipse', title: 'Ellipse / circle' },
     { id: 'arrow',     label: 'Arrow',   title: 'Arrow' },
     { id: 'highlight', label: 'Hi-lite', title: 'Highlight (semi-transparent fill)' },
+    { id: 'blur',      label: 'Blur',    title: 'Pixelate region (hide PII)' },
+    { id: 'text',      label: 'Text',    title: 'Add text label (click to place)' },
   ];
   const toolBtns = {};
   TOOLS.forEach(t => {
@@ -589,7 +706,6 @@ function buildImageEditor(step, index) {
     toolGroup.appendChild(btn);
   });
 
-  // Colors
   const colorGroup = makeGroup();
   const COLORS = ['#FF3B30', '#FF9500', '#FFCC00', '#34C759', '#007AFF', '#000000', '#FFFFFF'];
   const colorBtns = {};
@@ -607,7 +723,6 @@ function buildImageEditor(step, index) {
     colorGroup.appendChild(btn);
   });
 
-  // Stroke widths
   const widthGroup = makeGroup();
   const WIDTHS = [{ v: 2, label: 'S' }, { v: 4, label: 'M' }, { v: 8, label: 'L' }];
   const widthBtns = {};
@@ -625,7 +740,6 @@ function buildImageEditor(step, index) {
     widthGroup.appendChild(btn);
   });
 
-  // Actions
   const actionGroup = makeGroup();
   actionGroup.className += ' ie-actions';
 
@@ -651,9 +765,10 @@ function buildImageEditor(step, index) {
   toolbar.appendChild(widthGroup);
   toolbar.appendChild(actionGroup);
 
-  // ── Canvas ────────────────────────────────────────────────────────────
+  // ── Canvas ─────────────────────────────────────────────────────────────
   const canvasWrap = document.createElement('div');
   canvasWrap.className = 'ie-canvas-wrap';
+  canvasWrap.style.position = 'relative'; // required for text-input overlay
 
   const canvas = document.createElement('canvas');
   canvas.className = 'ie-canvas';
@@ -686,9 +801,46 @@ function buildImageEditor(step, index) {
     };
   }
 
-  // ── Drawing interaction ───────────────────────────────────────────────
+  // ── Text tool: floating input overlay ─────────────────────────────────
+  function handleTextClick(e) {
+    e.preventDefault();
+    const p = canvasXY(e);
+    const wr = canvasWrap.getBoundingClientRect();
+    const r  = canvas.getBoundingClientRect();
+    const scale = r.height / canvas.height;
+
+    const textInput = document.createElement('input');
+    textInput.type = 'text';
+    textInput.className = 'ie-text-input';
+    textInput.style.left  = (e.clientX - wr.left) + 'px';
+    textInput.style.top   = (e.clientY - wr.top)  + 'px';
+    textInput.style.color = color;
+    textInput.style.fontSize = Math.round(18 * scale) + 'px';
+    canvasWrap.appendChild(textInput);
+    textInput.focus();
+
+    let committed = false;
+    function commitText() {
+      if (committed) return;
+      committed = true;
+      const text = textInput.value.trim();
+      if (textInput.parentNode) canvasWrap.removeChild(textInput);
+      if (text) {
+        history.push({ tool: 'text', color, text, x: p.x, y: p.y, fontSize: 18 });
+        redraw();
+      }
+    }
+    textInput.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter')  { ev.preventDefault(); commitText(); }
+      if (ev.key === 'Escape') { committed = true; if (textInput.parentNode) canvasWrap.removeChild(textInput); }
+    });
+    textInput.addEventListener('blur', commitText);
+  }
+
+  // ── Drawing interaction ────────────────────────────────────────────────
   canvas.addEventListener('mousedown', e => {
     e.preventDefault();
+    if (tool === 'text') { handleTextClick(e); return; }
     const p = canvasXY(e);
     activeOp = tool === 'pen'
       ? { tool, color, width: lineWidth, points: [p] }
@@ -726,7 +878,7 @@ function buildImageEditor(step, index) {
   }
   _hlCleanup = cleanup;
 
-  // ── Save / Cancel ─────────────────────────────────────────────────────
+  // ── Save / Cancel ──────────────────────────────────────────────────────
   saveBtn.addEventListener('click', () => {
     activeOp = null;
     redraw();
@@ -748,38 +900,28 @@ function buildImageEditor(step, index) {
   return editor;
 }
 
-// Trigger a client-side file download from a string payload.
+// ── Export helpers ────────────────────────────────────────────────────────────
+
 function downloadFile(filename, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const objectUrl = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = objectUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
+  a.href = objectUrl; a.download = filename;
+  document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(objectUrl);
 }
 
-// Trigger a download from an already-built Blob (e.g. the ZIP).
 function downloadBlob(filename, blob) {
   const objectUrl = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = objectUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
+  a.href = objectUrl; a.download = filename;
+  document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(objectUrl);
 }
 
-function timestampSlug() {
-  return new Date().toISOString().replace(/[:.]/g, '-');
-}
-
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
+function pad2(n) { return String(n).padStart(2, '0'); }
 
 // ── Export opts ───────────────────────────────────────────────────────────────
 
@@ -800,9 +942,9 @@ function loadExportOpts() {
   });
 }
 
-// ── Per-type export implementations ──────────────────────────────────────────
+// ── Export implementations ────────────────────────────────────────────────────
 
-function doExportZip(name, opts) {
+async function doExportZip(name, opts) {
   if (!currentSteps.length) return;
   const encoder = new TextEncoder();
   const files = [];
@@ -822,12 +964,13 @@ function doExportZip(name, opts) {
 
   const title = 'Flow Recording';
   const md = exportToMarkdownWithRefs(currentSteps, title, imageNames, opts);
-  files.push({ name: 'flow.md', data: encoder.encode(md) });
+  files.push({ name: 'flow.md',   data: encoder.encode(md) });
 
   const json = exportToJSON(currentSteps, imageNames, opts);
   files.push({ name: 'flow.json', data: encoder.encode(json) });
 
-  const blob = createZip(files);
+  // createZip is async (deflates text files via CompressionStream)
+  const blob = await createZip(files);
   downloadBlob(name + '.zip', blob);
 }
 
@@ -859,9 +1002,9 @@ function promptAndExport(type) {
   if (!currentSteps.length) return;
   if (_modalCleanup) { _modalCleanup(); _modalCleanup = null; }
 
-  const modal   = document.getElementById('filename-modal');
-  const input   = document.getElementById('filename-input');
-  const extEl   = document.getElementById('filename-ext');
+  const modal     = document.getElementById('filename-modal');
+  const input     = document.getElementById('filename-input');
+  const extEl     = document.getElementById('filename-ext');
   const confirmBtn = document.getElementById('filename-confirm');
   const cancelBtn  = document.getElementById('filename-cancel');
 
@@ -880,9 +1023,9 @@ function promptAndExport(type) {
     const name = sanitizeFilename(input.value);
     hide();
     const opts = getExportOpts();
-    if (type === 'zip')      doExportZip(name, opts);
-    else if (type === 'md')  doExportMd(name, opts);
-    else                     doExportJson(name, opts);
+    if (type === 'zip')     doExportZip(name, opts);
+    else if (type === 'md') doExportMd(name, opts);
+    else                    doExportJson(name, opts);
   }
 
   function onKey(e) {
@@ -890,22 +1033,151 @@ function promptAndExport(type) {
     if (e.key === 'Escape') hide();
   }
 
-  function onBackdrop(e) { if (e.target === modal) hide(); }
-
   confirmBtn.addEventListener('click', onConfirm);
   cancelBtn.addEventListener('click', hide);
   input.addEventListener('keydown', onKey);
-  modal.addEventListener('click', onBackdrop);
+  modal.addEventListener('click', e => { if (e.target === modal) hide(); });
 
   _modalCleanup = () => {
     confirmBtn.removeEventListener('click', onConfirm);
     cancelBtn.removeEventListener('click', hide);
     input.removeEventListener('keydown', onKey);
-    modal.removeEventListener('click', onBackdrop);
   };
 }
 
-// Load steps from background, falling back to storage when empty.
+// ── Named session save / load ─────────────────────────────────────────────────
+
+function savedFlowKey(id) { return 'savedFlow_' + id; }
+
+function loadSavedFlowsMeta(cb) {
+  chrome.storage.local.get('savedFlowsMeta', ({ savedFlowsMeta }) => {
+    cb(Array.isArray(savedFlowsMeta) ? savedFlowsMeta : []);
+  });
+}
+
+function refreshSavedFlowsCount() {
+  loadSavedFlowsMeta(meta => {
+    document.getElementById('saved-flows-count').textContent = String(meta.length);
+  });
+}
+
+function renderSavedFlowsList() {
+  loadSavedFlowsMeta(meta => {
+    const list = document.getElementById('saved-flows-list');
+    list.textContent = '';
+    if (!meta.length) {
+      const empty = document.createElement('div');
+      empty.className = 'saved-flows-empty';
+      empty.textContent = 'No saved flows yet. Click "Save Flow" to archive the current recording.';
+      list.appendChild(empty);
+      return;
+    }
+    meta.forEach(m => {
+      const item = document.createElement('div');
+      item.className = 'saved-flow-item';
+
+      const info = document.createElement('div');
+      info.className = 'saved-flow-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'saved-flow-name';
+      nameEl.textContent = m.name;
+      const metaEl = document.createElement('div');
+      metaEl.className = 'saved-flow-meta';
+      const d = new Date(m.createdAt);
+      metaEl.textContent = m.stepCount + ' steps · ' + d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+      info.appendChild(nameEl);
+      info.appendChild(metaEl);
+
+      const actions = document.createElement('div');
+      actions.className = 'saved-flow-actions';
+
+      const loadBtn = document.createElement('button');
+      loadBtn.className = 'btn-load-flow';
+      loadBtn.textContent = 'Load';
+      loadBtn.addEventListener('click', () => {
+        chrome.storage.local.get(savedFlowKey(m.id), (data) => {
+          const steps = data[savedFlowKey(m.id)] || [];
+          _viewingMode = { id: m.id, name: m.name };
+          deleteHistory = [];
+          document.getElementById('saved-flows-panel').style.display = 'none';
+          render(steps);
+        });
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn-delete-flow';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => {
+        loadSavedFlowsMeta(existing => {
+          const updated = existing.filter(x => x.id !== m.id);
+          const toRemove = {};
+          toRemove[savedFlowKey(m.id)] = null;
+          toRemove.savedFlowsMeta = updated;
+          chrome.storage.local.set(toRemove, () => {
+            refreshSavedFlowsCount();
+            renderSavedFlowsList();
+          });
+        });
+      });
+
+      actions.appendChild(loadBtn);
+      actions.appendChild(delBtn);
+      item.appendChild(info);
+      item.appendChild(actions);
+      list.appendChild(item);
+    });
+  });
+}
+
+function promptSaveFlow() {
+  if (!currentSteps.length) return;
+
+  const modal     = document.getElementById('save-flow-modal');
+  const input     = document.getElementById('save-flow-input');
+  const confirmBtn = document.getElementById('save-flow-confirm');
+  const cancelBtn  = document.getElementById('save-flow-cancel');
+
+  const d = new Date();
+  input.value = 'Recording – ' + d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+  modal.style.display = 'flex';
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+
+  function hide() { modal.style.display = 'none'; cleanup(); }
+
+  function doSave() {
+    const name = input.value.trim() || 'Untitled Flow';
+    hide();
+    const id = 'flow_' + Date.now();
+    const meta = { id, name, createdAt: Date.now(), stepCount: currentSteps.length };
+    loadSavedFlowsMeta(existing => {
+      const key = savedFlowKey(id);
+      const update = { savedFlowsMeta: [...existing, meta] };
+      update[key] = currentSteps.slice();
+      chrome.storage.local.set(update, () => {
+        refreshSavedFlowsCount();
+      });
+    });
+  }
+
+  function onKey(e) {
+    if (e.key === 'Enter')  { e.preventDefault(); doSave(); }
+    if (e.key === 'Escape') hide();
+  }
+
+  confirmBtn.addEventListener('click', doSave);
+  cancelBtn.addEventListener('click', hide);
+  input.addEventListener('keydown', onKey);
+  modal.addEventListener('click', e => { if (e.target === modal) hide(); });
+
+  function cleanup() {
+    confirmBtn.removeEventListener('click', doSave);
+    cancelBtn.removeEventListener('click', hide);
+    input.removeEventListener('keydown', onKey);
+  }
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+
 function loadSteps() {
   chrome.runtime.sendMessage({ type: 'GET_STEPS' }, (response) => {
     if (chrome.runtime.lastError || !response || !response.steps || !response.steps.length) {
@@ -918,13 +1190,32 @@ function loadSteps() {
   });
 }
 
+// ── Init ──────────────────────────────────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
   loadSteps();
   loadExportOpts();
+  refreshSavedFlowsCount();
 
   document.getElementById('btn-export-zip').addEventListener('click',  () => promptAndExport('zip'));
   document.getElementById('btn-export-md').addEventListener('click',   () => promptAndExport('md'));
   document.getElementById('btn-export-json').addEventListener('click', () => promptAndExport('json'));
+
+  document.getElementById('btn-save-flow').addEventListener('click', promptSaveFlow);
+
+  document.getElementById('btn-saved-flows').addEventListener('click', () => {
+    const panel = document.getElementById('saved-flows-panel');
+    const isOpen = panel.style.display !== 'none';
+    panel.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) renderSavedFlowsList();
+  });
+
+  // "Back to recording" banner button
+  document.getElementById('btn-back-to-live').addEventListener('click', () => {
+    _viewingMode = null;
+    deleteHistory = [];
+    loadSteps();
+  });
 
   ['opt-images', 'opt-network', 'opt-logs'].forEach(id => {
     document.getElementById(id).addEventListener('change', () => {
@@ -933,8 +1224,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btn-clear').addEventListener('click', () => {
+    if (_viewingMode) {
+      // In viewing mode, clear only the current view — don't wipe live recording.
+      _viewingMode = null;
+      deleteHistory = [];
+      loadSteps();
+      return;
+    }
     chrome.runtime.sendMessage({ type: 'CLEAR_STEPS' });
     chrome.storage.local.set({ recordedSteps: [], recordingActive: false }, () => {
+      deleteHistory = [];
       render([]);
     });
   });

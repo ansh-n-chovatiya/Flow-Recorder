@@ -1,8 +1,9 @@
 // FlowSnap — content script.
-// selector.js is loaded before this file in the same content_scripts array,
-// so generateSelector() and generateXPath() are available in this scope.
+// selector.js is loaded before this file, so generateSelector() and
+// generateXPath() are available in this scope.
 
 let isRecording = false;
+let isPaused = false;
 
 // Buffers for logs/network captured by page-injector.js (MAIN world).
 let pendingLogs = [];
@@ -11,7 +12,7 @@ let pendingNetworkCalls = [];
 // postMessage is the reliable cross-world channel (CustomEvent.detail is null
 // when read across the MAIN/ISOLATED boundary in Chrome MV3).
 window.addEventListener('message', (event) => {
-  if (!isRecording) return;
+  if (!isRecording || isPaused) return;
   const d = event.data;
   if (!d || d.__flowsnap_source__ !== 'page-injector') return;
   if (d.kind === 'log') {
@@ -38,12 +39,22 @@ chrome.runtime.onMessage.addListener((message) => {
 
   if (message.type === 'START_RECORDING') {
     isRecording = true;
-    showRecordingIndicator();
+    isPaused = false;
+    showRecordingIndicator(false);
   } else if (message.type === 'STOP_RECORDING') {
     isRecording = false;
+    isPaused = false;
     hideRecordingIndicator();
     pendingLogs = [];
     pendingNetworkCalls = [];
+  } else if (message.type === 'PAUSE_RECORDING') {
+    isPaused = true;
+    pendingLogs = [];
+    pendingNetworkCalls = [];
+    showRecordingIndicator(true); // paused state shows different colour
+  } else if (message.type === 'RESUME_RECORDING') {
+    isPaused = false;
+    showRecordingIndicator(false);
   } else if (message.type === 'CLEAR_STEPS') {
     pendingLogs = [];
     pendingNetworkCalls = [];
@@ -52,11 +63,12 @@ chrome.runtime.onMessage.addListener((message) => {
 
 // --- Resume recording on page load (e.g. after navigation) -------------------
 
-chrome.storage.local.get('recordingActive', (result) => {
+chrome.storage.local.get(['recordingActive', 'recordingPaused'], (result) => {
   if (result && result.recordingActive) {
     isRecording = true;
-    showRecordingIndicator();
-    captureNavigationStep();
+    isPaused = Boolean(result.recordingPaused);
+    showRecordingIndicator(isPaused);
+    if (!isPaused) captureNavigationStep();
   }
 });
 
@@ -77,16 +89,17 @@ function captureNavigationStep() {
 document.addEventListener(
   'click',
   (event) => {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
 
     const rawEl = event.target;
-    // e.target may be a text node, the document, or null — skip non-Elements.
     if (!rawEl || rawEl.nodeType !== 1) return;
 
-    // Resolve the raw target (often a presentational <svg>/<span>) to the real
-    // control, then describe it. We record the resolved element so the label,
-    // selector and highlight box all point at the thing the user meant to click.
     const { el, action } = describeTarget(rawEl);
+
+    // Native <select> interactions are fully captured by the `change` listener
+    // below ("Selected X from [label]"). Swallowing the click avoids recording
+    // a redundant "Opened dropdown" step for every dropdown interaction.
+    if (el.tagName.toLowerCase() === 'select') return;
 
     const step = {
       type: 'click',
@@ -118,21 +131,17 @@ let inputDebounceTimer = null;
 document.addEventListener(
   'input',
   (event) => {
-    if (!isRecording) return;
+    if (!isRecording || isPaused) return;
 
     const el = event.target;
     if (!el || el.nodeType !== 1) return;
 
-    if (inputDebounceTimer) {
-      clearTimeout(inputDebounceTimer);
-    }
+    if (inputDebounceTimer) clearTimeout(inputDebounceTimer);
 
     inputDebounceTimer = setTimeout(() => {
-      // Mask password values with bullets.
       const rawValue = el.value != null ? String(el.value) : '';
       const isPassword = el.type === 'password';
       const value = isPassword ? '•'.repeat(rawValue.length) : rawValue;
-
       const label = getElementLabel(el);
 
       const step = {
@@ -156,22 +165,51 @@ document.addEventListener(
   true
 );
 
+// --- Select capture ----------------------------------------------------------
+// The `input` event fires for text fields; `change` is the right event for
+// <select> elements (clicking an option triggers `click` on the <option>, which
+// bubbles to the <select> — but the selected value isn't set until `change`).
+
+document.addEventListener(
+  'change',
+  (event) => {
+    if (!isRecording || isPaused) return;
+
+    const el = event.target;
+    if (!el || el.nodeType !== 1) return;
+    if (el.tagName.toLowerCase() !== 'select') return;
+
+    const label = getElementLabel(el);
+    const selectedOpt = el.options[el.selectedIndex];
+    const selectedText = (selectedOpt && selectedOpt.text) || el.value;
+
+    const step = {
+      type: 'input',
+      url: window.location.href,
+      timestamp: Date.now(),
+      element: {
+        tag: 'select',
+        label: label,
+        cssSelector: generateSelector(el),
+        xpath: generateXPath(el),
+        boundingBox: toPlainRect(el.getBoundingClientRect()),
+      },
+      value: selectedText,
+      action: 'Selected "' + selectedText + '" from ' + label,
+    };
+
+    requestScreenshotAndSave(step);
+  },
+  true
+);
+
 // --- Element description helpers ---------------------------------------------
 
-// chrome.runtime.sendMessage uses JSON serialization, and DOMRect's fields are
-// prototype getters (not own-enumerable) — so a raw DOMRect serializes to "{}".
-// Copy the fields we need into a plain object so they survive the message.
 function toPlainRect(rect) {
   if (!rect) return null;
-  return {
-    x: rect.x,
-    y: rect.y,
-    width: rect.width,
-    height: rect.height,
-  };
+  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 }
 
-// Best-effort human-readable text for an element, capped at 80 chars.
 function getElementText(el) {
   let text =
     (el.innerText && el.innerText.trim()) ||
@@ -183,9 +221,7 @@ function getElementText(el) {
   return text.trim().slice(0, 80);
 }
 
-// Best-effort label for a form/control element.
 function getElementLabel(el) {
-  // Associated <label> elements (HTMLInputElement.labels).
   if (el.labels && el.labels.length > 0) {
     const labelText = el.labels[0].innerText && el.labels[0].innerText.trim();
     if (labelText) return labelText;
@@ -197,7 +233,6 @@ function getElementLabel(el) {
   const ariaLabel = el.getAttribute('aria-label');
   if (ariaLabel) return ariaLabel;
 
-  // <label for="id"> lookup.
   if (el.id) {
     const forLabel = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
     if (forLabel && forLabel.innerText && forLabel.innerText.trim()) {
@@ -205,14 +240,10 @@ function getElementLabel(el) {
     }
   }
 
-  // Fall back to the element's own text.
   return getElementText(el) || el.tagName.toLowerCase();
 }
 
 // --- Semantic target resolution ----------------------------------------------
-// Icon-only and nested clicks (an <svg> inside a <button>) carry no useful text.
-// We climb to the nearest real control and derive a human name from it, so the
-// AI sees "Clicked sort ascending" instead of "Clicked element" / label "svg".
 
 const INTERACTIVE_TAGS = new Set(['a', 'button', 'select', 'summary']);
 const INTERACTIVE_ROLES = new Set([
@@ -220,8 +251,6 @@ const INTERACTIVE_ROLES = new Set([
   'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'radio',
 ]);
 
-// lucide-<name> icon classes → a readable verb/noun. Anything not mapped falls
-// back to the dash-stripped class (e.g. "grip-vertical" → "grip vertical").
 const ICON_NAMES = {
   'move-up': 'sort ascending', 'move-down': 'sort descending',
   'arrow-up': 'sort ascending', 'arrow-down': 'sort descending',
@@ -247,8 +276,6 @@ function isInteractive(el) {
   return el.hasAttribute('onclick');
 }
 
-// Climb at most 4 levels from the raw target to the nearest real control.
-// Returns the original element if nothing more meaningful is found.
 function resolveTarget(el) {
   if (isInteractive(el)) return el;
   let node = el.parentElement;
@@ -262,7 +289,6 @@ function resolveTarget(el) {
   return el;
 }
 
-// Name of a lucide icon on the element or its first descendant svg, if any.
 function iconName(el) {
   const svg = el.tagName.toLowerCase() === 'svg' ? el : (el.querySelector && el.querySelector('svg'));
   const cls = (svg && svg.getAttribute && svg.getAttribute('class')) || '';
@@ -272,8 +298,6 @@ function iconName(el) {
   return ICON_NAMES[key] || key.replace(/-/g, ' ');
 }
 
-// Accessible name for a control: aria-label > labelledby > text/value > title >
-// alt > icon name > nearest column-header text. Empty string if none found.
 function accessibleName(el) {
   if (!el || !el.getAttribute) return '';
 
@@ -306,8 +330,6 @@ function accessibleName(el) {
   return '';
 }
 
-// Resulting on/off state of a toggle (read post-click, so it reflects the new
-// state). null when the element is not a toggle.
 function toggleState(el) {
   const checked = el.getAttribute('aria-checked');
   if (checked === 'true') return 'on';
@@ -318,8 +340,6 @@ function toggleState(el) {
   return null;
 }
 
-// Resolve the clicked element and build a short natural-language action.
-// Returns { el, action } — el is the resolved control to record.
 function describeTarget(rawEl) {
   const el = resolveTarget(rawEl);
   const tag = el.tagName.toLowerCase();
@@ -341,8 +361,6 @@ function describeTarget(rawEl) {
     if (type === 'radio') return { el, action: 'Selected' + quoted };
   }
 
-  // Generic click. Prefer the accessible name; annotate with the icon meaning
-  // when the icon adds information the name doesn't already carry.
   const icon = iconName(el);
   if (name) {
     const suffix = icon && icon !== name && !name.toLowerCase().includes(icon) ? ' (' + icon + ')' : '';
@@ -354,8 +372,6 @@ function describeTarget(rawEl) {
 
 // --- Capture + persistence ---------------------------------------------------
 
-// Ask the background to capture a screenshot and persist the step.
-// Drains the pending log/network buffers and attaches them to the step.
 function requestScreenshotAndSave(step) {
   step.consoleLogs = pendingLogs.splice(0);
   step.networkCalls = pendingNetworkCalls.splice(0);
@@ -370,15 +386,23 @@ function requestScreenshotAndSave(step) {
 
 // --- Recording indicator -----------------------------------------------------
 
-function showRecordingIndicator() {
-  // Guard against duplicates.
-  if (document.getElementById('flowsnap-indicator')) return;
+function showRecordingIndicator(paused) {
+  let indicator = document.getElementById('flowsnap-indicator');
   if (!document.body) return;
 
-  const indicator = document.createElement('div');
-  indicator.id = 'flowsnap-indicator';
-  indicator.textContent = '● Recording';
-  document.body.appendChild(indicator);
+  if (!indicator) {
+    indicator = document.createElement('div');
+    indicator.id = 'flowsnap-indicator';
+    document.body.appendChild(indicator);
+  }
+
+  if (paused) {
+    indicator.textContent = '⏸ Paused';
+    indicator.classList.add('paused');
+  } else {
+    indicator.textContent = '● Recording';
+    indicator.classList.remove('paused');
+  }
 }
 
 function hideRecordingIndicator() {

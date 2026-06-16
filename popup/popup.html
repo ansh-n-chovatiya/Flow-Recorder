@@ -73,8 +73,22 @@
     }
 
     #btn-stop {
+      background: #e53935;
+      color: #ffffff;
+    }
+
+    #btn-pause {
+      background: #f57c00;
+      color: #ffffff;
+    }
+
+    #btn-resume {
       background: #43a047;
       color: #ffffff;
+    }
+
+    #status.paused {
+      color: #f57c00;
     }
 
     #btn-view {
@@ -99,6 +113,8 @@
 
   <button id="btn-start">● Start Recording</button>
   <button id="btn-stop" class="hidden">■ Stop Recording</button>
+  <button id="btn-pause" class="hidden">⏸ Pause</button>
+  <button id="btn-resume" class="hidden">▶ Resume</button>
   <button id="btn-view" class="hidden">View Flow</button>
   <button id="btn-clear" class="hidden">Clear Steps</button>
 

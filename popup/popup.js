@@ -1,35 +1,48 @@
 // FlowSnap popup controller.
-// Drives recording state, button visibility, and live step count.
+// Drives recording state (idle / recording / paused), button visibility,
+// and live step count.
 
-const statusEl = document.getElementById('status');
+const statusEl    = document.getElementById('status');
 const stepCountEl = document.getElementById('step-count');
-const btnStart = document.getElementById('btn-start');
-const btnStop = document.getElementById('btn-stop');
-const btnView = document.getElementById('btn-view');
-const btnClear = document.getElementById('btn-clear');
+const btnStart    = document.getElementById('btn-start');
+const btnStop     = document.getElementById('btn-stop');
+const btnPause    = document.getElementById('btn-pause');
+const btnResume   = document.getElementById('btn-resume');
+const btnView     = document.getElementById('btn-view');
+const btnClear    = document.getElementById('btn-clear');
 
-function updateUI(recording, count) {
+// state: 'idle' | 'recording' | 'paused'
+function updateUI(state, count) {
   const stepCount = count || 0;
 
-  if (recording) {
+  // status line
+  if (state === 'recording') {
     statusEl.textContent = '● Recording in progress...';
-    statusEl.classList.add('recording');
-    btnStart.classList.add('hidden');
-    btnStop.classList.remove('hidden');
-    btnView.classList.add('hidden');
-    btnClear.classList.add('hidden');
+    statusEl.className = 'recording';
+  } else if (state === 'paused') {
+    statusEl.textContent = '⏸ Recording paused';
+    statusEl.className = 'paused';
   } else {
     statusEl.textContent = 'Ready to record';
-    statusEl.classList.remove('recording');
-    btnStart.classList.remove('hidden');
-    btnStop.classList.add('hidden');
-    if (stepCount > 0) {
-      btnView.classList.remove('hidden');
-      btnClear.classList.remove('hidden');
-    } else {
-      btnView.classList.add('hidden');
-      btnClear.classList.add('hidden');
-    }
+    statusEl.className = '';
+  }
+
+  // button visibility
+  const show = (el) => el.classList.remove('hidden');
+  const hide = (el) => el.classList.add('hidden');
+
+  hide(btnStart); hide(btnStop); hide(btnPause); hide(btnResume);
+  hide(btnView);  hide(btnClear);
+
+  if (state === 'recording') {
+    show(btnPause);
+    show(btnStop);
+  } else if (state === 'paused') {
+    show(btnResume);
+    show(btnStop);
+  } else {
+    show(btnStart);
+    if (stepCount > 0) { show(btnView); show(btnClear); }
   }
 
   stepCountEl.textContent =
@@ -45,7 +58,6 @@ async function sendToTab(message) {
   const tab = await getActiveTab();
   if (!tab || !tab.id) return;
   try {
-    // Content script may not be injected on chrome:// or extension pages.
     await chrome.tabs.sendMessage(tab.id, message);
   } catch (err) {
     console.warn('FlowSnap: could not message tab', err);
@@ -53,33 +65,48 @@ async function sendToTab(message) {
 }
 
 async function refresh() {
-  const { recordingActive, recordedSteps } = await chrome.storage.local.get([
-    'recordingActive',
-    'recordedSteps',
-  ]);
+  const { recordingActive, recordingPaused, recordedSteps } =
+    await chrome.storage.local.get(['recordingActive', 'recordingPaused', 'recordedSteps']);
   const count = Array.isArray(recordedSteps) ? recordedSteps.length : 0;
-  updateUI(Boolean(recordingActive), count);
+  const state = recordingActive
+    ? (recordingPaused ? 'paused' : 'recording')
+    : 'idle';
+  updateUI(state, count);
 }
 
 async function init() {
   await refresh();
-  // Poll the step count while the popup is open (belt-and-suspenders alongside
-  // the storage.onChanged listener below).
   setInterval(refresh, 1000);
 }
 
 btnStart.addEventListener('click', async () => {
-  await chrome.storage.local.set({ recordingActive: true, recordedSteps: [] });
+  await chrome.storage.local.set({ recordingActive: true, recordingPaused: false, recordedSteps: [] });
   await sendToTab({ type: 'START_RECORDING' });
-  updateUI(true, 0);
+  updateUI('recording', 0);
 });
 
 btnStop.addEventListener('click', async () => {
-  await chrome.storage.local.set({ recordingActive: false });
+  await chrome.storage.local.set({ recordingActive: false, recordingPaused: false });
   await sendToTab({ type: 'STOP_RECORDING' });
   const { recordedSteps } = await chrome.storage.local.get('recordedSteps');
   const count = Array.isArray(recordedSteps) ? recordedSteps.length : 0;
-  updateUI(false, count);
+  updateUI('idle', count);
+});
+
+btnPause.addEventListener('click', async () => {
+  await chrome.storage.local.set({ recordingPaused: true });
+  await sendToTab({ type: 'PAUSE_RECORDING' });
+  const { recordedSteps } = await chrome.storage.local.get('recordedSteps');
+  const count = Array.isArray(recordedSteps) ? recordedSteps.length : 0;
+  updateUI('paused', count);
+});
+
+btnResume.addEventListener('click', async () => {
+  await chrome.storage.local.set({ recordingPaused: false });
+  await sendToTab({ type: 'RESUME_RECORDING' });
+  const { recordedSteps } = await chrome.storage.local.get('recordedSteps');
+  const count = Array.isArray(recordedSteps) ? recordedSteps.length : 0;
+  updateUI('recording', count);
 });
 
 btnView.addEventListener('click', () => {
@@ -92,19 +119,18 @@ btnClear.addEventListener('click', async () => {
   } catch (err) {
     console.warn('FlowSnap: CLEAR_STEPS message failed', err);
   }
-  await chrome.storage.local.set({ recordedSteps: [], recordingActive: false });
-  updateUI(false, 0);
+  await chrome.storage.local.set({ recordedSteps: [], recordingActive: false, recordingPaused: false });
+  updateUI('idle', 0);
 });
 
-// Live-update the step count (and recording state) while the popup is open.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  if (!('recordedSteps' in changes) && !('recordingActive' in changes)) return;
-
-  chrome.storage.local.get(['recordingActive', 'recordedSteps']).then(
-    ({ recordingActive, recordedSteps }) => {
+  if (!('recordedSteps' in changes) && !('recordingActive' in changes) && !('recordingPaused' in changes)) return;
+  chrome.storage.local.get(['recordingActive', 'recordingPaused', 'recordedSteps']).then(
+    ({ recordingActive, recordingPaused, recordedSteps }) => {
       const count = Array.isArray(recordedSteps) ? recordedSteps.length : 0;
-      updateUI(Boolean(recordingActive), count);
+      const state = recordingActive ? (recordingPaused ? 'paused' : 'recording') : 'idle';
+      updateUI(state, count);
     }
   );
 });
