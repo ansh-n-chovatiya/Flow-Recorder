@@ -1,13 +1,15 @@
 // FlowSnap MCP Server
-// Runs two transports on the same process:
-//   1. stdio — MCP protocol for Claude Code / claude.ai desktop
-//   2. HTTP  — port 7734, receives POSTed flows from the browser extension
 //
-// Start: node mcp-server/server.js
-// Claude Code config: see ../.claude/settings.local.json
+// LOCAL mode  (default) — stdio MCP + HTTP receiver on port 7734
+//   node mcp-server/server.js
+//
+// REMOTE mode — SSE MCP + HTTP receiver on $PORT (for Railway / Render / Fly)
+//   MCP_MODE=remote node mcp-server/server.js
+//   Claude Code .mcp.json: { "url": "https://your-app.railway.app/mcp", "type": "sse" }
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -16,7 +18,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLOWS_DIR = path.join(__dirname, 'flows');
-const HTTP_PORT = 7734;
+const REMOTE = process.env.MCP_MODE === 'remote';
+const HTTP_PORT = REMOTE ? (Number(process.env.PORT) || 8080) : 7734;
 
 await fs.mkdir(FLOWS_DIR, { recursive: true });
 
@@ -142,7 +145,9 @@ async function readFlowScreenshots(id) {
   );
 }
 
-// ── HTTP server (extension → server) ──────────────────────────────────────
+// ── HTTP server (extension → server, + SSE MCP in remote mode) ────────────
+
+const sseTransports = {};
 
 const httpServer = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -153,7 +158,26 @@ const httpServer = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, service: 'flowsnap-mcp', port: HTTP_PORT }));
+    res.end(JSON.stringify({ ok: true, service: 'flowsnap-mcp', mode: REMOTE ? 'remote' : 'local' }));
+    return;
+  }
+
+  // SSE MCP endpoint — remote mode only
+  if (REMOTE && req.method === 'GET' && req.url === '/mcp') {
+    const transport = new SSEServerTransport('/mcp/message', res);
+    sseTransports[transport.sessionId] = transport;
+    res.on('close', () => delete sseTransports[transport.sessionId]);
+    await mcpServer.connect(transport);
+    return;
+  }
+
+  // SSE message endpoint — remote mode only
+  if (REMOTE && req.method === 'POST' && req.url?.startsWith('/mcp/message')) {
+    const url = new URL(req.url, `http://localhost`);
+    const sessionId = url.searchParams.get('sessionId');
+    const transport = sseTransports[sessionId];
+    if (!transport) { res.writeHead(404); res.end(); return; }
+    await transport.handlePostMessage(req, res);
     return;
   }
 
@@ -184,8 +208,9 @@ const httpServer = http.createServer(async (req, res) => {
   res.writeHead(404); res.end();
 });
 
-httpServer.listen(HTTP_PORT, '127.0.0.1', () => {
-  process.stderr.write(`FlowSnap HTTP receiver listening on http://127.0.0.1:${HTTP_PORT}\n`);
+const bindHost = REMOTE ? '0.0.0.0' : '127.0.0.1';
+httpServer.listen(HTTP_PORT, bindHost, () => {
+  process.stderr.write(`FlowSnap listening on ${bindHost}:${HTTP_PORT} (${REMOTE ? 'remote/SSE' : 'local/stdio'} mode)\n`);
 });
 
 // ── MCP server (server → Claude) ───────────────────────────────────────────
@@ -298,5 +323,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-const transport = new StdioServerTransport();
-await mcpServer.connect(transport);
+if (!REMOTE) {
+  const transport = new StdioServerTransport();
+  await mcpServer.connect(transport);
+}

@@ -107,7 +107,13 @@ async function captureAndSave(step, elementBox, dpr) {
 
 // ── MCP auto-export ────────────────────────────────────────────────────────
 
-const MCP_HTTP = 'http://127.0.0.1:7734/flows';
+const DEFAULT_MCP_HTTP = 'http://127.0.0.1:7734/flows';
+
+async function getMcpUrl() {
+  return new Promise(resolve => {
+    chrome.storage.sync.get({ mcpServerUrl: DEFAULT_MCP_HTTP }, d => resolve(d.mcpServerUrl));
+  });
+}
 
 async function autoExportToMcp(steps) {
   const id        = 'flow-' + Date.now();
@@ -116,7 +122,8 @@ async function autoExportToMcp(steps) {
   const payload   = JSON.stringify({ id, name, timestamp: Date.now(), startUrl, steps });
 
   try {
-    const res = await fetch(MCP_HTTP, {
+    const mcpUrl = await getMcpUrl();
+    const res = await fetch(mcpUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,

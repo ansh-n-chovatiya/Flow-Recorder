@@ -118,6 +118,19 @@
   <button id="btn-view" class="hidden">View Flow</button>
   <button id="btn-clear" class="hidden">Clear Steps</button>
 
+  <details style="margin-top:12px;font-size:11px;color:#666;">
+    <summary style="cursor:pointer;">MCP Server URL</summary>
+    <div style="margin-top:6px;display:flex;gap:4px;">
+      <input id="mcp-url-input" type="text" placeholder="http://127.0.0.1:7734/flows"
+        style="flex:1;font-size:11px;padding:3px 5px;border:1px solid #ccc;border-radius:4px;" />
+      <button id="mcp-url-save"
+        style="font-size:11px;padding:3px 7px;background:#1e88e5;color:#fff;border:none;border-radius:4px;cursor:pointer;">
+        Save
+      </button>
+    </div>
+    <div id="mcp-url-status" style="margin-top:3px;font-size:10px;color:#888;"></div>
+  </details>
+
   <script src="popup.js"></script>
 </body>
 </html>

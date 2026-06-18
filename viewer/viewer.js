@@ -1194,7 +1194,13 @@ function loadSteps() {
 
 // ── Send to Claude (MCP) ──────────────────────────────────────────────────
 
-const MCP_HTTP = 'http://127.0.0.1:7734/flows';
+const DEFAULT_MCP_HTTP = 'http://127.0.0.1:7734/flows';
+
+function getMcpUrl() {
+  return new Promise(resolve => {
+    chrome.storage.sync.get({ mcpServerUrl: DEFAULT_MCP_HTTP }, d => resolve(d.mcpServerUrl));
+  });
+}
 let _toastTimer = null;
 
 function showMcpToast(html, durationMs = 6000) {
@@ -1221,7 +1227,8 @@ async function sendToMcp() {
   const payload  = JSON.stringify({ id, name, timestamp: Date.now(), startUrl, steps: currentSteps });
 
   try {
-    const res = await fetch(MCP_HTTP, {
+    const mcpUrl = await getMcpUrl();
+    const res = await fetch(mcpUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,

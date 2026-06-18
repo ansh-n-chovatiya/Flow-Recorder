@@ -136,3 +136,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 init();
+
+// ── MCP Server URL setting ─────────────────────────────────────────────────
+
+const mcpInput  = document.getElementById('mcp-url-input');
+const mcpSave   = document.getElementById('mcp-url-save');
+const mcpStatus = document.getElementById('mcp-url-status');
+
+chrome.storage.sync.get({ mcpServerUrl: 'http://127.0.0.1:7734/flows' }, ({ mcpServerUrl }) => {
+  mcpInput.value = mcpServerUrl;
+});
+
+mcpSave.addEventListener('click', () => {
+  const url = mcpInput.value.trim();
+  if (!url) return;
+  chrome.storage.sync.set({ mcpServerUrl: url }, () => {
+    mcpStatus.textContent = 'Saved!';
+    setTimeout(() => { mcpStatus.textContent = ''; }, 2000);
+  });
+});
