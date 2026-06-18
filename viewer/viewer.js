@@ -1234,8 +1234,8 @@ async function sendToMcp() {
     const stepCount = currentSteps.length;
     const urlPart = startUrl ? ` @ ${startUrl}` : '';
     const prompt =
-      `[flow ref] "${name}" — ${stepCount} steps${urlPart}\n` +
-      `get_flow("${savedId}") — use as context.`;
+      `Call get_flow("${savedId}") now (flowsnap MCP) — ${stepCount}-step recording${urlPart}. ` +
+      `Read the steps, identify what the user did or what broke, then help.`;
     await navigator.clipboard.writeText(prompt).catch(() => {});
 
     showMcpToast(
