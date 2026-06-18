@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "flowsnap": {
+      "command": "node",
+      "args": ["/Users/user2/Desktop/Chrome Flow Recorder Extension/mcp-server/server.js"],
+      "type": "stdio"
+    }
+  }
+}

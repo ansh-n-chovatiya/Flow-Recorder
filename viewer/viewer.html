@@ -67,9 +67,51 @@
       filter: brightness(0.95);
     }
 
+    #btn-send-claude {
+      background: #7c3aed;
+      color: #ffffff;
+    }
+
+    #btn-send-claude:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     #btn-export-zip {
       background: #1e88e5;
       color: #ffffff;
+    }
+
+    .mcp-toast {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1a1a1a;
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 500;
+      z-index: 9999;
+      max-width: 480px;
+      text-align: center;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      animation: toastIn 0.2s ease;
+    }
+
+    .mcp-toast .flow-id {
+      font-family: ui-monospace, monospace;
+      background: #333;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #a78bfa;
+    }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0);   }
     }
 
     #btn-export-md,
@@ -916,13 +958,15 @@
     <div class="subtitle">Review your recorded flow, then export it as AI-ready context for Claude.</div>
 
     <div class="toolbar">
-      <button id="btn-export-zip">Download ZIP for Claude</button>
+      <button id="btn-send-claude">Send to Claude</button>
+      <button id="btn-export-zip">Download ZIP</button>
       <button id="btn-export-md">Export Markdown</button>
       <button id="btn-export-json">Export JSON</button>
       <button id="btn-save-flow">Save Flow</button>
       <button id="btn-saved-flows">Saved Flows <span id="saved-flows-count" class="detail-count">0</span></button>
       <button id="btn-clear">Clear All</button>
     </div>
+    <div id="mcp-toast" class="mcp-toast" style="display:none"></div>
 
     <div class="filter-bar">
       <label><input type="checkbox" id="opt-images" checked> Include screenshots</label>

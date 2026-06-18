@@ -105,12 +105,52 @@ async function captureAndSave(step, elementBox, dpr) {
   }
 }
 
-// Reset badge to 0 whenever a new recording session starts.
-chrome.storage.onChanged.addListener((changes, area) => {
+// ── MCP auto-export ────────────────────────────────────────────────────────
+
+const MCP_HTTP = 'http://127.0.0.1:7734/flows';
+
+async function autoExportToMcp(steps) {
+  const id        = 'flow-' + Date.now();
+  const name      = 'Flow ' + new Date().toLocaleString();
+  const startUrl  = steps[0] && steps[0].url;
+  const payload   = JSON.stringify({ id, name, timestamp: Date.now(), startUrl, steps });
+
+  try {
+    const res = await fetch(MCP_HTTP, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    });
+    if (res.ok) {
+      const { id: savedId } = await res.json();
+      await setStorage({ lastMcpFlowId: savedId });
+      console.info('FlowSnap: auto-exported flow', savedId);
+    }
+  } catch {
+    // MCP server not running — fail silently, user can send manually from viewer
+  }
+}
+
+// Reset badge on new recording start; auto-export to MCP on stop.
+chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== 'local') return;
+
   if ('recordingActive' in changes && changes.recordingActive.newValue === true) {
     chrome.action.setBadgeText({ text: '0' });
     chrome.action.setBadgeBackgroundColor({ color: '#FF3B30' });
+  }
+
+  // Auto-export when recording stops (but not on clear — clear sets recordedSteps: [] in same batch)
+  if ('recordingActive' in changes && changes.recordingActive.newValue === false) {
+    const isClearing = 'recordedSteps' in changes &&
+      Array.isArray(changes.recordedSteps.newValue) &&
+      changes.recordedSteps.newValue.length === 0;
+    if (isClearing) return;
+
+    const { recordedSteps } = await getStorage('recordedSteps');
+    if (Array.isArray(recordedSteps) && recordedSteps.length > 0) {
+      autoExportToMcp(recordedSteps);
+    }
   }
 });
 

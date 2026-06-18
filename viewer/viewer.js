@@ -1192,11 +1192,75 @@ function loadSteps() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
+// ── Send to Claude (MCP) ──────────────────────────────────────────────────
+
+const MCP_HTTP = 'http://127.0.0.1:7734/flows';
+let _toastTimer = null;
+
+function showMcpToast(html, durationMs = 6000) {
+  const toast = document.getElementById('mcp-toast');
+  toast.innerHTML = html;
+  toast.style.display = 'block';
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { toast.style.display = 'none'; }, durationMs);
+}
+
+async function sendToMcp() {
+  if (!currentSteps.length) {
+    showMcpToast('No steps to send. Record a flow first.', 3000);
+    return;
+  }
+
+  const btn = document.getElementById('btn-send-claude');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+
+  const id       = _viewingMode ? _viewingMode.id : ('flow-' + Date.now());
+  const name     = _viewingMode ? _viewingMode.name : ('Flow ' + new Date().toLocaleString());
+  const startUrl = currentSteps[0] && currentSteps[0].url;
+  const payload  = JSON.stringify({ id, name, timestamp: Date.now(), startUrl, steps: currentSteps });
+
+  try {
+    const res = await fetch(MCP_HTTP, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const { id: savedId } = await res.json();
+
+    const stepCount = currentSteps.length;
+    const urlPart = startUrl ? ` @ ${startUrl}` : '';
+    const prompt =
+      `[flow ref] "${name}" — ${stepCount} steps${urlPart}\n` +
+      `get_flow("${savedId}") — use as context.`;
+    await navigator.clipboard.writeText(prompt).catch(() => {});
+
+    showMcpToast(
+      `Flow sent! Prompt copied — paste into Claude.<br>` +
+      `ID: <span class="flow-id">${savedId}</span>`,
+      8000
+    );
+  } catch (err) {
+    showMcpToast(
+      `Could not reach FlowSnap MCP server.<br>` +
+      `Start it first: <span class="flow-id">cd mcp-server && npm start</span>`,
+      8000
+    );
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send to Claude';
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   loadSteps();
   loadExportOpts();
   refreshSavedFlowsCount();
 
+  document.getElementById('btn-send-claude').addEventListener('click', sendToMcp);
   document.getElementById('btn-export-zip').addEventListener('click',  () => promptAndExport('zip'));
   document.getElementById('btn-export-md').addEventListener('click',   () => promptAndExport('md'));
   document.getElementById('btn-export-json').addEventListener('click', () => promptAndExport('json'));

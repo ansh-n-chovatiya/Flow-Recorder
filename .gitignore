@@ -5,5 +5,8 @@
 flowsnap-flow-*/
 *.zip
 
+# MCP server recorded flows (generated output, may contain PII)
+mcp-server/flows/
+
 # Node
 node_modules/
