@@ -44,10 +44,7 @@ export interface LiveView {
   /** `null` when the start time is unknown — an older recording, or a reload. */
   elapsedMs: number | null;
   count: number;
-  /**
-   * Past WARN_STEPS. Advice about a flow that is getting unwieldy, not a
-   * countdown to a cap — there is no longer a cap worth counting down to.
-   */
+  /** Past WARN_STEPS: advice about export weight, not a countdown to a cap. */
   long: boolean;
   lastAction: string | null;
   lastAgoMs: number | null;
@@ -62,10 +59,7 @@ export interface FlowView {
   extra: number;
 }
 
-/**
- * How much FlowSnap is holding. A figure, not a proportion: with
- * `unlimitedStorage` there is no denominator short of the user's whole disk.
- */
+/** A figure, not a proportion — `unlimitedStorage` leaves no denominator. */
 export interface StorageView {
   usedBytes: number;
 }

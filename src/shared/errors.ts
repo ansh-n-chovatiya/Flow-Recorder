@@ -28,10 +28,8 @@ export interface FlowError {
 }
 
 const MESSAGES: Record<FlowErrorCode, string> = {
-  // FlowSnap asks for `unlimitedStorage`, so this is no longer an extension
-  // quota — it means the disk itself has no room. Naming the disk matters:
-  // deleting flows would barely help, and looking for space inside FlowSnap is
-  // the wrong place to send someone.
+  // With `unlimitedStorage` this can only be the disk, so it says the disk —
+  // sending the user to delete flows would free almost nothing.
   STORAGE_QUOTA:
     "There's no room left on the disk, so the last step wasn't saved. Free some space and recording will continue.",
   STORAGE_WRITE: "Chrome wouldn't save that change. Your last step may be missing.",

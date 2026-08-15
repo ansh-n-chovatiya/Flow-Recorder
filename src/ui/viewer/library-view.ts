@@ -8,7 +8,7 @@
 
 import { countFailures, flowHost } from '../../core/flow/index.js';
 import type { FlowMeta, RecordingState, Step, StepType } from '../../shared/types.js';
-import { formatBytes, formatDateTime, formatRelative } from '../format.js';
+import { formatDateTime, formatRelative } from '../format.js';
 
 /**
  * How the list is ordered.
@@ -58,10 +58,7 @@ export interface FlowRowView {
   failures: number;
 }
 
-/**
- * How much FlowSnap is holding. A figure, not a proportion: with
- * `unlimitedStorage` there is no denominator short of the user's whole disk.
- */
+/** A figure, not a proportion — `unlimitedStorage` leaves no denominator. */
 export interface LibraryStorageView {
   usedBytes: number;
 }
@@ -154,13 +151,12 @@ const SORTS: Record<LibrarySort, (a: FlowMeta, b: FlowMeta) => number> = {
   name: (a, b) => a.name.localeCompare(b.name),
 };
 
-function summaryLine(count: number, usedBytes: number | null): string {
-  const flows = `${count} ${count === 1 ? 'flow' : 'flows'}`;
-  if (usedBytes == null) return flows;
+/** Saved flows only. Storage is the footer's job — it counts the unsaved one too. */
+function summaryLine(flows: FlowMeta[]): string {
+  if (flows.length === 0) return 'Nothing saved yet';
 
-  // Through `formatBytes`, so this line and the reading in the footer below it
-  // never disagree about how to write the same number.
-  return `${flows} · ${formatBytes(usedBytes)}`;
+  const steps = flows.reduce((total, flow) => total + flow.stepCount, 0);
+  return `${flows.length} ${flows.length === 1 ? 'flow' : 'flows'} · ${steps} ${steps === 1 ? 'step' : 'steps'}`;
 }
 
 export function deriveLibraryView(input: LibraryInput): LibraryView {
@@ -191,7 +187,7 @@ export function deriveLibraryView(input: LibraryInput): LibraryView {
 
   return {
     body,
-    summary: summaryLine(flows.length, usedBytes),
+    summary: summaryLine(flows),
     current,
     flows: visible.map((flow) => rowView(flow, now)),
     storage: storageView(usedBytes),

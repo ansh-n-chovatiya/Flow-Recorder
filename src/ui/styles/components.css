@@ -502,14 +502,8 @@
 }
 
 /* ── Meter ──────────────────────────────────────────────────────────────────
- * A bar for a quantity with a real denominator — which now means export
- * progress and nothing else.
- *
- * Storage used to have one, filling toward the 10 MB `chrome.storage.local`
- * allowed. FlowSnap asks for `unlimitedStorage`, so the only ceiling left is the
- * user's disk. A bar drawn against that reads empty forever and implies a budget
- * nobody is managing, so storage is reported as a figure instead and the
- * `warn`/`full` fills went with it.
+ * Export progress. Storage lost its bar with the quota — a bar needs a
+ * denominator, and the only one left is the user's disk.
  */
 
 .meter__track {

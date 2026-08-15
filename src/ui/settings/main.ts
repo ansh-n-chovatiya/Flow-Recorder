@@ -157,9 +157,7 @@ async function refreshStorage(): Promise<void> {
       ? 'No saved flows.'
       : `${savedFlows.length} saved ${savedFlows.length === 1 ? 'flow' : 'flows'}, ${steps} steps in total. The flow you are recording now is not included.`;
 
-  // The figure above is meaningless without knowing what drives it. Screenshots
-  // are almost all of it, so the per-step cost is the number that lets someone
-  // predict what another recording will take.
+  // Per-step is what lets someone predict the cost of the next recording.
   dom.storageDetail.textContent =
     steps > 0 ? `About ${formatBytes(Math.round(used / steps))} per step, mostly screenshots.` : '';
 

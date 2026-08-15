@@ -43,7 +43,6 @@ const dom = {
   storageText: el('lib-storage-text'),
 
   settings: el<HTMLButtonElement>('lib-settings'),
-  newRecording: el<HTMLButtonElement>('lib-new'),
 };
 
 const STATUS_TEXT = {
@@ -63,24 +62,6 @@ export function mountLibrary(app: App, onSaveCurrent: () => void): { paint: () =
    */
   dom.settings.addEventListener('click', () => {
     location.href = chrome.runtime.getURL('settings.html');
-  });
-
-  /**
-   * A recording starts from the toolbar popup, which an extension page can only
-   * open through an API that arrived after our minimum Chrome version. Where it
-   * exists we use it; where it does not, saying where the button is beats a
-   * button that silently does nothing.
-   */
-  dom.newRecording.addEventListener('click', () => {
-    const open = (chrome.action as { openPopup?: () => Promise<void> }).openPopup;
-    if (!open) {
-      showToast({ message: 'Recording starts from the FlowSnap button in Chrome’s toolbar.' });
-      return;
-    }
-
-    void open.call(chrome.action).catch(() => {
-      showToast({ message: 'Recording starts from the FlowSnap button in Chrome’s toolbar.' });
-    });
   });
 
   dom.search.addEventListener('input', () => {

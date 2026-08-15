@@ -211,17 +211,31 @@ describe('storage', () => {
   });
 
   it('never implies a limit, however large the library gets', () => {
-    // The old copy read "9.8 MB of 10.0 MB used". `unlimitedStorage` means there
-    // is no denominator short of the disk, and inventing one would be the only
-    // thing here that could tell the user to stop recording.
+    // The old copy read "9.8 MB of 10.0 MB used".
     const summary = deriveLibraryView(input({ usedBytes: 524_288_000 })).summary;
-    expect(summary).toBe('1 flow · 500.0 MB');
-    expect(summary).not.toMatch(/of|used|limit/);
+    expect(summary).not.toMatch(/of|used|limit|MB/);
+  });
+});
+
+describe('the summary line', () => {
+  it('counts saved flows and their steps', () => {
+    const summary = deriveLibraryView(
+      input({ flows: [flow({ stepCount: 4 }), flow({ id: 'x', stepCount: 9 })] }),
+    ).summary;
+    expect(summary).toBe('2 flows · 13 steps');
   });
 
-  it('counts the flows it is summarising', () => {
-    expect(deriveLibraryView(input({ flows: [flow(), flow({ id: 'x' })] })).summary).toMatch(
-      /^2 flows · /,
+  it('says nothing is saved rather than "0 flows" above a visible recording', () => {
+    const summary = deriveLibraryView(input({ flows: [], usedBytes: 3_100_000 })).summary;
+    expect(summary).toBe('Nothing saved yet');
+    // The bytes belong to the unsaved recording below it, so pairing them with a
+    // count of zero read as a contradiction.
+    expect(summary).not.toMatch(/0|MB/);
+  });
+
+  it('is singular for one of each', () => {
+    expect(deriveLibraryView(input({ flows: [flow({ stepCount: 1 })] })).summary).toBe(
+      '1 flow · 1 step',
     );
   });
 });

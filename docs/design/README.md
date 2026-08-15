@@ -157,6 +157,11 @@ choices rather than drift:
 - **The library's sort control is Recent / Largest / Name**, not the frame's
   `All / Recent / Largest`. That set is one filter and two sorts wearing the
   same control — "All" of what, against a list that is already all of them?
+- **The library has no "New recording" button.** The frame puts one in the app
+  bar. The viewer is an extension page, so a recording started there targets a
+  tab Chrome blocks — the button could only ever open a popup saying it cannot
+  record this tab. Recording begins on the tab being recorded, from the toolbar;
+  the empty state says so.
 - **There is no Duplicate action.** The review frame's overflow menu offers one.
   It was originally left out because duplicating doubled the largest thing in a
   10 MB store; that argument died with the quota (see below), so what remains is
