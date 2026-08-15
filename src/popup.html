@@ -104,10 +104,54 @@
     .hidden {
       display: none !important;
     }
+
+    /* Minimal treatment for the states that had no UI at all. The redesign
+       replaces this whole stylesheet; these exist so the states are visible. */
+    #target {
+      font-size: 11px;
+      color: #777;
+      margin-bottom: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #notice {
+      font-size: 12px;
+      line-height: 1.45;
+      padding: 9px 10px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      border: 1px solid;
+    }
+
+    #notice.blocked {
+      background: #fff8e1;
+      border-color: #f0c36d;
+      color: #7a5600;
+    }
+
+    #notice.error {
+      background: #fdecea;
+      border-color: #f0a9a3;
+      color: #8c211a;
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    button:disabled:hover {
+      filter: none;
+    }
   </style>
 </head>
 <body>
   <h1>⚡ FlowSnap</h1>
+  <div id="target"></div>
+  <div id="notice" class="hidden"></div>
   <div id="status">Ready to record</div>
   <div id="step-count">0 steps captured</div>
 

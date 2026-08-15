@@ -189,6 +189,31 @@ function toggleState(el: Element): string | null {
   return null;
 }
 
+/**
+ * Whether clicking this is likely to destroy the current page — a link, a submit
+ * button, anything inside a form. Those are the interactions whose screenshot
+ * has to be taken before the click rather than after it.
+ */
+export function mayNavigate(rawEl: Element): boolean {
+  const el = resolveTarget(rawEl);
+  const tag = el.tagName.toLowerCase();
+
+  if (tag === 'a') return el.hasAttribute('href');
+  if (el.getAttribute('role') === 'link') return true;
+
+  if (tag === 'button') {
+    const type = (el as HTMLButtonElement).type;
+    return type === 'submit' || el.closest('form') !== null;
+  }
+
+  if (tag === 'input') {
+    const type = (el.getAttribute('type') ?? '').toLowerCase();
+    return type === 'submit' || type === 'image';
+  }
+
+  return false;
+}
+
 export interface DescribedTarget {
   /** The control that was really clicked, which may be an ancestor of the node. */
   el: Element;

@@ -140,6 +140,16 @@ export interface LocalStorageShape {
   exportOptions: ExportOptions;
   savedFlowsMeta: FlowMeta[];
   lastMcpFlowId: string;
+  /** The most recent failure, so the UI can show what went wrong. */
+  lastError: StoredError | null;
+}
+
+/** A FlowError plus when it happened, as persisted for the UI to read. */
+export interface StoredError {
+  code: string;
+  message: string;
+  detail?: string;
+  at: number;
 }
 
 /** Archived flows are stored one key per flow, keyed by this. */
@@ -150,4 +160,10 @@ export function savedFlowKey(id: string): `savedFlow_${string}` {
 /** Everything the extension persists in `chrome.storage.sync`. */
 export interface SyncStorageShape {
   mcpServerUrl: string;
+  /**
+   * Whether stopping a recording uploads it automatically. Off by default: it
+   * sends screenshots and captured request bodies to whatever address is
+   * configured, which should be a decision, not a surprise.
+   */
+  mcpAutoSend: boolean;
 }

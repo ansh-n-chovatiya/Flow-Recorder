@@ -12,10 +12,16 @@ import {
   describeTarget,
   getElementLabel,
   getElementText,
+  mayNavigate,
 } from '../core/describe/index.js';
 import { generateSelector, generateXPath } from '../core/selector/index.js';
-import { AGENT_MESSAGE_SOURCE, INDICATOR_ID, INPUT_DEBOUNCE_MS } from '../shared/constants.js';
-import type { AgentMessage, ContentRequest } from '../shared/messages.js';
+import {
+  AGENT_MESSAGE_SOURCE,
+  INDICATOR_ID,
+  INPUT_DEBOUNCE_MS,
+  PAINT_TIMEOUT_MS,
+} from '../shared/constants.js';
+import { sendToWorker, type AgentMessage, type ContentRequest } from '../shared/messages.js';
 import type { BoundingBox, ConsoleEntry, DraftStep, NetworkCall } from '../shared/types.js';
 
 let isRecording = false;
@@ -25,9 +31,19 @@ let isPaused = false;
 let pendingLogs: ConsoleEntry[] = [];
 let pendingNetworkCalls: NetworkCall[] = [];
 
+function clearBuffers(): void {
+  pendingLogs = [];
+  pendingNetworkCalls = [];
+}
+
 // ── Agent bridge ─────────────────────────────────────────────────────────────
 
 window.addEventListener('message', (event: MessageEvent<AgentMessage>) => {
+  // Only this window's own agent may contribute. Without this check any page
+  // script or cross-origin iframe could post the same envelope and inject
+  // fabricated network calls and log lines into the recording — which then flow
+  // into an AI's context as if they had been observed.
+  if (event.source !== window || event.origin !== window.location.origin) return;
   if (!isRecording || isPaused) return;
 
   const data = event.data;
@@ -56,55 +72,76 @@ window.addEventListener('message', (event: MessageEvent<AgentMessage>) => {
 
 // ── Control messages ─────────────────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((message: ContentRequest) => {
+chrome.runtime.onMessage.addListener((message: ContentRequest, _sender, sendResponse) => {
   if (!message?.type) return;
 
   switch (message.type) {
+    // Answering this is how the extension knows a tab can record at all.
+    case 'PING':
+      sendResponse({ ok: true });
+      return true;
+
     case 'START_RECORDING':
-      isRecording = true;
-      isPaused = false;
-      showRecordingIndicator(false);
+      applyState(true, false);
       break;
 
     case 'STOP_RECORDING':
-      isRecording = false;
-      isPaused = false;
-      hideRecordingIndicator();
-      pendingLogs = [];
-      pendingNetworkCalls = [];
+      applyState(false, false);
       break;
 
     case 'PAUSE_RECORDING':
-      isPaused = true;
-      pendingLogs = [];
-      pendingNetworkCalls = [];
-      showRecordingIndicator(true);
+      applyState(true, true);
       break;
 
     case 'RESUME_RECORDING':
-      isPaused = false;
-      showRecordingIndicator(false);
+      applyState(true, false);
       break;
 
     case 'CLEAR_STEPS':
-      pendingLogs = [];
-      pendingNetworkCalls = [];
+      clearBuffers();
       break;
   }
+
+  return;
+});
+
+function applyState(recording: boolean, paused: boolean): void {
+  isRecording = recording;
+  isPaused = paused;
+  if (!recording || paused) clearBuffers();
+  renderIndicator();
+}
+
+/**
+ * Follow the recording state wherever it changes.
+ *
+ * A runtime message only reaches the tab the popup was opened over, so a tab the
+ * user switched to — or one that was already open when recording started — never
+ * learned it was supposed to be recording, and captured nothing at all with no
+ * indicator and no error. Storage is shared by every tab, so watching it is what
+ * makes a recording follow the user across tabs.
+ */
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (!('recordingActive' in changes) && !('recordingPaused' in changes)) return;
+
+  void chrome.storage.local.get(['recordingActive', 'recordingPaused']).then((state) => {
+    const active = Boolean(state.recordingActive);
+    const paused = Boolean(state.recordingPaused);
+    const wasRecording = isRecording && !isPaused;
+    applyState(active, paused);
+
+    // Entering a live recording in a tab that was idle: log the page, so the
+    // flow shows where the user went rather than jumping between contexts.
+    if (active && !paused && !wasRecording) captureNavigationStep();
+  });
 });
 
 // ── Resume after a navigation ────────────────────────────────────────────────
 
-chrome.storage.local.get(['recordingActive', 'recordingPaused'], (result) => {
-  const { recordingActive, recordingPaused } = result as {
-    recordingActive?: boolean;
-    recordingPaused?: boolean;
-  };
-  if (!recordingActive) return;
-
-  isRecording = true;
-  isPaused = Boolean(recordingPaused);
-  showRecordingIndicator(isPaused);
+void chrome.storage.local.get(['recordingActive', 'recordingPaused']).then((state) => {
+  if (!state.recordingActive) return;
+  applyState(true, Boolean(state.recordingPaused));
   if (!isPaused) captureNavigationStep();
 });
 
@@ -124,6 +161,24 @@ function toPlainRect(rect: DOMRect | null): BoundingBox | null {
   if (!rect) return null;
   return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 }
+
+/**
+ * Screenshot before a navigating click lands.
+ *
+ * The worker holds the frame and the click that follows claims it. Restricted to
+ * interactions that may actually navigate, because Chrome rate-limits captures
+ * and spending one on every pointerdown would starve the real steps.
+ */
+document.addEventListener(
+  'pointerdown',
+  (event) => {
+    if (!isRecording || isPaused) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !mayNavigate(target)) return;
+    void withIndicatorHidden(() => sendToWorker({ type: 'PRECAPTURE' }));
+  },
+  true,
+);
 
 document.addEventListener(
   'click',
@@ -161,7 +216,14 @@ document.addEventListener(
   true,
 );
 
-let inputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * One debounce timer per field, not one for the page.
+ *
+ * A single shared timer meant that tabbing from email to password inside the
+ * debounce window discarded the email step entirely — filling a form quickly
+ * lost steps.
+ */
+const inputTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
 
 document.addEventListener(
   'input',
@@ -171,29 +233,35 @@ document.addEventListener(
     const el = event.target;
     if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return;
 
-    if (inputDebounceTimer) clearTimeout(inputDebounceTimer);
+    const existing = inputTimers.get(el);
+    if (existing) clearTimeout(existing);
 
-    inputDebounceTimer = setTimeout(() => {
-      const rawValue = el.value != null ? String(el.value) : '';
-      const isPassword = el instanceof HTMLInputElement && el.type === 'password';
-      const value = isPassword ? '•'.repeat(rawValue.length) : rawValue;
-      const label = getElementLabel(el);
+    inputTimers.set(
+      el,
+      setTimeout(() => {
+        inputTimers.delete(el);
 
-      requestScreenshotAndSave({
-        type: 'input',
-        url: window.location.href,
-        timestamp: Date.now(),
-        element: {
-          tag: el.tagName.toLowerCase(),
-          label,
-          cssSelector: generateSelector(el),
-          xpath: generateXPath(el),
-          boundingBox: toPlainRect(el.getBoundingClientRect()),
-        },
-        value,
-        action: `Typed "${value}" into ${label}`,
-      });
-    }, INPUT_DEBOUNCE_MS);
+        const rawValue = el.value ?? '';
+        const isPassword = el instanceof HTMLInputElement && el.type === 'password';
+        const value = isPassword ? '•'.repeat(rawValue.length) : rawValue;
+        const label = getElementLabel(el);
+
+        requestScreenshotAndSave({
+          type: 'input',
+          url: window.location.href,
+          timestamp: Date.now(),
+          element: {
+            tag: el.tagName.toLowerCase(),
+            label,
+            cssSelector: generateSelector(el),
+            xpath: generateXPath(el),
+            boundingBox: toPlainRect(el.getBoundingClientRect()),
+          },
+          value,
+          action: `Typed "${value}" into ${label}`,
+        });
+      }, INPUT_DEBOUNCE_MS),
+    );
   },
   true,
 );
@@ -239,30 +307,73 @@ function requestScreenshotAndSave(step: DraftStep): void {
     networkCalls: pendingNetworkCalls.splice(0),
   };
 
-  void chrome.runtime.sendMessage({
-    type: 'CAPTURE_AND_SAVE_STEP',
-    step: enriched,
-    elementBox: enriched.element?.boundingBox ?? null,
-    dpr: window.devicePixelRatio || 1,
-  });
+  void withIndicatorHidden(() =>
+    sendToWorker({
+      type: 'CAPTURE_AND_SAVE_STEP',
+      step: enriched,
+      elementBox: enriched.element?.boundingBox ?? null,
+      dpr: window.devicePixelRatio || 1,
+    }),
+  );
 }
 
 // ── On-page indicator ────────────────────────────────────────────────────────
 
-function showRecordingIndicator(paused: boolean): void {
+/**
+ * Depth of nested capture requests. The indicator is FlowSnap's own UI, and
+ * `captureVisibleTab` photographs whatever is on screen — so without hiding it,
+ * every screenshot the tool has ever taken contains its own badge, which then
+ * ships to an AI as if it were part of the recorded page.
+ */
+let captureDepth = 0;
+
+/**
+ * Resolve once the browser has painted a frame, so an element removed a moment
+ * ago is genuinely off screen before anything photographs it.
+ *
+ * `requestAnimationFrame` never fires in a background tab, so this races a
+ * timeout — waiting forever would mean the step is never sent at all.
+ */
+function afterPaint(): Promise<void> {
+  return Promise.race([
+    new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    ),
+    new Promise<void>((resolve) => setTimeout(resolve, PAINT_TIMEOUT_MS)),
+  ]);
+}
+
+async function withIndicatorHidden<T>(action: () => Promise<T>): Promise<T> {
+  const wasVisible = document.getElementById(INDICATOR_ID) !== null;
+
+  captureDepth++;
+  renderIndicator();
+  if (wasVisible) await afterPaint();
+
+  try {
+    return await action();
+  } finally {
+    captureDepth--;
+    renderIndicator();
+  }
+}
+
+function renderIndicator(): void {
+  const existing = document.getElementById(INDICATOR_ID);
+
+  if (!isRecording || captureDepth > 0) {
+    existing?.remove();
+    return;
+  }
+
   if (!document.body) return;
 
-  let indicator = document.getElementById(INDICATOR_ID);
-  if (!indicator) {
-    indicator = document.createElement('div');
+  const indicator = existing ?? document.createElement('div');
+  if (!existing) {
     indicator.id = INDICATOR_ID;
     document.body.appendChild(indicator);
   }
 
-  indicator.textContent = paused ? '⏸ Paused' : '● Recording';
-  indicator.classList.toggle('paused', paused);
-}
-
-function hideRecordingIndicator(): void {
-  document.getElementById(INDICATOR_ID)?.remove();
+  indicator.textContent = isPaused ? '⏸ Paused' : '● Recording';
+  indicator.classList.toggle('paused', isPaused);
 }

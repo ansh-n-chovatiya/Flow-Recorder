@@ -1,13 +1,15 @@
 /**
  * Popup controller: recording state, button visibility, live step count.
  *
- * The three-state model (idle / recording / paused) is derived in one place
- * here rather than being re-computed at each call site.
+ * State changes are written to storage and nothing else. Every content script
+ * watches storage, so a recording follows the user across tabs — messaging only
+ * the active tab is what made recording silently stop the moment you switched.
  */
 
+import { getLocal, setLocal, setSync } from '../../chrome/storage.js';
+import { preflight, type RecordingTarget } from '../../features/recording/preflight.js';
 import { DEFAULT_MCP_URL } from '../../shared/constants.js';
 import { sendToWorker } from '../../shared/messages.js';
-import type { ContentRequest } from '../../shared/messages.js';
 import type { RecordingState } from '../../shared/types.js';
 
 function el<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -18,6 +20,8 @@ function el<T extends HTMLElement = HTMLElement>(id: string): T {
 
 const statusEl = el('status');
 const stepCountEl = el('step-count');
+const targetEl = el('target');
+const noticeEl = el('notice');
 const btnStart = el<HTMLButtonElement>('btn-start');
 const btnStop = el<HTMLButtonElement>('btn-stop');
 const btnPause = el<HTMLButtonElement>('btn-pause');
@@ -32,6 +36,19 @@ const STATUS_TEXT: Record<RecordingState, string> = {
   recording: '● Recording in progress...',
   paused: '⏸ Recording paused',
 };
+
+/** Whether the active tab can be recorded, resolved when the popup opens. */
+let target: RecordingTarget | null = null;
+
+function showNotice(text: string, kind: 'blocked' | 'error'): void {
+  noticeEl.textContent = text;
+  noticeEl.className = kind;
+}
+
+function hideNotice(): void {
+  noticeEl.textContent = '';
+  noticeEl.className = 'hidden';
+}
 
 function updateUI(state: RecordingState, count: number): void {
   statusEl.textContent = STATUS_TEXT[state];
@@ -49,6 +66,8 @@ function updateUI(state: RecordingState, count: number): void {
     show(btnResume, btnStop);
   } else {
     show(btnStart);
+    // Starting is only offered when there is somewhere to record.
+    btnStart.disabled = target === null;
     if (count > 0) show(btnView, btnClear);
   }
 
@@ -57,22 +76,31 @@ function updateUI(state: RecordingState, count: number): void {
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-interface PopupSnapshot {
-  state: RecordingState;
-  count: number;
-}
+async function readState(): Promise<{ state: RecordingState; count: number }> {
+  const stored = await getLocal(['recordingActive', 'recordingPaused', 'recordedSteps']);
+  if (!stored.ok) return { state: 'idle', count: 0 };
 
-async function readState(): Promise<PopupSnapshot> {
-  const { recordingActive, recordingPaused, recordedSteps } = await chrome.storage.local.get([
-    'recordingActive',
-    'recordingPaused',
-    'recordedSteps',
-  ]);
-
+  const { recordingActive, recordingPaused, recordedSteps } = stored.value;
   return {
     state: recordingActive ? (recordingPaused ? 'paused' : 'recording') : 'idle',
     count: Array.isArray(recordedSteps) ? recordedSteps.length : 0,
   };
+}
+
+/**
+ * Surface the last failure the worker recorded. A capture that silently produced
+ * no screenshot, or a write that hit the storage ceiling, is otherwise invisible.
+ */
+async function showLastError(): Promise<boolean> {
+  const stored = await getLocal('lastError');
+  if (!stored.ok) return false;
+
+  const lastError = stored.value.lastError;
+  // Only recent failures are worth interrupting for; an hour-old one is noise.
+  if (!lastError || Date.now() - lastError.at > 60_000) return false;
+
+  showNotice(lastError.message, 'error');
+  return true;
 }
 
 async function refresh(): Promise<void> {
@@ -80,50 +108,74 @@ async function refresh(): Promise<void> {
   updateUI(state, count);
 }
 
-async function sendToTab(message: ContentRequest): Promise<void> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
-  try {
-    await chrome.tabs.sendMessage(tab.id, message);
-  } catch (err) {
-    console.warn('FlowSnap: could not message tab', err);
+/** Resolve what the popup is pointing at, without touching the page. */
+async function resolveTarget(): Promise<void> {
+  const result = await preflight(false);
+
+  if (result.ok) {
+    target = result.value;
+    targetEl.textContent = target.host || target.url;
+    if (!(await showLastError())) hideNotice();
+    return;
   }
+
+  target = null;
+  targetEl.textContent = '';
+  showNotice(result.error.message, 'blocked');
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 
 btnStart.addEventListener('click', () => {
   void (async () => {
-    await chrome.storage.local.set({
+    btnStart.disabled = true;
+
+    // Inject now if needed: a tab opened before FlowSnap was installed has no
+    // content script, and the old code reported success anyway.
+    const ready = await preflight(true);
+    if (!ready.ok) {
+      target = null;
+      showNotice(ready.error.message, 'blocked');
+      await refresh();
+      return;
+    }
+
+    target = ready.value;
+    hideNotice();
+
+    const written = await setLocal({
       recordingActive: true,
       recordingPaused: false,
       recordedSteps: [],
+      lastError: null,
     });
-    await sendToTab({ type: 'START_RECORDING' });
+    if (!written.ok) {
+      showNotice(written.error.message, 'error');
+      await refresh();
+      return;
+    }
+
     updateUI('recording', 0);
   })();
 });
 
 btnStop.addEventListener('click', () => {
   void (async () => {
-    await chrome.storage.local.set({ recordingActive: false, recordingPaused: false });
-    await sendToTab({ type: 'STOP_RECORDING' });
+    await setLocal({ recordingActive: false, recordingPaused: false });
     await refresh();
   })();
 });
 
 btnPause.addEventListener('click', () => {
   void (async () => {
-    await chrome.storage.local.set({ recordingPaused: true });
-    await sendToTab({ type: 'PAUSE_RECORDING' });
+    await setLocal({ recordingPaused: true });
     await refresh();
   })();
 });
 
 btnResume.addEventListener('click', () => {
   void (async () => {
-    await chrome.storage.local.set({ recordingPaused: false });
-    await sendToTab({ type: 'RESUME_RECORDING' });
+    await setLocal({ recordingPaused: false });
     await refresh();
   })();
 });
@@ -135,11 +187,13 @@ btnView.addEventListener('click', () => {
 btnClear.addEventListener('click', () => {
   void (async () => {
     await sendToWorker({ type: 'CLEAR_STEPS' });
-    await chrome.storage.local.set({
+    await setLocal({
       recordedSteps: [],
       recordingActive: false,
       recordingPaused: false,
+      lastError: null,
     });
+    hideNotice();
     updateUI('idle', 0);
   })();
 });
@@ -155,21 +209,28 @@ chrome.storage.sync.get({ mcpServerUrl: DEFAULT_MCP_URL }, (data) => {
 });
 
 mcpSave.addEventListener('click', () => {
-  const url = mcpInput.value.trim();
-  if (!url) return;
-  chrome.storage.sync.set({ mcpServerUrl: url }, () => {
-    mcpStatus.textContent = 'Saved!';
+  void (async () => {
+    const url = mcpInput.value.trim();
+    if (!url) return;
+    const written = await setSync({ mcpServerUrl: url });
+    mcpStatus.textContent = written.ok ? 'Saved!' : "Couldn't save";
     setTimeout(() => (mcpStatus.textContent = ''), 2000);
-  });
+  })();
 });
 
 // ── Live updates ─────────────────────────────────────────────────────────────
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
+
+  if ('lastError' in changes) void showLastError();
+
   const relevant = ['recordedSteps', 'recordingActive', 'recordingPaused'];
-  if (!relevant.some((key) => key in changes)) return;
-  void refresh();
+  if (relevant.some((key) => key in changes)) void refresh();
 });
 
-void refresh();
+void (async () => {
+  await refresh();
+  await resolveTarget();
+  await refresh();
+})();

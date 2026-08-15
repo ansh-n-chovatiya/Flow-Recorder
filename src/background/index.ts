@@ -1,42 +1,38 @@
 /**
  * MV3 service worker: screenshot capture, step persistence, badge, MCP export.
  *
- * Behaviour here is a faithful port of the pre-TypeScript worker. The known
- * defects in it — capturing from the focused window rather than the sender's tab,
- * and exceeding Chrome's `captureVisibleTab` rate limit — are addressed in the
- * recording feature module, not in this move.
+ * Every Chrome call goes through `src/chrome/`, so failures arrive as values.
+ * The worker's job is to decide what a failure means for the recording — most
+ * of the time "save the step without an image and tell the user why".
  */
 
 import { annotateScreenshot } from './annotator.js';
+import { bytesInUse, getLocal, getSync, setLocal } from '../chrome/storage.js';
+import { captureVisibleTab } from '../chrome/tabs.js';
 import {
   BADGE_COLOR,
   DEFAULT_MCP_URL,
   MAX_STEPS,
-  SCREENSHOT_QUALITY,
+  PRECAPTURE_TTL_MS,
   SETTLE_DELAY_MS,
   STORAGE_BUDGET,
   WARN_STEPS,
 } from '../shared/constants.js';
+import { flowError, type FlowError } from '../shared/errors.js';
 import type { WorkerRequest } from '../shared/messages.js';
 import type { BoundingBox, DraftStep, Step } from '../shared/types.js';
 
 /** Serialises captures so concurrent clicks never clobber each other's write. */
 let captureQueue: Promise<void> = Promise.resolve();
 
+/**
+ * Screenshots taken on pointerdown, waiting for the click that follows.
+ * Keyed by tab, because two tabs can be mid-interaction at once.
+ */
+const precaptures = new Map<number, { dataUrl: string; at: number }>();
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function getStorage<T = Record<string, unknown>>(keys: string | string[]): Promise<T> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(keys, (items) => resolve(items as T));
-  });
-}
-
-function setStorage(obj: Record<string, unknown>): Promise<void> {
-  return new Promise((resolve) => {
-    chrome.storage.local.set(obj, () => resolve());
-  });
 }
 
 function updateBadge(count: number): void {
@@ -45,16 +41,22 @@ function updateBadge(count: number): void {
 }
 
 /**
- * Capture the visible tab as JPEG. Returns null on failure — a protected page or
- * a rate-limit rejection — so the caller still saves the step, without an image.
+ * Record a failure where the UI can find it. The popup and the viewer both read
+ * `lastError`, so a silent capture or storage failure becomes something the user
+ * can actually see.
  */
-async function captureScreenshot(): Promise<string | null> {
-  try {
-    return await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality: SCREENSHOT_QUALITY });
-  } catch (err) {
-    console.error('FlowSnap: captureVisibleTab failed', err);
-    return null;
-  }
+async function reportError(error: FlowError): Promise<void> {
+  console.warn(`FlowSnap: ${error.code} — ${error.detail ?? error.message}`);
+  await setLocal({ lastError: { ...error, at: Date.now() } });
+}
+
+/** Take the pre-capture for a tab if one is fresh enough to still be true. */
+function claimPrecapture(tabId: number | undefined): string | null {
+  if (tabId == null) return null;
+  const held = precaptures.get(tabId);
+  if (!held) return null;
+  precaptures.delete(tabId);
+  return Date.now() - held.at <= PRECAPTURE_TTL_MS ? held.dataUrl : null;
 }
 
 /** Capture, annotate and persist one step, enforcing the step limit. */
@@ -62,13 +64,21 @@ async function captureAndSave(
   step: DraftStep,
   elementBox: BoundingBox | null,
   dpr: number,
+  sender: chrome.runtime.MessageSender,
 ): Promise<void> {
-  await delay(SETTLE_DELAY_MS);
+  // A pre-capture is already the right frame — waiting would only let the page
+  // navigate further away from the moment being described.
+  const preShot = claimPrecapture(sender.tab?.id);
+  if (!preShot) await delay(SETTLE_DELAY_MS);
 
-  const { recordedSteps = [], recordingActive } = await getStorage<{
-    recordedSteps?: Step[];
-    recordingActive?: boolean;
-  }>(['recordedSteps', 'recordingActive']);
+  const stored = await getLocal(['recordedSteps', 'recordingActive']);
+  if (!stored.ok) {
+    await reportError(stored.error);
+    return;
+  }
+
+  const recordedSteps = (stored.value.recordedSteps ?? []);
+  const recordingActive = Boolean(stored.value.recordingActive);
 
   // Bail if recording stopped while this capture sat in the queue. Without this,
   // every queued capture sees length >= MAX_STEPS and pushes its own duplicate
@@ -85,7 +95,8 @@ async function captureAndSave(
       screenshot: null,
       stepNumber: recordedSteps.length + 1,
     });
-    await setStorage({ recordingActive: false, recordedSteps });
+    const written = await setLocal({ recordingActive: false, recordedSteps });
+    if (!written.ok) await reportError(written.error);
     updateBadge(recordedSteps.length);
     return;
   }
@@ -94,60 +105,59 @@ async function captureAndSave(
     console.warn(`FlowSnap: ${recordedSteps.length} steps — approaching ${MAX_STEPS}-step limit.`);
   }
 
-  try {
-    const dataUrl = await captureScreenshot();
-
-    // `getBytesInUse` avoids re-serialising the whole steps array — up to ~8 MB
-    // of base64 — just to measure it.
-    const bytesInUse = await new Promise<number>((resolve) => {
-      chrome.storage.local.getBytesInUse(null, resolve);
-    });
-    const overBudget = bytesInUse + (dataUrl?.length ?? 0) > STORAGE_BUDGET;
-
-    let screenshot: string | null = null;
-    let screenshotOriginal: string | null = null;
-
-    if (!overBudget && dataUrl) {
-      screenshotOriginal = dataUrl;
-      screenshot = elementBox ? await annotateScreenshot(dataUrl, elementBox, dpr) : dataUrl;
-    } else if (overBudget) {
-      console.warn(
-        'FlowSnap: storage near limit — dropping screenshot for step',
-        recordedSteps.length + 1,
-      );
+  let dataUrl: string | null = preShot;
+  if (!dataUrl) {
+    const captured = await captureVisibleTab(sender.tab?.windowId);
+    if (captured.ok) {
+      dataUrl = captured.value;
+    } else {
+      // A step with no image still carries its selectors, timing and network —
+      // losing the whole step because the screenshot failed would be worse.
+      await reportError(captured.error);
     }
-
-    const saved = {
-      ...step,
-      screenshotOriginal,
-      highlightBox: elementBox,
-      dpr: dpr || 1,
-      screenshot,
-      stepNumber: recordedSteps.length + 1,
-    } as Step;
-
-    recordedSteps.push(saved);
-    await setStorage({ recordedSteps });
-    updateBadge(recordedSteps.length);
-  } catch (err) {
-    console.error('FlowSnap: captureAndSave failed', err);
   }
+
+  // `getBytesInUse` avoids re-serialising the whole steps array — up to ~8 MB of
+  // base64 — just to measure it.
+  const used = await bytesInUse();
+  const overBudget = used + (dataUrl?.length ?? 0) > STORAGE_BUDGET;
+
+  let screenshot: string | null = null;
+  let screenshotOriginal: string | null = null;
+
+  if (dataUrl && !overBudget) {
+    screenshotOriginal = dataUrl;
+    screenshot = elementBox ? await annotateScreenshot(dataUrl, elementBox, dpr) : dataUrl;
+  } else if (overBudget) {
+    await reportError(flowError('STORAGE_QUOTA', `${used} bytes in use`));
+  }
+
+  recordedSteps.push({
+    ...step,
+    screenshotOriginal,
+    highlightBox: elementBox,
+    dpr: dpr || 1,
+    screenshot,
+    stepNumber: recordedSteps.length + 1,
+  } as Step);
+
+  const written = await setLocal({ recordedSteps });
+  if (!written.ok) {
+    await reportError(written.error);
+    return;
+  }
+
+  updateBadge(recordedSteps.length);
 }
 
 // ── MCP auto-export ──────────────────────────────────────────────────────────
 
-function getMcpUrl(): Promise<string> {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get({ mcpServerUrl: DEFAULT_MCP_URL }, (data) => {
-      resolve((data as { mcpServerUrl: string }).mcpServerUrl);
-    });
-  });
-}
-
 async function autoExportToMcp(steps: Step[]): Promise<void> {
-  const id = `flow-${Date.now()}`;
+  const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL, mcpAutoSend: false });
+  if (!settings.ok || !settings.value.mcpAutoSend) return;
+
   const payload = JSON.stringify({
-    id,
+    id: `flow-${Date.now()}`,
     name: `Flow ${new Date().toLocaleString()}`,
     timestamp: Date.now(),
     startUrl: steps[0]?.url,
@@ -155,59 +165,80 @@ async function autoExportToMcp(steps: Step[]): Promise<void> {
   });
 
   try {
-    const res = await fetch(await getMcpUrl(), {
+    const res = await fetch(settings.value.mcpServerUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
     });
-    if (res.ok) {
-      const { id: savedId } = (await res.json()) as { id: string };
-      await setStorage({ lastMcpFlowId: savedId });
-    }
-  } catch {
-    // MCP server not running — the user can still send manually from the viewer.
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { id } = (await res.json()) as { id: string };
+    await setLocal({ lastMcpFlowId: id });
+  } catch (error) {
+    await reportError(flowError('MCP_UNREACHABLE', error instanceof Error ? error.message : error));
   }
 }
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local') return;
+  if (area !== 'local' || !('recordingActive' in changes)) return;
 
-  if ('recordingActive' in changes && changes.recordingActive.newValue === true) {
+  if (changes.recordingActive.newValue === true) {
     void chrome.action.setBadgeText({ text: '0' });
     void chrome.action.setBadgeBackgroundColor({ color: BADGE_COLOR });
+    return;
   }
 
-  if ('recordingActive' in changes && changes.recordingActive.newValue === false) {
-    // Clearing also sets recordingActive false, in the same batch as an empty
-    // recordedSteps — that is a clear, not a finished recording.
-    const isClearing =
-      'recordedSteps' in changes &&
-      Array.isArray(changes.recordedSteps.newValue) &&
-      changes.recordedSteps.newValue.length === 0;
-    if (isClearing) return;
+  // Clearing also sets recordingActive false, in the same batch as an empty
+  // recordedSteps — that is a clear, not a finished recording.
+  const isClearing =
+    'recordedSteps' in changes &&
+    Array.isArray(changes.recordedSteps.newValue) &&
+    changes.recordedSteps.newValue.length === 0;
+  if (isClearing) return;
 
-    void getStorage<{ recordedSteps?: Step[] }>('recordedSteps').then(({ recordedSteps }) => {
-      if (recordedSteps?.length) void autoExportToMcp(recordedSteps);
-    });
-  }
+  void getLocal('recordedSteps').then((stored) => {
+    const steps = stored.ok ? ((stored.value.recordedSteps ?? [])) : [];
+    if (steps.length) void autoExportToMcp(steps);
+  });
 });
 
-chrome.runtime.onMessage.addListener((message: WorkerRequest, _sender, sendResponse) => {
+/** A tab that goes away cannot claim its pre-capture. */
+chrome.tabs.onRemoved.addListener((tabId) => precaptures.delete(tabId));
+
+chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendResponse) => {
   if (!message?.type) return;
 
   switch (message.type) {
+    case 'PRECAPTURE': {
+      const tabId = sender.tab?.id;
+      if (tabId == null) {
+        sendResponse({ ok: false });
+        return true;
+      }
+      void captureVisibleTab(sender.tab?.windowId).then((captured) => {
+        if (captured.ok) precaptures.set(tabId, { dataUrl: captured.value, at: Date.now() });
+        // Respond either way: the page is holding its recording indicator hidden
+        // until this resolves.
+        sendResponse({ ok: captured.ok });
+      });
+      return true;
+    }
+
     case 'CAPTURE_AND_SAVE_STEP': {
       const { step, elementBox, dpr } = message;
       // Enqueue so captures run one at a time. A rejected step is swallowed so
       // one failure cannot break the chain for later steps.
       captureQueue = captureQueue.then(() =>
-        captureAndSave(step, elementBox, dpr).catch((err: unknown) =>
-          console.error('FlowSnap: captureAndSave rejected', err),
+        captureAndSave(step, elementBox, dpr, sender).catch((error: unknown) =>
+          console.error('FlowSnap: captureAndSave rejected', error),
         ),
       );
-      return;
+      // Resolve immediately — the caller only needs to know the request landed,
+      // and waiting for the queue would hold the page's indicator hidden for as
+      // long as the backlog takes.
+      sendResponse({ ok: true });
+      return true;
     }
 
     case 'ANNOTATE_SCREENSHOT': {
@@ -219,19 +250,21 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, _sender, sendRespo
     }
 
     case 'GET_STEPS': {
-      void getStorage<{ recordedSteps?: Step[] }>('recordedSteps').then(({ recordedSteps }) => {
-        sendResponse({ steps: recordedSteps ?? [] });
+      void getLocal('recordedSteps').then((stored) => {
+        sendResponse({ steps: stored.ok ? ((stored.value.recordedSteps ?? [])) : [] });
       });
       return true;
     }
 
     case 'CLEAR_STEPS': {
-      void setStorage({ recordedSteps: [], recordingActive: false, recordingPaused: false }).then(
-        () => {
-          updateBadge(0);
-          sendResponse({ ok: true });
-        },
-      );
+      void setLocal({
+        recordedSteps: [],
+        recordingActive: false,
+        recordingPaused: false,
+      }).then((written) => {
+        updateBadge(0);
+        sendResponse({ ok: written.ok });
+      });
       return true;
     }
 

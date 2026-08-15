@@ -8,9 +8,36 @@ export const WARN_STEPS = 25;
 
 /**
  * How long to wait after an interaction before screenshotting, so the page has
- * painted its response (a menu opening, a field filling).
+ * painted its response (a menu opening, a field filling). Only used when there
+ * is no pre-capture to fall back on — see PRECAPTURE_TTL_MS.
  */
 export const SETTLE_DELAY_MS = 150;
+
+/**
+ * Chrome allows roughly two `captureVisibleTab` calls per second and rejects the
+ * rest. Captures are spaced by this instead of being fired and lost.
+ */
+export const CAPTURE_MIN_INTERVAL_MS = 550;
+
+/**
+ * How long a pre-capture stays usable.
+ *
+ * A click on a link or a submit button navigates before the settle delay
+ * elapses, so the screenshot used to show the *destination* while the step text
+ * described the element that was clicked, with a highlight box positioned for a
+ * layout that no longer existed. For those interactions the screenshot is taken
+ * on pointerdown instead, and claimed by the click that follows.
+ */
+export const PRECAPTURE_TTL_MS = 3000;
+
+/**
+ * How long to wait for a repaint before giving up and capturing anyway.
+ *
+ * The recording indicator is removed from the page before every screenshot, and
+ * the removal has to be painted or the capture still contains it. In a
+ * background tab no frame is ever painted, so the wait needs a ceiling.
+ */
+export const PAINT_TIMEOUT_MS = 50;
 
 /**
  * `chrome.storage.local` allows 10 MB. Screenshots are dropped once usage

@@ -26,6 +26,14 @@ export interface AnnotateScreenshot {
   dpr: number;
 }
 
+/**
+ * Screenshot now and hold it for the click that is about to happen. Sent on
+ * pointerdown for interactions that may navigate.
+ */
+export interface Precapture {
+  type: 'PRECAPTURE';
+}
+
 export interface GetSteps {
   type: 'GET_STEPS';
 }
@@ -34,7 +42,12 @@ export interface ClearSteps {
   type: 'CLEAR_STEPS';
 }
 
-export type WorkerRequest = CaptureAndSaveStep | AnnotateScreenshot | GetSteps | ClearSteps;
+export type WorkerRequest =
+  | CaptureAndSaveStep
+  | Precapture
+  | AnnotateScreenshot
+  | GetSteps
+  | ClearSteps;
 
 export interface AnnotateScreenshotResponse {
   screenshot: string | null;
@@ -49,7 +62,9 @@ export interface OkResponse {
 }
 
 export interface ResponseByType {
-  CAPTURE_AND_SAVE_STEP: void;
+  /** Resolves once the capture is done, so the page can restore its indicator. */
+  CAPTURE_AND_SAVE_STEP: OkResponse;
+  PRECAPTURE: OkResponse;
   ANNOTATE_SCREENSHOT: AnnotateScreenshotResponse;
   GET_STEPS: GetStepsResponse;
   CLEAR_STEPS: OkResponse;
@@ -58,6 +73,7 @@ export interface ResponseByType {
 // ── UI → content script ──────────────────────────────────────────────────────
 
 export type ContentRequest =
+  | { type: 'PING' }
   | { type: 'START_RECORDING' }
   | { type: 'STOP_RECORDING' }
   | { type: 'PAUSE_RECORDING' }
