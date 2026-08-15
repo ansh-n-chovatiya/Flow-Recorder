@@ -1,42 +1,200 @@
 # FlowSnap
 
+**Record a bug in your browser. Hand your AI assistant everything it needs to fix it.**
+
+[![Version](https://img.shields.io/badge/version-2.1.0-6366f1)](CHANGELOG.md)
+![Chrome](https://img.shields.io/badge/chrome-116%2B-4285f4)
+[![MCP server](https://img.shields.io/npm/v/flowsnap-mcp?label=flowsnap-mcp)](https://www.npmjs.com/package/flowsnap-mcp)
+[![Licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
+
 A Chrome extension (MV3) that records what you do in a browser and exports it as
 context an AI coding assistant can actually use: annotated screenshots, the
 selectors for every element touched, and the network and console activity each
 step produced.
 
-Recording starts from the toolbar, on the tab being recorded. Steps are reviewed
-in a full tab and exported as a ZIP, Markdown or JSON — or sent straight to
-Claude Code, which is the point of the whole thing.
+Describing a bug to an assistant loses most of what matters. FlowSnap keeps it.
+
+<p align="center">
+  <img src="docs/demo.gif" width="900"
+       alt="A checkout page failing while FlowSnap records: the form is filled in, the purchase returns a 500, and every step is captured with its screenshot, selectors, console output and network calls.">
+</p>
+
+---
+
+## How it works
+
+1. **Record.** Press Start in the toolbar popup and use the page as you normally
+   would. Every click, keystroke and navigation becomes a step, with a screenshot
+   and the console and network activity it produced.
+2. **Review.** Steps open in a full tab. Rename the flow, annotate a screenshot,
+   redact anything sensitive, drop steps you don't need.
+3. **Hand it over.** Export as ZIP, Markdown or JSON — or press **Send** and let
+   Claude Code read it directly.
+
+## Install
+
+Not on the Chrome Web Store yet. Load it unpacked:
+
+```sh
+git clone https://github.com/ansh-n-chovatiya/Flow-Recorder.git
+cd Flow-Recorder
+npm install
+npm run build
+```
+
+Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked**
+and select the `dist/` directory. Chrome 116 or newer.
+
+Prebuilt ZIPs are attached to each [release](https://github.com/ansh-n-chovatiya/Flow-Recorder/releases)
+if you'd rather not build.
 
 ## Using it with Claude Code
+
+This is the part the rest of it exists for. One command:
 
 ```sh
 claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp
 ```
 
-One command, no clone, no build. `--scope user` registers it for every project
-you open, in both the CLI and the VS Code extension. Record a flow, press
-**Send**, and Claude can read the steps, the console errors, the failed requests
-and their bodies, and a screenshot of each step — from inside the project you're
-trying to fix.
+No clone, no build. `--scope user` registers it for every project you open, in
+both the CLI and the VS Code extension.
 
-The server is published from this repo as
-[`flowsnap-mcp`](https://www.npmjs.com/package/flowsnap-mcp); its own
-[README](mcp-server/README.md) covers the tools, where flows are stored, and what
-happens with several Claude sessions open at once.
+Record a flow, press **Send**, and paste the prompt it puts on your clipboard.
+Claude reads the steps, the console errors, the failed requests and their bodies,
+and a screenshot of each step — from inside the project you're trying to fix.
 
-## Getting started
+<p align="center">
+  <img src="docs/demo-claude.gif" width="1000"
+       alt="Claude Code fetching the recorded flow through the flowsnap MCP server and reading the project files to locate the bug.">
+</p>
+
+### What Claude can call
+
+| Tool | Use it for |
+| --- | --- |
+| `list_flows` | What has been recorded, newest first, with a count of failing steps |
+| `get_flow_errors` | Only the steps that broke — the first call when debugging |
+| `get_flow` | The whole recording: walkthrough, step data, screenshot paths |
+| `get_flow_screenshots` | Images inline, when reading files from disk isn't possible |
+| `get_latest_flow` | The recording you just made |
+
+Screenshots are written to disk and referenced by absolute path. Claude Code
+reads them with its own file tools, one at a time, so a long recording costs
+nothing until a specific image is opened.
+
+### Where flows live
+
+`~/.flowsnap/flows`, one directory per flow:
+
+```
+~/.flowsnap/flows/flow-1755000000000/
+  flow.json          steps, network calls, console output
+  flow.md            readable walkthrough
+  meta.json          index entry
+  screenshots/       step-01.jpg, step-02.jpg, …
+```
+
+Set `FLOWSNAP_DIR` to move them.
+
+### Several Claude sessions at once
+
+The extension POSTs recordings to `127.0.0.1:7734`, and at user scope every
+session starts its own copy of the server. Only the first holds the port; the
+rest serve from the same directory. Flows arrive once and every session sees
+them.
+
+If no session is open, nothing is listening and the send fails. The recording is
+still in the extension's library, so pressing Send again later works.
+
+### When Send doesn't reach Claude
+
+Check the server is actually connected before assuming the extension is at fault:
+
+```sh
+claude mcp list | grep flowsnap
+# flowsnap: npx -y flowsnap-mcp - ✔ Connected
+```
+
+`✘ Failed to connect — CONNECTION_CLOSED` usually means the registration points
+at a path that has since moved. Re-register against the published package:
+
+```sh
+claude mcp remove flowsnap --scope user
+claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp
+```
+
+The failure is quiet from inside a session — Claude reports that no flowsnap
+tools are registered and then tries to find the recording by other means, which
+looks like the recording is missing rather than the server being unreachable.
+
+## What gets captured
+
+| | |
+| --- | --- |
+| **Interactions** | Clicks, text input, `<select>` changes, navigation |
+| **Screenshots** | One per step, with the touched element boxed |
+| **Selectors** | CSS selector, XPath, ARIA label, role, bounding box |
+| **Network** | `fetch` and `XMLHttpRequest` — method, URL, status, response body |
+| **Console** | `console.log`, `warn`, `error`, `info`, `debug` |
+
+Password fields are recorded as bullets, never as text.
+
+Console capture is interception of the `console.*` methods. An uncaught exception
+or an unhandled promise rejection is printed by Chrome without passing through
+them, so it is not recorded — if your app reports errors through a global handler
+that logs, those are captured like anything else.
+
+Console and network activity is attached to the **next** step, since that is when
+a step is written. A failure raised after your last click needs one more
+interaction before you stop recording, or it has nowhere to land.
+
+## Exporting
+
+Three formats from the review tab:
+
+- **ZIP** — screenshots plus the full JSON, for attaching anywhere
+- **Markdown** — a readable walkthrough, for pasting into an issue or a PR
+- **JSON** — the whole flow, for anything that wants to parse it
+
+The annotation editor draws arrows, boxes and text on a screenshot, and its
+redact tool blacks out regions permanently before the flow leaves the machine.
+
+## Settings
+
+Open from the popup's gear. Theme, storage usage, delete-all, and the MCP server
+URL with a **Test connection** button.
+
+**Auto-send is off by default**, and turning it on shows a warning first. It
+ships whole flows — screenshots and captured request bodies — to the local server
+on every stop, and that should be a decision rather than a default.
+
+## Privacy
+
+Everything stays on your machine. Flows live in `chrome.storage.local`; the MCP
+server binds to loopback and writes to your home directory. Nothing is uploaded
+anywhere, and there is no telemetry.
+
+Captured **request and response bodies are not redacted** — only headers are. A
+recorded flow can therefore contain whatever your app sent, including tokens in
+payloads. Use the redact tool before sharing a flow, and be deliberate about
+auto-send.
+
+### Permissions, and why each is needed
+
+| Permission | Why |
+| --- | --- |
+| `activeTab`, `tabs` | Identify the tab being recorded and follow it |
+| `scripting` | Inject the recorder into a tab that predates the extension |
+| `storage`, `unlimitedStorage` | Keep flows locally; screenshots are large |
+| `downloads` | Write the export file you asked for |
+| `<all_urls>` | Record on whatever page has the bug |
+| `http://127.0.0.1:7734/*` | Send flows to the local MCP server |
+
+## Development
 
 ```sh
 npm install
 npm run build      # writes dist/
-```
-
-Then load `dist/` at `chrome://extensions` with Developer mode on. Chrome 116 or
-newer.
-
-```sh
 npm run dev        # rebuild on change
 npm run verify     # typecheck + lint + token guard + tests + all three builds
 npm run package    # a release ZIP in releases/, version-synced from package.json
@@ -44,7 +202,7 @@ npm run package    # a release ZIP in releases/, version-synced from package.jso
 
 `npm run verify` is what CI runs. Run it before pushing.
 
-## Layout
+### Layout
 
 ```
 src/
@@ -73,25 +231,15 @@ Three rules hold the structure together:
   controllers only bind the result to markup. Every state a screen can be in is
   a case in one of those functions, and is covered by a test.
 
-## Storage
-
-Flows live in `chrome.storage.local` on the machine that recorded them. The
-manifest asks for `unlimitedStorage`, so the only ceiling is the disk — see
-[`docs/design/README.md`](docs/design/README.md) for what that changed and why.
-
-Nothing leaves the machine unless you export it or send it. Auto-send to the MCP
-server is off by default and warns before you turn it on, because captured
-request and response **bodies are not redacted** (headers are).
-
-## Design
+### Design
 
 `src/ui/styles/tokens.css` is the only file allowed to name a colour, enforced by
 `npm run lint:tokens`. The rationale, the deliberate departures from the original
-frames, and the design decisions worth knowing before changing a screen are in
+frames, and the decisions worth knowing before changing a screen are in
 [`docs/design/README.md`](docs/design/README.md); the brief they came from is
 [`docs/DESIGN-BRIEF.md`](docs/DESIGN-BRIEF.md).
 
-## Architecture notes
+### Architecture notes
 
 [`AUDIT.md`](AUDIT.md) is the audit of the pre-TypeScript build and the migration
 plan it produced. It is the reference for what each finding was and where it was

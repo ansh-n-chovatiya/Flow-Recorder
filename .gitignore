@@ -10,6 +10,12 @@ flowsnap-flow-*/
 # MCP server recorded flows (generated output, may contain PII)
 mcp-server/flows/
 
+# The marketing take. Not part of the product, and not published: it drives a
+# real browser, spawns servers and records the screen, none of which belongs in
+# a repository people install an extension from. Everything it produces that the
+# README does need — docs/demo.gif — is committed on its own.
+demo/
+
 # OS / editor junk
 .DS_Store
 Thumbs.db
@@ -22,3 +28,4 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
