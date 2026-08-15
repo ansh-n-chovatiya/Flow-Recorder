@@ -133,8 +133,16 @@ export interface FlowMeta {
   errorCount?: number;
 }
 
-/** The payload POSTed to the MCP server. */
+/**
+ * The payload POSTed to the MCP server.
+ *
+ * A wire contract, not an internal shape: the server is published to npm on its
+ * own and updated by `npx`, so a user can be running any server version against
+ * any extension version. `schemaVersion` is what lets the receiving end tell
+ * which one it is looking at.
+ */
 export interface FlowPayload {
+  schemaVersion: number;
   id: string;
   name: string;
   timestamp: number;

@@ -6,6 +6,58 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+Connecting FlowSnap to Claude Code no longer means installing FlowSnap.
+
+### Added
+
+- **The MCP server ships to npm as `flowsnap-mcp`.** One command connects it —
+  `claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp` — with no clone,
+  no build and no path to configure, in the CLI and the VS Code extension alike.
+  It is published from the release tag at the same version as the extension.
+- **`get_flow_errors`** returns only the steps that failed: console errors,
+  failed and 4xx/5xx requests with their bodies, the element involved and the
+  screenshot path. It is the tool to call first when something broke, and it is
+  a fraction of the size of the whole recording.
+- **`schemaVersion` on the POST payload.** The server updates itself through
+  `npx` while the extension is installed by hand, so the two are no longer
+  guaranteed to be the same pair and the wire format needs to say which it is.
+- **`FLOWSNAP_DIR` and `FLOWSNAP_PORT`** override where flows are written and
+  which port receives them.
+
+### Changed
+
+- **Flows are stored in `~/.flowsnap/flows`, not inside the package.** Under
+  `npx` the package directory is a cache that is cleared without warning, which
+  would have taken every recording with it. Existing flows under
+  `mcp-server/flows/` stay where they are; move them across to keep them.
+- **Screenshots are handed over as absolute paths rather than base64.**
+  `get_flow` previously offered every image inline, which at the current
+  500-step limit is tens of megabytes of context for data the caller may not
+  need. Claude Code reads the files itself, one at a time.
+  `get_flow_screenshots` still returns images for callers with no filesystem,
+  capped at eight per call and requiring the steps to be named.
+- **The annotated screenshot is the one written to disk**, not the clean
+  original. The highlight is what says which element was clicked.
+- **Failing to send now says the server is not running and that the flow is
+  saved** — it was a retry being reported as a loss, and it referred to a
+  `npm start` that no longer applies.
+
+### Fixed
+
+- **A second Claude session killed the first one's server.** Every session runs
+  its own copy, all of them bound the same port, and the loser died on an
+  unhandled `EADDRINUSE` — which surfaced exactly when the server became
+  installable across every project. Losing the race is now survivable: one
+  process receives, all of them read the same directory.
+- **Screenshot writes were not awaited**, so `POST /flows` could answer before
+  the images existed and a tool call immediately after would miss them.
+- **`get_flow_screenshots` numbered steps by file index**, mislabelling every
+  image after a step whose capture failed.
+- **Flow ids were concatenated into a path unchecked**, so `../` in an id
+  escaped the flows directory.
+
 ## [2.0.0] — 2026-08-15
 
 The extension was rebuilt. Same idea — record a browser session, hand it to an

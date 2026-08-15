@@ -76,6 +76,16 @@ export const SCHEMA_THRESHOLD = 1024;
 export const DEFAULT_MCP_URL = 'http://127.0.0.1:7734/flows';
 
 /**
+ * The version of the `FlowPayload` wire format.
+ *
+ * Bump when a field the server reads changes meaning or disappears — adding one
+ * is not a bump, since the server ignores what it does not know. The two sides
+ * ship separately (the extension as a zip, the server to npm), so this is the
+ * only thing that tells a server which shape it has been handed.
+ */
+export const FLOW_SCHEMA_VERSION = 1;
+
+/**
  * `localStorage` key holding a copy of the theme preference.
  *
  * `chrome.storage.sync` is the authority, but it is asynchronous and an

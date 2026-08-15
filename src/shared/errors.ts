@@ -44,8 +44,12 @@ const MESSAGES: Record<FlowErrorCode, string> = {
   CAPTURE_RATE_LIMITED:
     'Chrome limits how often extensions can screenshot. Some steps may have no image.',
   INJECTION_FAILED: "FlowSnap couldn't start on this tab. Reload the page and try again.",
+  // Names the likeliest cause rather than the symptom: the server runs inside a
+  // Claude Code session, so "unreachable" almost always means none is open. The
+  // last clause matters — the flow is in the library, so this is a retry, not a
+  // loss, and the old copy left people thinking they had just lost a recording.
   MCP_UNREACHABLE:
-    "Couldn't reach the FlowSnap MCP server. Start it with `npm start` in mcp-server/.",
+    'The FlowSnap MCP server is not running, so nothing was sent. Open Claude Code and try again — this flow is saved.',
 };
 
 /** Coerce whatever Chrome or a `catch` handed us into one readable line. */
