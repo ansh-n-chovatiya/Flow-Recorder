@@ -80,7 +80,14 @@ frames, and the design decisions worth knowing before changing a screen are in
 plan it produced. It is the reference for what each finding was and where it was
 addressed.
 
+## Releases
+
+[`CHANGELOG.md`](CHANGELOG.md) records what changed. Tagging a commit `v2.0.1`
+and pushing the tag builds the extension and attaches a loadable zip to a GitHub
+release — the tag must match `package.json` and `public/manifest.json`, so bump
+with `npm version` rather than by hand.
+
 ## Licence
 
-MIT. IBM Plex is vendored under the SIL Open Font Licence — see
+[MIT](LICENSE). IBM Plex is vendored under the SIL Open Font Licence — see
 `public/fonts/OFL.txt`.
