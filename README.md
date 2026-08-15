@@ -6,8 +6,25 @@ selectors for every element touched, and the network and console activity each
 step produced.
 
 Recording starts from the toolbar, on the tab being recorded. Steps are reviewed
-in a full tab and exported as a ZIP, Markdown or JSON — or posted straight to a
-local MCP server for Claude to read.
+in a full tab and exported as a ZIP, Markdown or JSON — or sent straight to
+Claude Code, which is the point of the whole thing.
+
+## Using it with Claude Code
+
+```sh
+claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp
+```
+
+One command, no clone, no build. `--scope user` registers it for every project
+you open, in both the CLI and the VS Code extension. Record a flow, press
+**Send**, and Claude can read the steps, the console errors, the failed requests
+and their bodies, and a screenshot of each step — from inside the project you're
+trying to fix.
+
+The server is published from this repo as
+[`flowsnap-mcp`](https://www.npmjs.com/package/flowsnap-mcp); its own
+[README](mcp-server/README.md) covers the tools, where flows are stored, and what
+happens with several Claude sessions open at once.
 
 ## Getting started
 
@@ -41,7 +58,7 @@ src/
   shared/       types, errors, constants, messages
 public/         manifest, icons, fonts, content.css — copied verbatim
 scripts/        icon and mark generation, token guard, version sync, packaging
-mcp-server/     the local server flows are posted to
+mcp-server/     published to npm as flowsnap-mcp; not part of the extension build
 ```
 
 Three rules hold the structure together:
@@ -83,9 +100,34 @@ addressed.
 ## Releases
 
 [`CHANGELOG.md`](CHANGELOG.md) records what changed. Tagging a commit `v2.0.1`
-and pushing the tag builds the extension and attaches a loadable zip to a GitHub
-release — the tag must match `package.json` and `public/manifest.json`, so bump
-with `npm version` rather than by hand.
+and pushing the tag builds the extension, attaches a loadable zip to a GitHub
+release, and publishes `flowsnap-mcp` to npm at the same version.
+
+```sh
+npm version patch          # bumps package.json, manifest.json and mcp-server/
+git push origin main --follow-tags
+```
+
+The tag must match all three version files or the workflow refuses to build — a
+server that disagrees with the extension it shipped beside makes "which one do I
+have" unanswerable. `npm version` keeps them in step; editing by hand does not.
+
+### Publishing rights
+
+The release workflow authenticates to npm either way, so switching between them
+is a change on npmjs.com rather than a change to the workflow:
+
+- **`NPM_TOKEN` repository secret.** Required for the first publish — trusted
+  publishing is configured *on* a package, so it cannot create one. A classic
+  Automation token, or a granular token with all-packages write; afterwards,
+  narrow it to `flowsnap-mcp` alone.
+- **Trusted publishing.** Register this repo and `release.yml` as a trusted
+  publisher on the package, then delete the secret. The workflow authenticates
+  with the `id-token` permission it already has, and no long-lived credential
+  exists to leak or rotate.
+
+Either way the tarball carries provenance, which needs the repo and the package
+to both stay public.
 
 ## Licence
 

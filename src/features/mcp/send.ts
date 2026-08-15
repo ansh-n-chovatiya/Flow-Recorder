@@ -9,7 +9,7 @@
 
 import { startUrl } from '../../core/flow/index.js';
 import { getSync } from '../../chrome/storage.js';
-import { DEFAULT_MCP_URL } from '../../shared/constants.js';
+import { DEFAULT_MCP_URL, FLOW_SCHEMA_VERSION } from '../../shared/constants.js';
 import { flowError } from '../../shared/errors.js';
 import { err, ok, type Result } from '../../shared/result.js';
 import type { FlowPayload, Step } from '../../shared/types.js';
@@ -22,6 +22,18 @@ export interface SendResult {
   id: string;
   /** The prompt written to the clipboard, or `null` if the write was refused. */
   prompt: string | null;
+}
+
+/** The body of the POST. Pure, so the wire format is testable without a server. */
+export function buildPayload(id: string, name: string, steps: Step[], at: number): FlowPayload {
+  return {
+    schemaVersion: FLOW_SCHEMA_VERSION,
+    id,
+    name,
+    timestamp: at,
+    startUrl: startUrl(steps),
+    steps,
+  };
 }
 
 /** What to paste into Claude. Pure, so the wording is one place. */
@@ -42,8 +54,8 @@ export async function sendFlow(
   const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL });
   const url = settings.ok ? settings.value.mcpServerUrl : DEFAULT_MCP_URL;
 
-  const first = startUrl(steps);
-  const payload: FlowPayload = { id, name, timestamp: Date.now(), startUrl: first, steps };
+  const payload = buildPayload(id, name, steps, Date.now());
+  const first = payload.startUrl;
 
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
