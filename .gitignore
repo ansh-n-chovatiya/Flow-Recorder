@@ -1,12 +1,24 @@
-# OS
-.DS_Store
+# Build output
+node_modules/
+dist/
+releases/
+*.zip
 
 # Recorded flow exports (generated output, may contain PII)
 flowsnap-flow-*/
-*.zip
 
 # MCP server recorded flows (generated output, may contain PII)
 mcp-server/flows/
 
-# Node
-node_modules/
+# OS / editor junk
+.DS_Store
+Thumbs.db
+._*
+*.swp
+*~
+*.orig
+*.rej
+*.bak
+.idea/
+.vscode/*
+!.vscode/extensions.json

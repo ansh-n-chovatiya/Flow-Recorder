@@ -1,0 +1,302 @@
+/**
+ * What the review screen should show, derived from the flow.
+ *
+ * This is the hardest screen in the product and the one the whole redesign is
+ * for, so every decision it makes is here, pure, and tested — the rail, the
+ * filters, which steps count as failures, when a URL is worth showing, what a
+ * card leads with. tests/review-view.test.ts is the specification; the controller
+ * below it only knows how to put this on screen.
+ */
+
+import { flowHost, formatDelta, stepFailed, worstLevel, worstStatus } from '../../core/flow/index.js';
+import type { StatusClass } from '../../core/flow/index.js';
+import type { ConsoleLevel, RecordingState, Step, StepType } from '../../shared/types.js';
+import { formatDateTime, formatRelative } from '../format.js';
+import type { IconName } from '../icons.js';
+
+/** Which steps the rail and list are showing. */
+export type StepFilter = 'all' | 'click' | 'input' | 'navigate' | 'errors';
+
+export interface ReviewFlow {
+  /** `null` is the recording in progress, which has no id until it is saved. */
+  id: string | null;
+  name: string;
+  steps: Step[];
+  createdAt: number | null;
+}
+
+export interface ReviewInput {
+  /** `null` while the flow is still being read. */
+  flow: ReviewFlow | null;
+  /** True when the route named a flow that is no longer in storage. */
+  missing: boolean;
+  filter: StepFilter;
+  /** Index into the full step list, not into the filtered one. */
+  activeIndex: number | null;
+  recording: RecordingState;
+  now: number;
+}
+
+/** The one icon per step type, used by the rail and the card header alike. */
+export const STEP_ICON: Record<StepType, IconName> = {
+  navigate: 'globe',
+  click: 'mouse-pointer-click',
+  input: 'keyboard',
+  note: 'sticky-note',
+};
+
+export interface RailRow {
+  /** Index into the full step list. */
+  index: number;
+  number: number;
+  type: StepType;
+  icon: IconName;
+  label: string;
+  /** Time since the previous step. `null` for the first step in the flow. */
+  delta: string | null;
+  failed: boolean;
+  active: boolean;
+}
+
+/**
+ * A collapsed disclosure's summary: how many, and the most severe one inside —
+ * so a 500 is visible without expanding anything.
+ */
+export interface DetailSummary<W> {
+  count: number;
+  worst: W;
+}
+
+export interface StepCardView {
+  index: number;
+  number: number;
+  type: StepType;
+  icon: IconName;
+  action: string;
+  delta: string | null;
+  failed: boolean;
+  /**
+   * Why the URL is on the card, or `null` to leave it off. A URL repeated on
+   * every one of thirty cards is noise; a URL that changed is the story.
+   */
+  urlReason: 'started' | 'changed' | null;
+  url: string;
+  title: string | null;
+  value: string | null;
+  screenshot: string | null;
+  /** `null` for a step with no element — a navigation, or a synthesised note. */
+  selectors: { css: string; xpath: string } | null;
+  network: DetailSummary<StatusClass | null> | null;
+  console: DetailSummary<ConsoleLevel | null> | null;
+  notes: string;
+  active: boolean;
+}
+
+export interface FilterChip {
+  id: StepFilter;
+  label: string;
+  count: number;
+  active: boolean;
+  /** A filter that would empty the list is offered but not pressable. */
+  disabled: boolean;
+}
+
+export interface ReviewHeader {
+  name: string;
+  /** The live recording has no stored name to rename. */
+  renameable: boolean;
+  stepCount: number;
+  host: string;
+  when: string;
+}
+
+/** Which block fills the workspace. Exactly one, always. */
+export type ReviewBody = 'loading' | 'missing' | 'empty' | 'no-matches' | 'steps';
+
+export interface ReviewView {
+  body: ReviewBody;
+  header: ReviewHeader | null;
+  /** The flow being reviewed is still being recorded, and will keep changing. */
+  live: boolean;
+  rail: RailRow[];
+  steps: StepCardView[];
+  filters: FilterChip[];
+  failures: number;
+  /** Nothing to export, send or archive when there are no steps. */
+  canExport: boolean;
+  canSave: boolean;
+  canDelete: boolean;
+}
+
+const FILTER_LABEL: Record<StepFilter, string> = {
+  all: 'All',
+  click: 'Clicks',
+  input: 'Inputs',
+  navigate: 'Navigation',
+  errors: 'Errors',
+};
+
+function passes(step: Step, filter: StepFilter): boolean {
+  switch (filter) {
+    case 'all':
+      return true;
+    case 'errors':
+      return stepFailed(step);
+    default:
+      return step.type === filter;
+  }
+}
+
+/**
+ * Time since the previous step **in the flow**, never in the filtered list.
+ *
+ * Filtering to errors and reading `+0.4s` off a step that actually happened
+ * ninety seconds after the one above it would be a lie the user has no way to
+ * catch, so the delta is computed once, against the real neighbour.
+ */
+function deltaFor(steps: Step[], index: number): string | null {
+  if (index === 0) return null;
+
+  const previous = steps[index - 1];
+  if (!previous?.timestamp || !steps[index]?.timestamp) return null;
+
+  return formatDelta(steps[index].timestamp - previous.timestamp) || null;
+}
+
+function urlReason(steps: Step[], index: number): 'started' | 'changed' | null {
+  const url = steps[index]?.url;
+  if (!url) return null;
+  if (index === 0) return 'started';
+  return url === steps[index - 1]?.url ? null : 'changed';
+}
+
+function detail<T, W>(items: T[] | undefined, worst: W): DetailSummary<W> | null {
+  if (!items?.length) return null;
+  return { count: items.length, worst };
+}
+
+function cardView(steps: Step[], index: number, activeIndex: number | null): StepCardView {
+  const step = steps[index];
+
+  return {
+    index,
+    number: index + 1,
+    type: step.type,
+    icon: STEP_ICON[step.type],
+    action: step.action || step.type,
+    delta: deltaFor(steps, index),
+    failed: stepFailed(step),
+    urlReason: urlReason(steps, index),
+    url: step.url ?? '',
+    title: step.title ?? null,
+    value: step.value ?? null,
+    screenshot: step.screenshot ?? null,
+    selectors: step.element
+      ? { css: step.element.cssSelector, xpath: step.element.xpath }
+      : null,
+    network: detail(step.networkCalls, worstStatus(step.networkCalls)),
+    console: detail(step.consoleLogs, worstLevel(step.consoleLogs)),
+    notes: step.notes ?? '',
+    active: index === activeIndex,
+  };
+}
+
+function railRow(steps: Step[], index: number, activeIndex: number | null): RailRow {
+  const step = steps[index];
+
+  return {
+    index,
+    number: index + 1,
+    type: step.type,
+    icon: STEP_ICON[step.type],
+    label: step.action || step.type,
+    delta: deltaFor(steps, index),
+    failed: stepFailed(step),
+    active: index === activeIndex,
+  };
+}
+
+function filterChips(steps: Step[], active: StepFilter): FilterChip[] {
+  const ids: StepFilter[] = ['all', 'click', 'input', 'navigate', 'errors'];
+
+  return ids.map((id) => {
+    const count = steps.filter((step) => passes(step, id)).length;
+    return {
+      id,
+      label: FILTER_LABEL[id],
+      count,
+      active: id === active,
+      // `all` stays pressable even at zero: it is the way back from a filter
+      // that emptied the list.
+      disabled: count === 0 && id !== 'all',
+    };
+  });
+}
+
+function headerView(flow: ReviewFlow, now: number): ReviewHeader {
+  const at = flow.createdAt ?? flow.steps[0]?.timestamp ?? null;
+
+  return {
+    name: flow.name,
+    renameable: flow.id !== null,
+    stepCount: flow.steps.length,
+    host: flowHost(flow.steps),
+    when: at === null ? '' : (formatRelative(now - at) ?? formatDateTime(at, now)),
+  };
+}
+
+const NOTHING: Omit<ReviewView, 'body'> = {
+  header: null,
+  live: false,
+  rail: [],
+  steps: [],
+  filters: [],
+  failures: 0,
+  canExport: false,
+  canSave: false,
+  canDelete: false,
+};
+
+export function deriveReviewView(input: ReviewInput): ReviewView {
+  const { flow, missing, filter, activeIndex, recording, now } = input;
+
+  // Missing outranks loading: a flow that was deleted in another tab never
+  // finishes arriving, and a skeleton that spins forever is the worse lie.
+  if (missing) return { body: 'missing', ...NOTHING };
+  if (flow === null) return { body: 'loading', ...NOTHING };
+
+  const { steps } = flow;
+  const live = flow.id === null && recording !== 'idle';
+  const header = headerView(flow, now);
+  const filters = filterChips(steps, filter);
+  const failures = steps.filter(stepFailed).length;
+
+  if (steps.length === 0) {
+    return {
+      ...NOTHING,
+      body: 'empty',
+      header,
+      live,
+      filters,
+    };
+  }
+
+  const shown = steps
+    .map((_, index) => index)
+    .filter((index) => passes(steps[index], filter));
+
+  return {
+    body: shown.length === 0 ? 'no-matches' : 'steps',
+    header,
+    live,
+    rail: shown.map((index) => railRow(steps, index, activeIndex)),
+    steps: shown.map((index) => cardView(steps, index, activeIndex)),
+    filters,
+    failures,
+    canExport: true,
+    // Only the live recording can be archived; a flow already in the library has
+    // nowhere to be saved to.
+    canSave: flow.id === null,
+    canDelete: flow.id !== null,
+  };
+}
