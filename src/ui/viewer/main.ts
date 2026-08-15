@@ -9,6 +9,7 @@
  */
 
 import { bytesInUse, getLocal } from '../../chrome/storage.js';
+import { flowHost } from '../../core/flow/index.js';
 import {
   CURRENT_FLOW_NAME,
   listFlows,
@@ -19,6 +20,7 @@ import {
   writeCurrent,
 } from '../../features/flows/store.js';
 import type { RecordingState, Step } from '../../shared/types.js';
+import { formatDateTime } from '../format.js';
 import { hydrateIcons } from '../icons.js';
 import { initTheme } from '../theme.js';
 import { showToast } from '../toast.js';
@@ -196,11 +198,10 @@ async function saveCurrent(): Promise<void> {
     return;
   }
 
-  const host = steps[0]?.url ? safeHost(steps[0].url) : '';
   const name = await askName({
     title: 'Save this recording',
     label: 'Flow name',
-    value: host ? `${host} — ${steps.length} steps` : `Recording — ${steps.length} steps`,
+    value: suggestName(steps),
     confirmLabel: 'Save flow',
   });
   if (!name) return;
@@ -218,12 +219,20 @@ async function saveCurrent(): Promise<void> {
   });
 }
 
-function safeHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return '';
-  }
+/**
+ * What to call a recording, before the user renames it.
+ *
+ * The page's own title first: "ChatGPT" says what the flow is about in a way
+ * that "chatgpt.com — 3 steps" does not, and the row underneath already prints
+ * the step count, the host and the size. A name that repeats the line below it
+ * is a name doing no work.
+ */
+function suggestName(steps: Step[]): string {
+  const title = steps.find((step) => step.title?.trim())?.title?.trim();
+  if (title) return title.slice(0, 80);
+
+  const host = flowHost(steps);
+  return host || `Recording — ${formatDateTime(Date.now())}`;
 }
 
 // ── Live updates ─────────────────────────────────────────────────────────────

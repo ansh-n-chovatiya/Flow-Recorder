@@ -213,7 +213,7 @@ describe('storage', () => {
 
   it('summarises the library against the quota', () => {
     expect(deriveLibraryView(input({ usedBytes: 2_621_440 })).summary).toBe(
-      '1 flow · 2.5 MB of 10 MB used',
+      '1 flow · 2.5 MB of 10.0 MB used',
     );
     expect(deriveLibraryView(input({ flows: [flow(), flow({ id: 'x' })] })).summary).toMatch(
       /^2 flows · /,

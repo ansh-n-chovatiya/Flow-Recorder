@@ -57,7 +57,15 @@ const STATUS_TEXT = {
 export function mountLibrary(app: App, onSaveCurrent: () => void): { paint: () => void } {
   // ── Wiring ─────────────────────────────────────────────────────────────
 
-  dom.settings.addEventListener('click', () => void chrome.runtime.openOptionsPage());
+  /**
+   * Navigated in this tab rather than through `openOptionsPage`, which would
+   * open a second one. Both pages are extension pages, so this is an ordinary
+   * link — and it gives the settings page's Back button real history to return
+   * along, landing the user back on the flow they were looking at.
+   */
+  dom.settings.addEventListener('click', () => {
+    location.href = chrome.runtime.getURL('settings.html');
+  });
 
   /**
    * A recording starts from the toolbar popup, which an extension page can only

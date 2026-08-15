@@ -9,7 +9,7 @@
 import { countFailures, flowHost } from '../../core/flow/index.js';
 import { STORAGE_QUOTA, STORAGE_WARN_RATIO } from '../../shared/constants.js';
 import type { FlowMeta, RecordingState, Step, StepType } from '../../shared/types.js';
-import { formatDateTime, formatRelative } from '../format.js';
+import { formatBytes, formatDateTime, formatRelative } from '../format.js';
 
 /**
  * How the list is ordered.
@@ -162,9 +162,9 @@ function summaryLine(count: number, usedBytes: number | null): string {
   const flows = `${count} ${count === 1 ? 'flow' : 'flows'}`;
   if (usedBytes == null) return flows;
 
-  const mb = (usedBytes / 1_048_576).toFixed(1);
-  const quota = (STORAGE_QUOTA / 1_048_576).toFixed(0);
-  return `${flows} · ${mb} MB of ${quota} MB used`;
+  // Through `formatBytes`, so this line and the meter in the footer below it
+  // never disagree about how to write the same two numbers.
+  return `${flows} · ${formatBytes(usedBytes)} of ${formatBytes(STORAGE_QUOTA)} used`;
 }
 
 export function deriveLibraryView(input: LibraryInput): LibraryView {

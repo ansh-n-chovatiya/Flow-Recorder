@@ -30,6 +30,8 @@ function el<T extends HTMLElement = HTMLElement>(id: string): T {
 }
 
 const dom = {
+  back: el<HTMLButtonElement>('back'),
+
   themeOptions: [...document.querySelectorAll<HTMLButtonElement>('[data-theme-option]')],
 
   mcpUrl: el<HTMLInputElement>('mcp-url'),
@@ -51,6 +53,19 @@ const dom = {
 
   version: el('version'),
 };
+
+// ── Leaving ──────────────────────────────────────────────────────────────────
+
+/**
+ * `openOptionsPage` opens settings in a tab of its own, so there is usually no
+ * history to go back to and a plain `history.back()` would do nothing at all.
+ * The library is the destination that always exists; going back is only right
+ * when the user actually navigated here from somewhere.
+ */
+dom.back.addEventListener('click', () => {
+  if (history.length > 1) history.back();
+  else location.href = chrome.runtime.getURL('viewer.html');
+});
 
 // ── Appearance ───────────────────────────────────────────────────────────────
 
