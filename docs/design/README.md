@@ -78,6 +78,11 @@ round.
 
 The whole annotation-editor family carries the wrong product name, so Prompt 7
 is the one screen with no usable frame. Implement it from the prompt text.
+Done in step 8 — see the header comment on `src/ui/viewer/annotate.ts`, which
+lists the five failings of the editor it replaces and where each one is
+addressed. The two quarantined *light* screens were not regenerated either:
+their dark counterparts are correct and light is derivable from the token table,
+so another Stitch round would risk a third palette rather than settle anything.
 
 ## 5. Smaller drift to correct while porting
 
@@ -113,11 +118,42 @@ is the one screen with no usable frame. Implement it from the prompt text.
 | `src/ui/format.ts`, `src/ui/toast.ts` | Shared so a phrase means one thing everywhere. |
 
 `npm run lint:tokens` enforces the rule the whole system rests on: no colour
-outside `tokens.css`. It runs in `verify` and in CI. Two files are exempt and
-both say why in the script — `public/content.css`, which is injected into
-somebody else's document where `tokens.css` does not exist, and `src/viewer.html`,
-which has not been rebuilt yet. **That second entry is the list of remaining
-work; delete from it, never add to it.**
+outside `tokens.css`. It runs in `verify` and in CI. **One file is exempt**, and
+the script says why: `public/content.css`, which is injected into somebody
+else's document where `tokens.css` does not exist and `:root` belongs to the
+page. The `PENDING` list — the surfaces that predated the design system — is
+empty as of step 8.
+
+## What step 8 built
+
+| File | What it is |
+|---|---|
+| `src/viewer.html` | Both views' markup, plus a `<template>` per repeated row. |
+| `src/ui/viewer/viewer.css` | Layout only. Every control is a component. |
+| `route.ts` | `#/` · `#/current` · `#/flow/<id>`, and the id validation the hash needs. |
+| `library-view.ts` · `review-view.ts` · `export-view.ts` | The three pure view models. 45 tests. |
+| `library.ts` · `review.ts` · `export-dialog.ts` · `annotate.ts` | The controllers. They render a view and nothing else. |
+| `annotate-ops.ts` | The annotation model and its geometry, tested apart from the canvas. |
+| `features/flows/store.ts` | The only place saved flows are read or written. |
+| `features/export/download.ts` | The file-writing half of an export, split from the choosing half. |
+| `features/mcp/send.ts` | Send to Claude, lifted out of the viewer. |
+
+Two deliberate departures from the frames, both recorded here so they are
+choices rather than drift:
+
+- **The library's sort control is Recent / Largest / Name**, not the frame's
+  `All / Recent / Largest`. That set is one filter and two sorts wearing the
+  same control — "All" of what, against a list that is already all of them?
+- **There is no Duplicate action.** The review frame's overflow menu offers one.
+  Duplicating doubles the largest thing in a 10 MB store for a use I could not
+  name; it can arrive in step 10 if one turns up.
+
+One departure from the *prompt*: the annotation palette is a fixed set of
+values in `annotate-ops.ts`, not design tokens. That ink is baked into a JPEG
+that leaves the machine, so it must not change when the theme does. The values
+are taken from the system's data colours so the two still look like one product,
+and the swatch borders are tokens — which is what makes the white swatch
+visible on a white panel, as the audit complained it was not.
 
 ## 6. What the export gets right
 

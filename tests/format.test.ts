@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatAgo, formatBytes, formatElapsed, formatRelative } from '../src/ui/format.js';
+import {
+  formatAgo,
+  formatBytes,
+  formatDateTime,
+  formatElapsed,
+  formatRelative,
+} from '../src/ui/format.js';
 
 const MINUTE = 60_000;
 const HOUR = MINUTE * 60;
@@ -69,5 +75,26 @@ describe('formatElapsed', () => {
 
   it('floors rather than rounding, so the timer never shows a second early', () => {
     expect(formatElapsed(1999)).toBe('00:01');
+  });
+});
+
+describe('formatDateTime', () => {
+  it('drops the year while it is still obvious', () => {
+    const at = new Date(2026, 7, 14, 9, 32).getTime();
+    expect(formatDateTime(at, new Date(2026, 11, 1).getTime())).toBe('14 Aug, 09:32');
+  });
+
+  it('brings the year back once it is not', () => {
+    const at = new Date(2025, 0, 3, 18, 5).getTime();
+    expect(formatDateTime(at, new Date(2026, 0, 1).getTime())).toBe('3 Jan 2025, 18:05');
+  });
+
+  it('zero-pads the clock so a mono column does not shift', () => {
+    const at = new Date(2026, 2, 9, 7, 4).getTime();
+    expect(formatDateTime(at, at)).toBe('9 Mar, 07:04');
+  });
+
+  it('returns nothing for a timestamp that is not one', () => {
+    expect(formatDateTime(Number.NaN)).toBe('');
   });
 });

@@ -30,36 +30,7 @@ body {
   flex: none;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-/*
- * The mark is filled from CSS, not from `fill="var(--accent)"` — a custom
- * property in an SVG presentation attribute is not resolved by any shipping
- * browser, and the shape would simply render black.
- */
-.brand__mark {
-  display: block;
-  width: 20px;
-  height: 20px;
-}
-
-.brand__mark-plate {
-  fill: var(--accent);
-}
-
-.brand__mark-bolt {
-  fill: var(--on-accent);
-}
-
-.brand__name {
-  font-size: var(--text-popup-title);
-  font-weight: var(--weight-semibold);
-  letter-spacing: -0.01em;
-}
+/* `.brand` itself is in components.css — the viewer and settings wear it too. */
 
 /* ── Body ───────────────────────────────────────────────────────────────── */
 

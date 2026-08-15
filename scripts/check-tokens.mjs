@@ -30,8 +30,14 @@ const TOKENS = 'src/ui/styles/tokens.css';
  */
 const SCOPED = ['public/content.css'];
 
-/** Not rebuilt on the design system yet. Delete entries; never add them. */
-const PENDING = ['src/viewer.html'];
+/**
+ * Not rebuilt on the design system yet. Delete entries; never add them.
+ *
+ * Empty as of migration step 8 — every surface is on the tokens. It stays here
+ * because the next surface to be added will be written before it is themed, and
+ * the honest way to say so is a named exemption rather than a silent one.
+ */
+const PENDING = [];
 
 /** Anything that names a colour directly. */
 const COLOUR = /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|color-mix|oklch|lab)\(/gi;

@@ -1,0 +1,47 @@
+/**
+ * The state the viewer's two views share, and what they may ask of each other.
+ *
+ * An interface rather than a module of mutable exports: `main.ts` owns the
+ * state and implements this, the view controllers receive it. That is the seam
+ * that keeps `library.ts` from reaching into the review screen's step list, and
+ * it is what the old 1,500-line viewer had none of.
+ */
+
+import type { FlowMeta, RecordingState, Step } from '../../shared/types.js';
+import type { LibrarySort } from './library-view.js';
+import type { ReviewFlow, StepFilter } from './review-view.js';
+import type { Route } from './route.js';
+
+export interface ViewerState {
+  route: Route;
+
+  /** The library index. `null` until it has been read. */
+  flows: FlowMeta[] | null;
+  /** The recording in progress. `null` until it has been read. */
+  current: { steps: Step[]; recording: RecordingState } | null;
+  usedBytes: number | null;
+
+  query: string;
+  sort: LibrarySort;
+
+  /** The flow open in the review screen. `null` while it is being read. */
+  flow: ReviewFlow | null;
+  /** The route named a flow that is not in storage. */
+  missing: boolean;
+  filter: StepFilter;
+  activeIndex: number | null;
+  /** Deletions that Ctrl+Z can still take back, oldest first. */
+  undo: { index: number; step: Step }[];
+}
+
+export interface App {
+  readonly state: ViewerState;
+  /** Change the route, which reloads whatever the new view needs. */
+  navigate(route: Route): void;
+  /** Re-derive and repaint from the state as it stands. */
+  paint(): void;
+  /** Re-read everything the current route needs, then paint. */
+  reload(): Promise<void>;
+  /** Write the open flow's steps back to wherever they came from. */
+  commit(steps: Step[]): Promise<void>;
+}

@@ -8,6 +8,7 @@
 
 import { isStableSelector } from '../selector/index.js';
 import { compactBody } from '../schema/index.js';
+import { flowHost } from '../flow/index.js';
 import type { ExportOptions, Step } from '../../shared/types.js';
 
 /**
@@ -44,18 +45,13 @@ export function urlPath(url: string | undefined): string {
   }
 }
 
-/** Host of the first URL we can parse, shown once in the header. */
-export function flowHost(steps: Step[]): string {
-  for (const step of steps) {
-    if (!step.url) continue;
-    try {
-      return new URL(step.url).host;
-    } catch {
-      // Keep looking — one unparseable URL should not blank the header.
-    }
-  }
-  return '';
-}
+/**
+ * Host of the first URL we can parse, shown once in the header.
+ *
+ * It lives in `core/flow` now that the viewer's library also needs it; re-exported
+ * here because this is where it has always been imported from.
+ */
+export { flowHost };
 
 /**
  * Append one step block. `prevPath` is the previous step's path; the returned

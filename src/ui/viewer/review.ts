@@ -1,0 +1,823 @@
+/**
+ * The review screen: read back what was recorded, correct it, hand it to an AI.
+ *
+ * The composition is ported from the design system's review frame — rail with
+ * elapsed times and error marks, cards that lead with the human-readable action,
+ * replay data behind disclosures. Every decision about *what* to show is in
+ * review-view.ts; this file knows how to put it on screen and how to turn an
+ * edit into a write.
+ */
+
+import { compactBody } from '../../core/schema/index.js';
+import { statusClass } from '../../core/flow/index.js';
+import { sendFlow } from '../../features/mcp/send.js';
+import { deleteFlow, renameFlow } from '../../features/flows/store.js';
+import type { ConsoleEntry, NetworkCall, Step } from '../../shared/types.js';
+import { hydrateIcons } from '../icons.js';
+import { showToast } from '../toast.js';
+import type { App } from './app.js';
+import { openAnnotate } from './annotate.js';
+import { confirm } from './dialogs.js';
+import { clone, el, find, show } from './dom.js';
+import { openExport } from './export-dialog.js';
+import { deriveReviewView, type StepCardView } from './review-view.js';
+import { LIBRARY } from './route.js';
+
+const dom = {
+  view: el('v-review'),
+
+  back: el<HTMLButtonElement>('rv-back'),
+  name: el('rv-name'),
+  rename: el<HTMLButtonElement>('rv-rename'),
+  live: el('rv-live'),
+  meta: el('rv-meta'),
+
+  shortcuts: el<HTMLButtonElement>('rv-shortcuts'),
+  shortcutsDialog: el<HTMLDialogElement>('shortcuts-dialog'),
+  exportButton: el<HTMLButtonElement>('rv-export'),
+  send: el<HTMLButtonElement>('rv-send'),
+  more: el<HTMLButtonElement>('rv-more'),
+  menu: el('rv-menu'),
+  save: el<HTMLButtonElement>('rv-save'),
+  delete: el<HTMLButtonElement>('rv-delete'),
+
+  rail: el('rv-rail'),
+  railCount: el('rail-count'),
+  railList: el<HTMLOListElement>('rail-list'),
+  railFilters: el('rail-filters'),
+
+  loading: el('rv-loading'),
+  list: el('rv-list'),
+  empty: el('rv-empty'),
+  nomatch: el('rv-nomatch'),
+  nomatchBody: el('rv-nomatch-body'),
+  clearFilter: el<HTMLButtonElement>('rv-clear-filter'),
+  missing: el('rv-missing'),
+
+  zoomDialog: el<HTMLDialogElement>('zoom-dialog'),
+  zoomImage: el<HTMLImageElement>('zoom-image'),
+  zoomClose: el<HTMLButtonElement>('zoom-close'),
+};
+
+/** Middle-truncated, so a long path keeps both its host and its last segment. */
+function middleTruncate(text: string, max = 90): string {
+  if (text.length <= max) return text;
+  const head = Math.ceil((max - 1) / 2);
+  return `${text.slice(0, head)}…${text.slice(text.length - (max - head - 1))}`;
+}
+
+function shortPath(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return middleTruncate(parsed.pathname + parsed.search, 70);
+  } catch {
+    return middleTruncate(url, 70);
+  }
+}
+
+async function copy(text: string, what: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast({ message: `${what} copied.`, tone: 'success', durationMs: 2500 });
+  } catch {
+    // Chrome refuses the clipboard when the document is not focused, which is
+    // not something the user did wrong and not something to fail silently over.
+    showToast({ message: `Chrome wouldn’t copy that. Select it and press Ctrl+C.`, tone: 'danger' });
+  }
+}
+
+export function mountReview(app: App, onSaveCurrent: () => void): { paint: () => void } {
+  // ── App bar ────────────────────────────────────────────────────────────
+
+  dom.back.addEventListener('click', () => app.navigate(LIBRARY));
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-back]')) {
+    button.addEventListener('click', () => app.navigate(LIBRARY));
+  }
+
+  dom.shortcuts.addEventListener('click', () => dom.shortcutsDialog.showModal());
+
+  dom.exportButton.addEventListener('click', () => {
+    const { flow } = app.state;
+    if (flow) openExport({ steps: flow.steps, title: flow.name });
+  });
+
+  dom.send.addEventListener('click', () => void send());
+
+  dom.more.addEventListener('click', () => {
+    const open = dom.menu.classList.contains('hidden');
+    show(dom.menu, open);
+    dom.more.setAttribute('aria-expanded', String(open));
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!(event.target as Element).closest('.menu')) closeMenu();
+  });
+
+  function closeMenu(): void {
+    show(dom.menu, false);
+    dom.more.setAttribute('aria-expanded', 'false');
+  }
+
+  dom.save.addEventListener('click', () => {
+    closeMenu();
+    onSaveCurrent();
+  });
+
+  dom.delete.addEventListener('click', () => {
+    closeMenu();
+    void removeFlow();
+  });
+
+  dom.rename.addEventListener('click', () => startRename());
+
+  async function removeFlow(): Promise<void> {
+    const { flow } = app.state;
+    if (!flow?.id) return;
+
+    const agreed = await confirm({
+      title: `Delete “${flow.name}”?`,
+      body: `Its ${flow.steps.length} ${flow.steps.length === 1 ? 'step' : 'steps'} and screenshots will be removed from this device.`,
+      confirmLabel: 'Delete flow',
+    });
+    if (!agreed) return;
+
+    const removed = await deleteFlow(flow.id);
+    if (!removed.ok) {
+      showToast({ message: removed.error.message, tone: 'danger' });
+      return;
+    }
+
+    app.navigate(LIBRARY);
+    showToast({ message: `Deleted “${flow.name}”.` });
+  }
+
+  /** The flow name, edited where it sits rather than in a dialog. */
+  function startRename(): void {
+    const { flow } = app.state;
+    if (!flow?.id) return;
+
+    const input = document.createElement('input');
+    input.className = 'flowhead__input';
+    input.value = flow.name;
+    dom.name.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = (commit: boolean): void => {
+      if (done) return;
+      done = true;
+
+      const name = input.value.trim();
+      input.replaceWith(dom.name);
+
+      if (!commit || !name || name === flow.name) return;
+
+      flow.name = name;
+      dom.name.textContent = name;
+      void renameFlow(flow.id as string, name).then((written) => {
+        if (!written.ok) showToast({ message: written.error.message, tone: 'danger' });
+        else void app.reload();
+      });
+    };
+
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        input.blur();
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+  }
+
+  async function send(): Promise<void> {
+    const { flow } = app.state;
+    if (!flow) return;
+
+    dom.send.disabled = true;
+    const label = find(dom.send, 'span:last-child');
+    const original = label.textContent;
+    label.textContent = 'Sending…';
+
+    const sent = await sendFlow(flow.name, flow.steps, flow.id ?? undefined);
+
+    dom.send.disabled = false;
+    label.textContent = original;
+
+    if (!sent.ok) {
+      showToast({ message: sent.error.message, tone: 'danger', durationMs: 8000 });
+      return;
+    }
+
+    showToast({
+      message: sent.value.prompt
+        ? 'Flow sent. The prompt is on your clipboard — paste it into Claude.'
+        : `Flow sent as ${sent.value.id}. Chrome refused the clipboard, so ask Claude for that id.`,
+      tone: 'success',
+      durationMs: 8000,
+    });
+  }
+
+  // ── Steps ──────────────────────────────────────────────────────────────
+
+  function setActive(index: number | null): void {
+    app.state.activeIndex = index;
+    // Moving the highlight is not a reason to rebuild thirty cards and re-decode
+    // their screenshots, which is visible as a flash on a long flow.
+    markActive();
+
+    if (index === null) return;
+    document
+      .querySelector(`.step[data-index="${index}"]`)
+      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  /**
+   * `repaint` is false for an edit that changes one card's own text — the DOM is
+   * already correct, and rebuilding the list under a textarea the user has just
+   * left would throw away the scroll position for nothing.
+   */
+  async function editSteps(mutate: (steps: Step[]) => Step[], repaint = true): Promise<void> {
+    const { flow } = app.state;
+    if (!flow) return;
+
+    flow.steps = mutate(flow.steps.slice());
+    if (repaint) app.paint();
+    await app.commit(flow.steps);
+  }
+
+  function deleteStep(index: number): void {
+    const { flow } = app.state;
+    const step = flow?.steps[index];
+    if (!flow || !step) return;
+
+    const entry = { index, step };
+    app.state.undo.push(entry);
+
+    void editSteps((steps) => {
+      steps.splice(index, 1);
+      return steps;
+    });
+
+    showToast({
+      message: `Step ${index + 1} deleted.`,
+      // This toast's own deletion, not whichever was most recent: deleting two
+      // steps and undoing the older toast must not restore the newer step.
+      undo: () => undoDelete(entry),
+    });
+  }
+
+  function undoDelete(entry?: { index: number; step: Step }): void {
+    const { undo } = app.state;
+    const target = entry ?? undo[undo.length - 1];
+    if (!target) return;
+
+    const at = undo.indexOf(target);
+    if (at === -1) return;
+    undo.splice(at, 1);
+
+    void editSteps((steps) => {
+      steps.splice(Math.min(target.index, steps.length), 0, target.step);
+      return steps;
+    });
+  }
+
+  function buildDetailBody(container: HTMLElement, build: () => void): void {
+    // Built on first open. Thirty steps' worth of request panels rendered up
+    // front is what made the old viewer slow to show anything at all.
+    let built = false;
+    const details = container.closest('details');
+    details?.addEventListener('toggle', () => {
+      if (!details.open || built) return;
+      built = true;
+      build();
+    });
+  }
+
+  function buildBodyPanel(headers: Record<string, string>, body: string | null): HTMLElement {
+    const panel = document.createElement('div');
+    panel.className = 'call__panel';
+
+    const entries = Object.entries(headers ?? {});
+    if (entries.length === 0 && !body) {
+      const empty = document.createElement('p');
+      empty.className = 'meta';
+      empty.textContent = 'Nothing captured.';
+      panel.append(empty);
+      return panel;
+    }
+
+    if (entries.length > 0) {
+      const label = document.createElement('p');
+      label.className = 'label';
+      label.textContent = 'Headers';
+
+      const grid = document.createElement('div');
+      grid.className = 'headers';
+      for (const [key, value] of entries) {
+        const keyCell = document.createElement('span');
+        keyCell.className = 'headers__key';
+        keyCell.textContent = key;
+
+        const valueCell = document.createElement('span');
+        valueCell.className = 'headers__value';
+        valueCell.textContent = value;
+
+        grid.append(keyCell, valueCell);
+      }
+
+      panel.append(label, grid);
+    }
+
+    if (body) {
+      const label = document.createElement('p');
+      label.className = 'label';
+      label.textContent = 'Body';
+
+      const compact = compactBody(body) ?? body;
+      const pre = document.createElement('pre');
+      pre.className = 'body';
+      pre.textContent = compact;
+
+      panel.append(label);
+
+      // A compacted body is an inferred schema, not the payload. Saying which
+      // one is on screen matters when the answer decides whether a bug is real.
+      if (compact !== body) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'btn btn--ghost btn--compact';
+        toggle.textContent = 'Show raw';
+
+        let raw = false;
+        toggle.addEventListener('click', () => {
+          raw = !raw;
+          pre.textContent = raw ? body : compact;
+          toggle.textContent = raw ? 'Show schema' : 'Show raw';
+        });
+
+        panel.append(toggle);
+      }
+
+      panel.append(pre);
+    }
+
+    return panel;
+  }
+
+  function buildCall(call: NetworkCall): HTMLElement {
+    const node = clone('tpl-call');
+    const method = (call.method || 'GET').toUpperCase();
+    const band = statusClass(call.status);
+
+    const methodChip = find(node, '.call__method');
+    methodChip.dataset.method = method;
+    methodChip.textContent = method;
+
+    const url = find(node, '.call__url');
+    url.textContent = shortPath(call.url ?? '');
+    url.title = call.url ?? '';
+
+    const status = find(node, '.call__status');
+    status.dataset.status = band;
+    status.textContent = call.status === null ? 'ERR' : String(call.status);
+
+    find(node, '.call__ms').textContent = `${call.durationMs || 0}ms`;
+
+    const panels = find(node, '.call__panels');
+    const request = buildBodyPanel(call.requestHeaders, call.requestBody);
+    request.dataset.panel = 'request';
+    const response = buildBodyPanel(call.responseHeaders, call.responseBody);
+    response.dataset.panel = 'response';
+    // The response is what someone opened the row to read.
+    response.dataset.active = 'true';
+    panels.append(request, response);
+
+    const tabs = [...node.querySelectorAll<HTMLButtonElement>('.call__tab')];
+    const activate = (which: string): void => {
+      for (const tab of tabs) tab.setAttribute('aria-selected', String(tab.dataset.panel === which));
+      for (const panel of [request, response]) {
+        panel.dataset.active = String(panel.dataset.panel === which);
+      }
+    };
+    activate('response');
+    for (const tab of tabs) tab.addEventListener('click', () => activate(tab.dataset.panel ?? ''));
+
+    find(node, '.call__row').addEventListener('click', () => {
+      const open = node.dataset.open !== 'true';
+      node.dataset.open = String(open);
+      show(panels, open);
+    });
+
+    hydrateIcons(node);
+    return node;
+  }
+
+  function buildLog(entry: ConsoleEntry): HTMLElement {
+    const node = clone('tpl-log');
+    node.dataset.level = entry.level;
+
+    const level = find(node, '.log__level');
+    level.dataset.level = entry.level;
+    level.textContent = entry.level;
+
+    find(node, '.log__text').textContent = entry.args.join(' ');
+    find(node, '.log__time').textContent = entry.timestamp
+      ? new Date(entry.timestamp).toLocaleTimeString()
+      : '';
+
+    return node;
+  }
+
+  function buildCard(card: StepCardView, step: Step): HTMLElement {
+    const node = clone('tpl-step');
+    node.dataset.index = String(card.index);
+    node.dataset.failed = String(card.failed);
+    node.dataset.active = String(card.active);
+
+    find(node, '.step__num').textContent = String(card.number);
+
+    const type = find(node, '.step__type');
+    type.dataset.step = card.type;
+    type.textContent = card.type;
+
+    const action = find(node, '.step__action');
+    action.textContent = card.action;
+    action.title = 'Click to edit';
+    action.addEventListener('click', () => startTitleEdit(action, card.index, card.action));
+
+    const delta = find(node, '.step__delta');
+    if (card.delta) delta.textContent = card.delta;
+    else delta.remove();
+
+    const title = find(node, '.step__title');
+    if (card.title) title.textContent = card.title;
+    else title.remove();
+
+    // ── URL ────────────────────────────────────────────────────────────
+    const urlRow = find(node, '.step__url');
+    if (card.urlReason === null) {
+      urlRow.remove();
+    } else {
+      find(urlRow, '.step__url-label').textContent =
+        card.urlReason === 'started' ? 'Started at' : 'Page changed';
+      const text = find(urlRow, '.step__url-text');
+      text.textContent = middleTruncate(card.url);
+      text.title = card.url;
+      find(urlRow, '[data-action="copy-url"]').addEventListener('click', () => {
+        void copy(card.url, 'URL');
+      });
+    }
+
+    const value = find(node, '.step__value');
+    if (card.value) find(value, '.step__value-text').textContent = card.value;
+    else value.remove();
+
+    // ── Screenshot ─────────────────────────────────────────────────────
+    const shot = find(node, '.shot');
+    if (card.screenshot) {
+      const image = find<HTMLImageElement>(shot, '.shot__image');
+      image.src = card.screenshot;
+      image.alt = `Screenshot for step ${card.number}`;
+      find(shot, '[data-action="zoom"]').addEventListener('click', () => {
+        dom.zoomImage.src = card.screenshot as string;
+        dom.zoomImage.alt = `Screenshot for step ${card.number}`;
+        dom.zoomDialog.showModal();
+      });
+    } else {
+      shot.remove();
+    }
+
+    const annotate = find(node, '[data-action="annotate"]');
+    if (card.screenshot ?? step.screenshotOriginal) {
+      annotate.addEventListener('click', () => {
+        openAnnotate({
+          step,
+          number: card.number,
+          onSave: (screenshot) => {
+            void editSteps((steps) => {
+              steps[card.index] = { ...steps[card.index], screenshot };
+              return steps;
+            });
+          },
+        });
+      });
+    } else {
+      annotate.remove();
+    }
+
+    find(node, '[data-action="delete"]').addEventListener('click', () => deleteStep(card.index));
+
+    // ── Selectors ──────────────────────────────────────────────────────
+    const selectors = find(node, '.detail--selectors');
+    if (card.selectors) {
+      const { css, xpath } = card.selectors;
+      const [cssRow, xpathRow] = [...selectors.querySelectorAll<HTMLElement>('.selector')];
+
+      find(cssRow, '.selector__value').textContent = css;
+      find(cssRow, '[data-action="copy-css"]').addEventListener('click', () => {
+        void copy(css, 'CSS selector');
+      });
+
+      const xpathValue = find(xpathRow, '.selector__value');
+      xpathValue.textContent = xpath;
+      // Clamped to two lines, expandable in place. In the build being replaced
+      // this ran to three lines and was the largest thing on the card.
+      xpathValue.addEventListener('click', () => {
+        xpathValue.dataset.expanded = xpathValue.dataset.expanded === 'true' ? 'false' : 'true';
+      });
+      find(xpathRow, '[data-action="copy-xpath"]').addEventListener('click', () => {
+        void copy(xpath, 'XPath');
+      });
+    } else {
+      selectors.remove();
+    }
+
+    // ── Network and console ────────────────────────────────────────────
+    const network = find(node, '.detail--network');
+    if (card.network) {
+      find(network, '.detail__count').textContent = String(card.network.count);
+      const worst = find(network, '.detail__worst');
+      if (card.network.worst && card.network.worst !== '2xx') {
+        worst.dataset.status = card.network.worst;
+        worst.textContent = card.network.worst;
+      } else {
+        worst.remove();
+      }
+
+      const body = find(network, '.detail__body');
+      buildDetailBody(body, () => {
+        body.append(...(step.networkCalls ?? []).map(buildCall));
+      });
+    } else {
+      network.remove();
+    }
+
+    const console_ = find(node, '.detail--console');
+    if (card.console) {
+      find(console_, '.detail__count').textContent = String(card.console.count);
+      const worst = find(console_, '.detail__worst');
+      if (card.console.worst === 'error' || card.console.worst === 'warn') {
+        worst.dataset.level = card.console.worst;
+        worst.textContent = card.console.worst;
+      } else {
+        worst.remove();
+      }
+
+      const body = find(console_, '.detail__body');
+      buildDetailBody(body, () => {
+        body.append(...(step.consoleLogs ?? []).map(buildLog));
+      });
+    } else {
+      console_.remove();
+    }
+
+    // ── Notes ──────────────────────────────────────────────────────────
+    const notes = find<HTMLTextAreaElement>(node, '.step__notes');
+    notes.value = card.notes;
+    notes.addEventListener('blur', () => {
+      if (notes.value === card.notes) return;
+      void editSteps((steps) => {
+        steps[card.index] = { ...steps[card.index], notes: notes.value };
+        return steps;
+      }, false);
+    });
+
+    node.addEventListener('focusin', () => {
+      app.state.activeIndex = card.index;
+      markActive();
+    });
+
+    hydrateIcons(node);
+    return node;
+  }
+
+  function startTitleEdit(action: HTMLElement, index: number, current: string): void {
+    const input = document.createElement('input');
+    input.className = 'step__action-input';
+    input.value = current;
+    action.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = (commit: boolean): void => {
+      if (done) return;
+      done = true;
+
+      const next = input.value.trim();
+      input.replaceWith(action);
+
+      if (!commit || !next || next === current) return;
+      action.textContent = next;
+      void editSteps((steps) => {
+        steps[index] = { ...steps[index], action: next };
+        return steps;
+      }, false);
+    };
+
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        input.blur();
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+  }
+
+  /** Move the highlight without rebuilding thirty cards and their images. */
+  function markActive(): void {
+    const { activeIndex } = app.state;
+
+    for (const card of document.querySelectorAll<HTMLElement>('.step[data-index]')) {
+      card.dataset.active = String(Number(card.dataset.index) === activeIndex);
+    }
+    for (const row of dom.railList.querySelectorAll<HTMLElement>('.rail-row')) {
+      row.dataset.active = String(Number(row.dataset.index) === activeIndex);
+    }
+  }
+
+  // ── Keyboard ───────────────────────────────────────────────────────────
+
+  document.addEventListener('keydown', (event) => {
+    if (app.state.route.view !== 'review') return;
+
+    // A modal owns the keyboard while it is open. Without this, J and K move the
+    // selection on the page behind the annotation editor, and Escape clears the
+    // filter on the way out of a dialog.
+    if (document.querySelector('dialog[open]')) return;
+
+    const target = event.target as HTMLElement;
+    const typing =
+      target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !typing) {
+      event.preventDefault();
+      undoDelete();
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'e') {
+      event.preventDefault();
+      const { flow } = app.state;
+      if (flow) openExport({ steps: flow.steps, title: flow.name });
+      return;
+    }
+
+    if (typing || event.ctrlKey || event.metaKey || event.altKey) return;
+
+    const shown = [...document.querySelectorAll<HTMLElement>('.step[data-index]')].map((card) =>
+      Number(card.dataset.index),
+    );
+    const at = app.state.activeIndex === null ? -1 : shown.indexOf(app.state.activeIndex);
+
+    if (event.key === 'j' || event.key === 'J') {
+      event.preventDefault();
+      setActive(shown[Math.min(at + 1, shown.length - 1)] ?? null);
+      return;
+    }
+
+    if (event.key === 'k' || event.key === 'K') {
+      event.preventDefault();
+      setActive(shown[Math.max(at - 1, 0)] ?? null);
+      return;
+    }
+
+    // Delete, never Backspace — Backspace is muscle memory for "back".
+    if (event.key === 'Delete' && app.state.activeIndex !== null) {
+      event.preventDefault();
+      deleteStep(app.state.activeIndex);
+      return;
+    }
+
+    if ((event.key === 'e' || event.key === 'E') && app.state.activeIndex !== null) {
+      event.preventDefault();
+      document
+        .querySelector<HTMLButtonElement>(
+          `.step[data-index="${app.state.activeIndex}"] [data-action="annotate"]`,
+        )
+        ?.click();
+      return;
+    }
+
+    if (event.key === 'Escape' && app.state.filter !== 'all') {
+      app.state.filter = 'all';
+      app.paint();
+    }
+  });
+
+  dom.zoomClose.addEventListener('click', () => dom.zoomDialog.close());
+  dom.clearFilter.addEventListener('click', () => {
+    app.state.filter = 'all';
+    app.paint();
+  });
+
+  // ── Painting ───────────────────────────────────────────────────────────
+
+  function paint(): void {
+    const view = deriveReviewView({
+      flow: app.state.flow,
+      missing: app.state.missing,
+      filter: app.state.filter,
+      activeIndex: app.state.activeIndex,
+      recording: app.state.current?.recording ?? 'idle',
+      now: Date.now(),
+    });
+
+    if (view.header) {
+      dom.name.textContent = view.header.name;
+      show(dom.rename, view.header.renameable);
+
+      const parts = [`${view.header.stepCount} ${view.header.stepCount === 1 ? 'step' : 'steps'}`];
+      if (view.header.host) parts.push(view.header.host);
+      if (view.header.when) parts.push(view.header.when);
+      dom.meta.textContent = parts.join(' · ');
+    } else {
+      dom.name.textContent = '';
+      dom.meta.textContent = '';
+      show(dom.rename, false);
+    }
+
+    show(dom.live, view.live);
+
+    dom.exportButton.disabled = !view.canExport;
+    dom.send.disabled = !view.canExport;
+    dom.save.disabled = !view.canSave;
+    dom.delete.disabled = !view.canDelete;
+
+    show(dom.loading, view.body === 'loading');
+    show(dom.list, view.body === 'steps');
+    show(dom.empty, view.body === 'empty');
+    show(dom.nomatch, view.body === 'no-matches');
+    show(dom.missing, view.body === 'missing');
+    show(dom.rail, view.body === 'steps' || view.body === 'no-matches');
+
+    dom.railCount.textContent = view.header ? `(${view.header.stepCount})` : '';
+
+    // ── Filters ────────────────────────────────────────────────────────
+    dom.railFilters.replaceChildren(
+      ...view.filters.map((chip) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'filter';
+        button.dataset.filter = chip.id;
+        button.setAttribute('aria-pressed', String(chip.active));
+        button.disabled = chip.disabled;
+        button.textContent = chip.count > 0 ? `${chip.label} ${chip.count}` : chip.label;
+        button.addEventListener('click', () => {
+          app.state.filter = chip.id;
+          app.paint();
+        });
+        return button;
+      }),
+    );
+
+    if (view.body === 'no-matches') {
+      const label = view.filters.find((chip) => chip.active)?.label ?? '';
+      dom.nomatchBody.textContent = `Nothing in this flow matches “${label}”.`;
+    }
+
+    // ── Rail ───────────────────────────────────────────────────────────
+    dom.railList.replaceChildren(
+      ...view.rail.map((row) => {
+        const node = clone('tpl-rail-row');
+        node.dataset.index = String(row.index);
+        node.dataset.type = row.type;
+        node.dataset.active = String(row.active);
+
+        find(node, '.rail-row__num').textContent = String(row.number);
+        find(node, '.rail-row__icon').dataset.icon = row.icon;
+        find(node, '.rail-row__label').textContent = row.label;
+        find(node, '.rail-row__delta').textContent = row.delta ?? '';
+
+        const fail = find(node, '.rail-row__fail');
+        if (!row.failed) fail.remove();
+
+        const button = find(node, '.rail-row__button');
+        button.setAttribute('title', row.label);
+        button.addEventListener('click', () => setActive(row.index));
+
+        hydrateIcons(node);
+        return node;
+      }),
+    );
+
+    // ── Cards ──────────────────────────────────────────────────────────
+    const steps = app.state.flow?.steps ?? [];
+    dom.list.replaceChildren(...view.steps.map((card) => buildCard(card, steps[card.index])));
+  }
+
+  return { paint };
+}
+
+export function showReview(visible: boolean): void {
+  show(dom.view, visible);
+}

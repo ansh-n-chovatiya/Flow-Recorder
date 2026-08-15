@@ -51,6 +51,28 @@ export function formatAgo(ageMs: number): string {
   return `${Math.floor(ageMs / HOUR)}h ago`;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * An absolute moment, for anything `formatRelative` has given up on: `14 Aug,
+ * 09:32`, and `14 Aug 2025, 09:32` once the year stops being obvious.
+ *
+ * Deliberately not `toLocaleString`, which returns a different string on every
+ * machine and would put a slash-heavy US date into a mono column sized for this
+ * one. The clock is local; only the shape is fixed.
+ */
+export function formatDateTime(timestamp: number, now = Date.now()): string {
+  const at = new Date(timestamp);
+  if (Number.isNaN(at.getTime())) return '';
+
+  const day = at.getDate();
+  const month = MONTHS[at.getMonth()];
+  const year = at.getFullYear() === new Date(now).getFullYear() ? '' : ` ${at.getFullYear()}`;
+  const time = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+
+  return `${day} ${month}${year}, ${time}`;
+}
+
 /**
  * A running timer: `00:47`, `12:05`, `1:02:05`. Minutes stay zero-padded so the
  * digits do not shift width as it counts — the tabular-figures rule in CSS only

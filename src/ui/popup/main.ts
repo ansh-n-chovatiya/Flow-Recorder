@@ -361,15 +361,15 @@ dom.resume.addEventListener('click', () => {
   })();
 });
 
+/**
+ * The two buttons now go to two places — the viewer split into Library and
+ * Review in step 8 (structural decision A). "Open flow" lands on the recording
+ * in progress; "Library" lands on the list.
+ */
 dom.view.addEventListener('click', () => {
-  void chrome.tabs.create({ url: chrome.runtime.getURL('viewer.html') });
+  void chrome.tabs.create({ url: chrome.runtime.getURL('viewer.html#/current') });
 });
 
-/**
- * Both of these open the viewer today. They separate once the viewer splits into
- * Library and Review (structural decision A) — no route is invented here in the
- * meantime, because a hash nothing reads is a hash nobody maintains.
- */
 dom.library.addEventListener('click', () => {
   void chrome.tabs.create({ url: chrome.runtime.getURL('viewer.html') });
 });

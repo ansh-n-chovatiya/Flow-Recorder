@@ -39,6 +39,46 @@ const ICONS = {
   'folder-open': 'the flow library',
   'hard-drive': 'storage usage',
   'loader-circle': 'work in progress',
+
+  // Viewer chrome
+  'arrow-left': 'back to the library',
+  search: 'filter the library',
+  download: 'export a flow',
+  pencil: 'rename a flow',
+  sparkles: 'send a flow to Claude',
+  ellipsis: 'the overflow menu',
+  copy: 'copy a selector or URL',
+  'folder-plus': 'save the current recording to the library',
+  'circle-help': 'the keyboard shortcut sheet',
+  check: 'a chosen option',
+
+  // Step types, in the rail and on the card
+  globe: 'a navigate step',
+  'mouse-pointer-click': 'a click step',
+  keyboard: 'an input step',
+  'sticky-note': 'a note step',
+  'corner-down-right': 'the page-changed marker',
+
+  // Screenshots
+  image: 'annotate a screenshot',
+  'maximize-2': 'open a screenshot full size',
+
+  // Export formats
+  'file-archive': 'the ZIP export',
+  'file-text': 'the Markdown export',
+  braces: 'the JSON export',
+
+  // Annotation editor
+  'mouse-pointer': 'the select tool',
+  'pen-tool': 'the freehand pen tool',
+  circle: 'the ellipse tool',
+  highlighter: 'the highlight tool',
+  type: 'the text tool',
+  'eye-off': 'the redact tool — pixelates a region',
+  'undo-2': 'undo an annotation',
+  'redo-2': 'redo an annotation',
+  minus: 'zoom out',
+  plus: 'zoom in',
 };
 
 /** Pull the drawing out of the file and drop lucide's own presentation. */

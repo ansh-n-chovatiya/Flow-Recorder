@@ -106,12 +106,31 @@ export type Step = ClickStep | InputStep | NavigateStep | NoteStep;
 /** A step being built by the content script, before the worker attaches an image. */
 export type DraftStep = Omit<Step, 'stepNumber' | 'screenshot' | 'screenshotOriginal'>;
 
-/** Metadata for one archived flow, listed without loading its steps. */
+/**
+ * Metadata for one archived flow, listed without loading its steps.
+ *
+ * Everything below `stepCount` is optional and derived at save time. The library
+ * needs a host, a size and a sense of what is in a flow to be worth looking at,
+ * and loading every flow's steps to find out would defeat the point of an index —
+ * a 10-flow library would decode a hundred screenshots to draw a list. Optional
+ * because flows saved by an earlier build do not have them, and a list that
+ * refuses to render an old flow is worse than one that shows it plainly.
+ */
 export interface FlowMeta {
   id: string;
   name: string;
   createdAt: number;
   stepCount: number;
+  /** Host of the first URL in the flow. */
+  host?: string;
+  /** Approximate bytes the flow occupies in storage. */
+  bytes?: number;
+  /** A small JPEG of the first screenshot, for the list row. */
+  thumbnail?: string | null;
+  /** How many steps of each type, for the list row's chips. */
+  counts?: Partial<Record<StepType, number>>;
+  /** Steps carrying a console error or a 4xx/5xx response. */
+  errorCount?: number;
 }
 
 /** The payload POSTed to the MCP server. */

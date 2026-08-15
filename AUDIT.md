@@ -397,11 +397,11 @@ Where every existing line goes. Nothing is deleted without a destination or a re
 | `lib/exporter.js:85–275` | `core/export/markdown.ts`, `json.ts` | The two Markdown functions merge into one with an image-reference strategy parameter (D4). |
 | `lib/zip.js` | `core/export/zip.ts` | Straight port. |
 | `popup/*` | `ui/popup/` | Rebuilt against the session state machine, with `blocked` and `error` views that do not exist today (C5). |
-| `viewer.js:207–451` | `ui/viewer/components/step-card/` | Split by concern: header, meta, screenshot, network, console, notes. |
-| `viewer.js:568–901` | `ui/viewer/components/image-editor/` | Tools separated from canvas plumbing; the op renderer is pure and testable. |
-| `viewer.js:1048–1177` | `features/flows/repository.ts` | Becomes the flow store, with quota handling, rename, duplicate, and writes that actually persist in viewing mode (F7). |
-| `viewer.js:903–1046` | `features/export/` + `ui/viewer/views/export/` | Option resolution splits from the download mechanism. |
-| `viewer.html` CSS | `ui/styles/` | Replaced wholesale by the Stitch design system; this is where phases 4–6 land. |
+| `viewer.js:207–451` | `viewer.html` `<template>` + `ui/viewer/review.ts` | ✅ Step 8. The card's *structure* is a template in the markup and its *content* is `deriveReviewView`; a components directory would have been a third place to look for the same card. |
+| `viewer.js:568–901` | `ui/viewer/annotate.ts` + `annotate-ops.ts` | ✅ Step 8. Tools separated from canvas plumbing; the op model and its geometry are pure and tested, Redact has its own group, and the editor is a modal rather than inline. |
+| `viewer.js:1048–1177` | `features/flows/store.ts` | ✅ Step 8. Quota handling, rename, delete-with-undo, and writes that actually persist in viewing mode (F7). No duplicate — see the note under the migration order. |
+| `viewer.js:903–1046` | `features/export/` + `ui/viewer/export-dialog.ts` | ✅ Step 8. What an export contains (`export-view.ts`, pure) splits from how it reaches disk (`download.ts`), and the three format buttons collapse into one dialog (decision B). |
+| `viewer.html` CSS | `ui/styles/` + `ui/viewer/viewer.css` | ✅ Steps 6–8. 950 lines of hardcoded hex replaced by tokens and components; `npm run lint:tokens` has no pending files. |
 | `styles/overlay.css` | `content/indicator.css` | Retheme against tokens. |
 | `mcp-server/server.js:30–63` | *(deleted)* | The server consumes `flow.md` produced by `core/export`; one dialect, not two (D1). |
 | `package-lock.json`, `README.md` | *(deleted / rewritten)* | See inventory. |
@@ -427,11 +427,11 @@ Each step leaves a loadable extension. No step mixes a move with a behaviour cha
 | 5 | Build `features/recording` and `features/flows`. Fix C1–C5 here, with the old UI still attached. | Manual matrix: two tabs, navigation-on-click, rapid clicking, `chrome://` page, extension reload mid-recording. |
 | 6 ✅ | Design-system pass: tokens, vendored fonts, generated icons, theme preference, the shared component set. | `npm run lint:tokens` — no colour outside `tokens.css`, enforced in CI. |
 | 7 ✅ | Popup rebuilt, state by state, against the new session machine. | `derivePopupView` is pure and covers loading, empty, flow, live, paused, blocked, needs-attach, quota and error — 17 tests. Settings moved to their own page (decision E). |
-| 8 | Viewer rebuilt, view by view: list → detail → editor → export. | Same, plus loading and empty states that do not exist today. |
+| 8 ✅ | Viewer rebuilt, view by view: list → detail → editor → export. | Same, plus loading and empty states that do not exist today. `deriveLibraryView`, `deriveReviewView` and `deriveExportView` are pure and cover loading, empty, no-matches, missing, quota and in-progress — 45 tests. `npm run lint:tokens` now reports **no pending files**. |
 | 9 | CI, release workflow, version sync, README, CHANGELOG, LICENSE. | A pushed tag produces a downloadable zip that loads unpacked. |
 | 10 | Highest-value new features from the triage below. | — |
 
-Two things steps 6 and 7 deliberately did **not** do.
+Three things steps 6–8 deliberately did **not** do.
 
 The settings page carries only the settings that exist: theme, MCP address,
 auto-send, storage. Prompt 8 also specifies steps-per-recording, screenshot
@@ -439,10 +439,42 @@ quality, capture toggles and redaction patterns — none of which the recorder
 reads. Those controls arrive with the features in step 10; a toggle that
 silently does nothing is worse than an absent one.
 
-And nothing here has been loaded in Chrome. Build, manifest references and the
-packaged zip are verified mechanically; the states worth exercising by hand are
-still C1 (record, switch tabs), C4 (click a link), C5 (`chrome://extensions`),
-plus the new theme preference across popup and settings at once.
+The viewer has no step reordering and no Duplicate. Reordering is a step-10
+item in the triage below and would have needed a drag affordance on every card
+to sit unused until then. Duplicate is in the design frame's overflow menu, but
+it doubles the largest thing in a 10 MB store for a use I could not name.
+
+### What loading it in Chrome found
+
+Step 8 is the first build that was actually loaded, and it immediately produced
+two defects that every mechanical check had passed — both in CSS, both invisible
+to typecheck, lint, the token guard and 238 tests:
+
+- **Every dialog in the product rendered in the top-left corner.** A modal is
+  centred by the browser's own `inset: 0` plus `margin: auto`; `base.css` resets
+  `margin` to 0 on every element, which turned that off. This shipped in step 7
+  — the popup's discard dialog and the settings page's delete dialog were both
+  wrong and nobody could have known without opening one.
+- **The annotation editor was permanently on the page.** `.dialog--full` set
+  `display: flex` on the element rather than on `[open]`, overriding the UA's
+  `display: none` for the closed state. It sat in normal flow under the library,
+  pushing the real content down, with an empty tool rail and no swatches because
+  it had never been opened.
+
+`tests/dialog-styles.test.ts` now asserts both rules against every stylesheet,
+and `tests/viewer-markup.test.ts` closes the other gap that survives typecheck
+and lint — a renamed id or mistyped class, which is a blank screen at runtime —
+by checking every `el()` and `find()` in the viewer against `viewer.html`.
+
+The general lesson holds and is worth writing down: **a design system enforced
+only by a linter is enforced only where the linter can see.** These were rules
+about interaction with the browser's own stylesheet, which no amount of token
+discipline would have caught.
+
+Still exercised by hand only, and still worth doing: C1 (record, switch tabs),
+C4 (click a link), C5 (`chrome://extensions`), the theme preference across popup
+and settings at once, the redact tool on a real screenshot, an export of a
+30-step flow, and editing a saved flow and reopening it (F7).
 
 ---
 

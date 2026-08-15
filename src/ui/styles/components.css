@@ -617,6 +617,15 @@
   background: var(--surface);
   color: var(--fg);
   box-shadow: var(--shadow-overlay);
+
+  /*
+   * A modal dialog is centred by the browser's own `inset: 0` plus `margin:
+   * auto` — and base.css resets `margin` to 0 on everything, which silently
+   * turned that centring off and pinned every dialog to the top-left corner.
+   * Restoring it here rather than exempting `dialog` from the reset, because
+   * this is the only element whose layout depends on a UA margin.
+   */
+  margin: auto;
 }
 
 .dialog::backdrop {
@@ -724,6 +733,64 @@
     opacity: 0.45;
     transform: scale(0.85);
   }
+}
+
+/* ── App bar ────────────────────────────────────────────────────────────────
+ * The top of a full-tab surface. Shared by the viewer and the settings page,
+ * which is why it lives here rather than in either one's stylesheet.
+ */
+
+.appbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 52px;
+  padding: 0 var(--space-5);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.appbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+/* ── Brand ──────────────────────────────────────────────────────────────────
+ * The mark is filled from CSS, never from `fill="var(--accent)"` — a custom
+ * property in an SVG presentation attribute is not resolved by any shipping
+ * browser, and the shape would simply render black.
+ */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.brand__mark {
+  display: block;
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+.brand__mark-plate {
+  fill: var(--accent);
+}
+
+.brand__mark-bolt {
+  fill: var(--on-accent);
+}
+
+.brand__name {
+  font-size: var(--text-popup-title);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
 }
 
 /* ── Divider ────────────────────────────────────────────────────────────── */
