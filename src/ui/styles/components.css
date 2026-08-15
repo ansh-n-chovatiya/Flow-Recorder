@@ -216,26 +216,6 @@
   padding: var(--pad-card);
 }
 
-.card--flush {
-  padding: 0;
-  overflow: hidden;
-}
-
-/** Clickable card: the whole surface is the target, so it must look like one. */
-.card--interactive {
-  cursor: pointer;
-  text-align: left;
-  width: 100%;
-  transition:
-    border-color var(--transition),
-    background-color var(--transition);
-}
-
-.card--interactive:hover {
-  border-color: var(--border-strong);
-  background: var(--surface-raised);
-}
-
 /* ── Form controls ──────────────────────────────────────────────────────── */
 
 .field {
@@ -248,16 +228,6 @@
   font-size: var(--text-body);
   font-weight: var(--weight-medium);
   color: var(--fg);
-}
-
-.field__hint {
-  font-size: var(--text-meta);
-  color: var(--fg-muted);
-}
-
-.field__error {
-  font-size: var(--text-meta);
-  color: var(--danger);
 }
 
 .input,
@@ -362,12 +332,6 @@
   cursor: not-allowed;
 }
 
-.switch__text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
 /** Segmented control — a small set of exclusive choices, all visible at once. */
 
 .segmented {
@@ -450,12 +414,6 @@
   color: var(--fg);
 }
 
-.banner--success {
-  background: var(--success-soft);
-  border-color: color-mix(in srgb, var(--success) 30%, transparent);
-  color: var(--fg);
-}
-
 .banner--info .banner__icon {
   color: var(--accent);
 }
@@ -465,10 +423,6 @@
 .banner--danger .banner__icon {
   color: var(--danger);
 }
-.banner--success .banner__icon {
-  color: var(--success);
-}
-
 /* ── Empty state ────────────────────────────────────────────────────────────
  * Never a bare sentence: an icon, what this is, why it is empty, and the one
  * thing to do about it.
@@ -800,10 +754,4 @@
   height: 1px;
   background: var(--border);
   border: 0;
-}
-
-.divider--vertical {
-  width: 1px;
-  height: 12px;
-  background: var(--border);
 }

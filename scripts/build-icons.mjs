@@ -50,7 +50,6 @@ const ICONS = {
   copy: 'copy a selector or URL',
   'folder-plus': 'save the current recording to the library',
   'circle-help': 'the keyboard shortcut sheet',
-  check: 'a chosen option',
 
   // Step types, in the rail and on the card
   globe: 'a navigate step',

@@ -14,9 +14,6 @@
  * Pure — see tests/viewer-route.test.ts.
  */
 
-/** The recording in progress lives under `recordedSteps`, not under an id. */
-export const CURRENT_FLOW_ID = null;
-
 export type Route =
   | { view: 'library' }
   /** The unsaved recording. */

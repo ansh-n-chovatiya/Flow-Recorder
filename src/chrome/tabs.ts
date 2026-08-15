@@ -123,14 +123,3 @@ export async function sendToTab<T>(tabId: number, message: unknown): Promise<Res
     return err(flowError(/No tab with id/i.test(detail) ? 'TAB_GONE' : 'TAB_NOT_READY', detail));
   }
 }
-
-/** Send to every tab that has a content script, ignoring the ones that do not. */
-export async function broadcast(message: unknown): Promise<void> {
-  const tabs = await chrome.tabs.query({});
-  await Promise.all(
-    tabs.map(async (tab) => {
-      if (tab.id == null || !isRecordableUrl(tab.url)) return;
-      await sendToTab(tab.id, message);
-    }),
-  );
-}

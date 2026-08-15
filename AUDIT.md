@@ -170,6 +170,8 @@ A single module-level `inputDebounceTimer` is shared by every input on the page.
 
 > `background.js:94–97` · `exporter.js:224` (stripped again on export)
 
+✅ Closed. The original is stored only when annotating actually changed the image; without a highlight box the two copies were byte-identical. Readers already resolved it as `screenshotOriginal ?? screenshot`. The 8 MB budget and the 30-step cap it forced are both gone with it — see F9 and `docs/design/README.md`.
+
 #### F3 · Saved flows starve live recording
 
 The budget guard measures `getBytesInUse(null)` — the whole area, including every archived flow. Archive three recordings and new steps stop getting screenshots, with only a `console.warn` to explain it.
@@ -211,6 +213,8 @@ Every stop POSTs the entire flow — screenshots, request and response bodies �
 The limit is hardcoded, and reaching it terminates the recording and appends a synthetic `note` step. The warning at 25 goes to the console. Nothing in the popup counts down.
 
 > `background.js:5–6, 54–67`
+
+✅ Closed, by removing the reason for it. The cap existed because `storage.local` held 10 MB; the manifest now asks for `unlimitedStorage`, so `MAX_STEPS` is a runaway guard at 500 rather than a product limit, and the popup's advisory at 150 is about export weight rather than a countdown.
 
 #### F10 · The popup polls once a second and also subscribes
 
@@ -428,7 +432,7 @@ Each step leaves a loadable extension. No step mixes a move with a behaviour cha
 | 6 ✅ | Design-system pass: tokens, vendored fonts, generated icons, theme preference, the shared component set. | `npm run lint:tokens` — no colour outside `tokens.css`, enforced in CI. |
 | 7 ✅ | Popup rebuilt, state by state, against the new session machine. | `derivePopupView` is pure and covers loading, empty, flow, live, paused, blocked, needs-attach, quota and error — 17 tests. Settings moved to their own page (decision E). |
 | 8 ✅ | Viewer rebuilt, view by view: list → detail → editor → export. | Same, plus loading and empty states that do not exist today. `deriveLibraryView`, `deriveReviewView` and `deriveExportView` are pure and cover loading, empty, no-matches, missing, quota and in-progress — 45 tests. `npm run lint:tokens` now reports **no pending files**. |
-| 9 | CI, release workflow, version sync, README, CHANGELOG, LICENSE. | A pushed tag produces a downloadable zip that loads unpacked. |
+| 9 | CI, release workflow, version sync, CHANGELOG, LICENSE. The README is done — the one it replaced described the pre-TypeScript file layout and claimed screenshots lived in `chrome.storage.session`. | A pushed tag produces a downloadable zip that loads unpacked. |
 | 10 | Highest-value new features from the triage below. | — |
 
 Three things steps 6–8 deliberately did **not** do.
@@ -441,8 +445,9 @@ silently does nothing is worse than an absent one.
 
 The viewer has no step reordering and no Duplicate. Reordering is a step-10
 item in the triage below and would have needed a drag affordance on every card
-to sit unused until then. Duplicate is in the design frame's overflow menu, but
-it doubles the largest thing in a 10 MB store for a use I could not name.
+to sit unused until then. Duplicate is in the design frame's overflow menu; the
+storage argument against it died with the quota, so what is left is that I could
+not name the use.
 
 ### What loading it in Chrome found
 
@@ -473,8 +478,9 @@ discipline would have caught.
 
 Still exercised by hand only, and still worth doing: C1 (record, switch tabs),
 C4 (click a link), C5 (`chrome://extensions`), the theme preference across popup
-and settings at once, the redact tool on a real screenshot, an export of a
-30-step flow, and editing a saved flow and reopening it (F7).
+and settings at once, the redact tool on a real screenshot, editing a saved flow
+and reopening it (F7), and a recording past 30 steps — that path has never run,
+since 30 was the cap until `unlimitedStorage` landed.
 
 ---
 

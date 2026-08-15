@@ -1,106 +1,27 @@
-# Working with the Stitch export
+# The design system, and the decisions behind it
 
-**Read this before porting anything from `stitch_flowsnap_design_system/`.**
+`src/ui/styles/tokens.css` is the only authority on colour, type and shape. It is
+authored from [`../DESIGN-BRIEF.md`](../DESIGN-BRIEF.md) §3.
 
-The export is a *layout and composition* reference. It is not a source of
-colour, type weight, icon choice, or copy. `src/ui/styles/tokens.css` is
-authored from [`../DESIGN-BRIEF.md`](../DESIGN-BRIEF.md) §3 and is the only
-authority on tokens.
+The screens were composed in a Google Stitch export, which has since served its
+purpose and been removed. Two rules survive it, because both were things the
+export got wrong and the codebase must not:
 
-Verified against the export on 15 August 2026, 35 screens.
+**Never copy a colour from a mockup.** Stitch substituted its own Material 3
+palette for the one the brief specified — the accent was demoted to a container
+role, and `#E5484D`, the one colour the redesign exists to protect, appeared once
+across 35 screens. `tokens.css` was written from the brief instead, and wins over
+any mockup, always.
 
----
+**The three reds are not interchangeable.** Structural decision **F** exists
+because the shipped build used one red for "record", "delete" and "failed" at
+once, so nothing about a red thing told you which it was. Recording UI takes
+`--record`. Destructive confirmation takes `--danger`. Failure states take
+`--log-error` / `--status-5xx`.
 
-## 1. Stitch substituted its own Material 3 palette
-
-Every screen imports `technical_precision/DESIGN.md`, a complete M3 token set
-that Stitch generated rather than the palette the prompts specified. The brief's
-accent was demoted to a container role and Stitch's own lighter teal became
-primary.
-
-| Role | Brief (`tokens.css`) | Export | Uses in export |
-|---|---|---|---|
-| Accent | `#2BB3A3` | `#5EDAC9` (brief value demoted to `primary-container`) | 33 |
-| Page background | `#0E1213` | `#101415` | 12 |
-| Surface | `#161B1D` | `#181C1D` | 2 |
-| Body text | `#E4EBE9` | `#E0E3E4` | — |
-| Border | `#28312F` | `#3D4947` | — |
-| **Record red** | `#E5484D` | Material `secondary` / `error` | **1** |
-
-`#E5484D` — the one colour the redesign exists to protect — appears exactly once
-across all 35 screens.
-
-**Consequence:** `tokens.css` cannot be generated from the export. It was
-written from the brief instead. When a Stitch frame and `tokens.css` disagree
-about a colour, `tokens.css` wins, always.
-
-## 2. The record-red collision came back
-
-Structural decision **F** exists because the shipped build used one red for
-"record", "delete" and "failed" at once, so nothing about a red thing told you
-which it was. The export reintroduces it:
-
-- `flowsnap_recording_dark` drives the pulsing dot and the Stop button from
-  `bg-error`.
-- `flowsnap_review_dark_main` drives console-error text, `500` chips and the
-  failed step's left edge from the same family.
-- Material's `secondary` `#FFB3B0` (66 uses) and `error` `#FFB4AB` (32 uses)
-  differ by 3 in a single channel. They are indistinguishable on screen.
-
-**When implementing:** recording UI takes `--record`. Destructive confirmation
-takes `--danger`. Failure states take `--log-error` / `--status-5xx`. Never
-reuse one for another, whatever the frame shows.
-
-## 3. Seven of the twelve "light" screens are dark
-
-| Genuinely light (5) | Named `_light`, actually dark (7) |
-|---|---|
-| `annotation_editor_light`, `confirmation_dialogs_light`, `export_light_main`, `popup_light_empty`, `popup_light_flow` | `blocked_tab_light`, `feedback_banners_light`, `recording_light`, `review_light_main`, `settings_light_main`, `storage_full_light`, `library_light_main` |
-
-Six carry `<html class="dark">`; `library_light_main` carries no theme class at
-all.
-
-**Do not regenerate these.** §3 of the brief has a complete light token table,
-and the five real light frames prove the mapping works. Deriving the rest from
-tokens at implementation is cheaper and more consistent than another Stitch
-round.
-
-## 4. Quarantined screens — do not port
-
-| Screen | Why |
-|---|---|
-| `flowsnap_review_light_main` | Not the review screen. A single step-detail view with an `Export JSON` button — the exact thing decision **B** collapses — a rail labelled "EXECUTION TIMELINE" with no elapsed times or error dots, and no screenshot, notes field or step cards. |
-| `flowsnap_popup_light_flow` | Inverts the colour semantics the redesign fixes: it is a *recording* state with a teal **Stop Recording** fill and a red timer pill. Also invents a Tags feature, reports `50MB USED` against a 10 MB quota, and versions the product `v1.2.4`. |
-| `flowsnap_annotation_editor_dark` | Branded **TraceCapture**, not FlowSnap. |
-| `flowsnap_annotation_editor_light` | Branded **TraceCapture**. |
-| `flowsnap_redact_tool_active` | Branded **TraceCapture**. |
-| `flowsnap_discard_confirmation` | Branded **TraceCapture**. |
-
-The whole annotation-editor family carries the wrong product name, so Prompt 7
-is the one screen with no usable frame. Implement it from the prompt text.
-Done in step 8 — see the header comment on `src/ui/viewer/annotate.ts`, which
-lists the five failings of the editor it replaces and where each one is
-addressed. The two quarantined *light* screens were not regenerated either:
-their dark counterparts are correct and light is derivable from the token table,
-so another Stitch round would risk a third palette rather than settle anything.
-
-## 5. Smaller drift to correct while porting
-
-- **Icons are Material Symbols** in all 35 screens; the system specifies Lucide
-  at 16px / 1.5px stroke. Substitute on the way in — the geometry is generated
-  into `src/ui/icons.generated.ts` by `npm run build:icons`, so this is a
-  one-word swap. Markup names an icon (`<span data-icon="circle-dot"></span>`)
-  and never carries a path.
-- **Amber is inconsistent** — `#FBBF24` in 11 places against the token
-  `#D9A441` in 8. Use the token.
-- **Weight 550 does not exist.** The brief specified it twice; static IBM Plex
-  Sans ships 450/500/600, so it would have rounded silently. `tokens.css`
-  corrects this to `--weight-medium: 500`.
-- ~~**IBM Plex is not vendored yet.**~~ Resolved in step 6: the woff2 files are
-  in `public/fonts/` and declared in `src/ui/styles/fonts.css`. See
-  [`fonts.md`](./fonts.md), in particular the `unicode-range` descriptor — only
-  the Latin subset ships, and that descriptor is what keeps a Cyrillic or CJK
-  page title from rendering as tofu.
+Icons are Lucide at 16px / 1.5px stroke, generated into
+`src/ui/icons.generated.ts` by `npm run build:icons`. Markup names an icon
+(`<span data-icon="circle-dot"></span>`) and never carries a path.
 
 ---
 
@@ -123,6 +44,10 @@ the script says why: `public/content.css`, which is injected into somebody
 else's document where `tokens.css` does not exist and `:root` belongs to the
 page. The `PENDING` list — the surfaces that predated the design system — is
 empty as of step 8.
+
+IBM Plex is vendored in `public/fonts/`; see [`fonts.md`](./fonts.md), in
+particular the `unicode-range` descriptor, which is what keeps a Cyrillic or CJK
+page title from rendering as tofu.
 
 ## What step 8 built
 
@@ -151,8 +76,9 @@ anything else in the product and never updated when it was renamed. The toolbar
 icon cannot follow the theme — it sits in Chrome's chrome, not ours — so it uses
 the dark palette's brighter teal, which reads on a light toolbar as well.
 
-Two deliberate departures from the frames, both recorded here so they are
-choices rather than drift:
+## Departures from the frames
+
+Recorded here so they are choices rather than drift.
 
 - **The library's sort control is Recent / Largest / Name**, not the frame's
   `All / Recent / Largest`. That set is one filter and two sorts wearing the
@@ -166,13 +92,15 @@ choices rather than drift:
   It was originally left out because duplicating doubled the largest thing in a
   10 MB store; that argument died with the quota (see below), so what remains is
   simply that I could not name the use. It can arrive in step 10 if one turns up.
-
-One departure from the *prompt*: the annotation palette is a fixed set of
-values in `annotate-ops.ts`, not design tokens. That ink is baked into a JPEG
-that leaves the machine, so it must not change when the theme does. The values
-are taken from the system's data colours so the two still look like one product,
-and the swatch borders are tokens — which is what makes the white swatch
-visible on a white panel, as the audit complained it was not.
+- **The annotation editor was built from the prompt text, not a frame.** Every
+  frame in that family was branded *TraceCapture*. See the header comment on
+  `src/ui/viewer/annotate.ts`.
+- **The annotation palette is fixed values in `annotate-ops.ts`, not tokens.**
+  That ink is baked into a JPEG that leaves the machine, so it must not change
+  when the theme does. The values are taken from the system's data colours so the
+  two still look like one product, and the swatch borders *are* tokens — which is
+  what makes the white swatch visible on a white panel, as the audit complained
+  it was not.
 
 ## The storage quota, and the designs that assumed it
 
@@ -187,8 +115,6 @@ screenshots, median 86 KB each; per flow, median 632 KB and 2.6 MB at the top.
 Base64 in `storage.local` adds about 37%. So 10 MB held roughly five ordinary
 flows — a library screen with search, three sorts and a size column, over a store
 that could not hold enough to sort.
-
-What changed, and why the frames are not simply wrong:
 
 | Frame | Now | Why |
 |---|---|---|
@@ -239,36 +165,3 @@ Two deletions worth calling out separately:
 
 `tests/manifest.test.ts` guards the permission, because the guard it replaced is
 gone — losing `unlimitedStorage` now means hitting 10 MB with nothing to catch it.
-
-## 6. What the export gets right
-
-- **`flowsnap_review_dark_main` is the strongest frame in the set**, and it is
-  the hardest screen: rail with elapsed times, error dots and filter chips; type
-  chips; the `+2.7s` chip unclipped; Selectors and Network collapsed behind
-  count badges; notes textarea; failed step with a crimson left edge; undo toast
-  with its progress hairline. XPath is subordinate. Port its composition
-  directly.
-- **`flowsnap_popup_dark_flow`** matches Prompt 1: 360px, target row, one primary
-  action, current-flow card with thumbnails, storage footer.
-- Zero emoji anywhere.
-- IBM Plex Sans + Mono throughout.
-- The 360px popup width is honoured in all 16 popup frames.
-- Every one of the six states that had no design at all — blocked tab, storage
-  full, loading, export progress, destructive confirmation, real empty states —
-  has a dark frame.
-
----
-
-## Porting checklist
-
-For each screen, in this order:
-
-1. Take **composition** from the frame: layout, hierarchy, spacing rhythm,
-   what is on screen and what is behind a disclosure.
-2. Take **colour, type and shape** from `tokens.css`. Never copy a hex from the
-   export.
-3. Swap Material Symbols for Lucide.
-4. Check the frame is not in the quarantine table above.
-5. If the screen is one of the seven false-light ones, build light from tokens
-   and check it against a real light frame for rhythm.
-6. Verify against [`../DESIGN-BRIEF.md`](../DESIGN-BRIEF.md) §5.

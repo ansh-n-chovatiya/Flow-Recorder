@@ -22,8 +22,3 @@ export function ok<T>(value?: T): Result<T | undefined> {
 export function err<T = never>(error: FlowError): Result<T> {
   return { ok: false, error };
 }
-
-/** Unwrap with a fallback, for places where a failure is genuinely not fatal. */
-export function orElse<T>(result: Result<T>, fallback: T): T {
-  return result.ok ? result.value : fallback;
-}

@@ -90,9 +90,6 @@ export const ICON_PATHS = {
   /** the keyboard shortcut sheet */
   'circle-help':
     '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
-  /** a chosen option */
-  'check':
-    '<path d="M20 6 9 17l-5-5"/>',
   /** a navigate step */
   'globe':
     '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
