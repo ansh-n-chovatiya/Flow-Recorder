@@ -6,13 +6,7 @@
  * tests/popup-view.test.ts, so `main.ts` is left with nothing but rendering.
  */
 
-import {
-  ERROR_TTL_MS,
-  MAX_STEPS,
-  STORAGE_QUOTA,
-  STORAGE_WARN_RATIO,
-  WARN_STEPS,
-} from '../../shared/constants.js';
+import { ERROR_TTL_MS, WARN_STEPS } from '../../shared/constants.js';
 import type { Preflight } from '../../features/recording/preflight.js';
 import type { RecordingState, Step, StoredError } from '../../shared/types.js';
 
@@ -50,10 +44,11 @@ export interface LiveView {
   /** `null` when the start time is unknown — an older recording, or a reload. */
   elapsedMs: number | null;
   count: number;
-  limit: number;
-  /** Past WARN_STEPS: the cap is close enough to say so. */
-  nearLimit: boolean;
-  atLimit: boolean;
+  /**
+   * Past WARN_STEPS. Advice about a flow that is getting unwieldy, not a
+   * countdown to a cap — there is no longer a cap worth counting down to.
+   */
+  long: boolean;
   lastAction: string | null;
   lastAgoMs: number | null;
 }
@@ -67,11 +62,12 @@ export interface FlowView {
   extra: number;
 }
 
+/**
+ * How much FlowSnap is holding. A figure, not a proportion: with
+ * `unlimitedStorage` there is no denominator short of the user's whole disk.
+ */
 export interface StorageView {
   usedBytes: number;
-  quotaBytes: number;
-  ratio: number;
-  level: 'ok' | 'warn' | 'full';
 }
 
 /** Which block fills the body. Exactly one, always. */
@@ -101,17 +97,13 @@ function errorNotice(error: StoredError | null, now: number): NoticeView | null 
   if (!error || now - error.at > ERROR_TTL_MS) return null;
   return {
     tone: error.code === 'STORAGE_QUOTA' ? 'danger' : 'warn',
-    title: error.code === 'STORAGE_QUOTA' ? 'Storage is full' : "That didn't save",
+    title: error.code === 'STORAGE_QUOTA' ? 'The disk is full' : "That didn't save",
     body: error.message,
   };
 }
 
 function storageView(usedBytes: number | null): StorageView | null {
-  if (usedBytes == null) return null;
-
-  const ratio = Math.min(usedBytes / STORAGE_QUOTA, 1);
-  const level = ratio >= 1 ? 'full' : ratio >= STORAGE_WARN_RATIO ? 'warn' : 'ok';
-  return { usedBytes, quotaBytes: STORAGE_QUOTA, ratio, level };
+  return usedBytes == null ? null : { usedBytes };
 }
 
 function flowView(steps: Step[]): FlowView | null {
@@ -138,9 +130,7 @@ function liveView(input: PopupInput): LiveView {
     paused: recording === 'paused',
     elapsedMs: startedAt == null ? null : Math.max(0, now - startedAt),
     count: steps.length,
-    limit: MAX_STEPS,
-    nearLimit: steps.length >= WARN_STEPS,
-    atLimit: steps.length >= MAX_STEPS,
+    long: steps.length >= WARN_STEPS,
     lastAction: last?.action ?? null,
     lastAgoMs: last ? Math.max(0, now - last.timestamp) : null,
   };
@@ -224,13 +214,7 @@ export function derivePopupView(input: PopupInput): PopupView {
     recording,
     target: preflight.target,
     blocked: null,
-    // A full store means the next step cannot be written, so offering to start
-    // would be a lie — the same lie the old build told at the quota.
-    primary: {
-      label: 'Start recording',
-      icon: 'circle-dot',
-      disabled: storage?.level === 'full',
-    },
+    primary: { label: 'Start recording', icon: 'circle-dot', disabled: false },
     offerReload: needsAttach,
     live: null,
     flow,

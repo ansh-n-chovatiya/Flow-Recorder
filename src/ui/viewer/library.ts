@@ -40,9 +40,7 @@ const dom = {
   clearSearch: el<HTMLButtonElement>('lib-clear-search'),
 
   footer: el('lib-footer'),
-  storage: el('lib-storage'),
   storageText: el('lib-storage-text'),
-  storageFill: el('lib-storage-fill'),
 
   settings: el<HTMLButtonElement>('lib-settings'),
   newRecording: el<HTMLButtonElement>('lib-new'),
@@ -268,11 +266,7 @@ export function mountLibrary(app: App, onSaveCurrent: () => void): { paint: () =
 
     show(dom.footer, view.storage !== null);
     if (view.storage) {
-      dom.storage.dataset.level = view.storage.level;
-      dom.storageText.textContent = `${formatBytes(view.storage.usedBytes)} / ${formatBytes(
-        view.storage.quotaBytes,
-      )}`;
-      dom.storageFill.style.width = `${Math.round(view.storage.ratio * 100)}%`;
+      dom.storageText.textContent = `${formatBytes(view.storage.usedBytes)} stored`;
     }
   }
 

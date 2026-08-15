@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { STORAGE_QUOTA } from '../src/shared/constants.js';
 import type { FlowMeta, Step } from '../src/shared/types.js';
 import {
   deriveLibraryView,
@@ -201,20 +200,26 @@ describe('sorting', () => {
 });
 
 describe('storage', () => {
-  it('warns and then reports full', () => {
-    expect(deriveLibraryView(input({ usedBytes: 1000 })).storage?.level).toBe('ok');
-    expect(deriveLibraryView(input({ usedBytes: STORAGE_QUOTA * 0.8 })).storage?.level).toBe('warn');
-    expect(deriveLibraryView(input({ usedBytes: STORAGE_QUOTA })).storage?.level).toBe('full');
+  it('reports usage as a figure, with no ceiling to compare it against', () => {
+    expect(deriveLibraryView(input({ usedBytes: 2_621_440 })).storage).toEqual({
+      usedBytes: 2_621_440,
+    });
   });
 
-  it('clamps the bar rather than overflowing it', () => {
-    expect(deriveLibraryView(input({ usedBytes: STORAGE_QUOTA * 2 })).storage?.ratio).toBe(1);
+  it('reports nothing at all until usage has been measured', () => {
+    expect(deriveLibraryView(input({ usedBytes: null })).storage).toBeNull();
   });
 
-  it('summarises the library against the quota', () => {
-    expect(deriveLibraryView(input({ usedBytes: 2_621_440 })).summary).toBe(
-      '1 flow · 2.5 MB of 10.0 MB used',
-    );
+  it('never implies a limit, however large the library gets', () => {
+    // The old copy read "9.8 MB of 10.0 MB used". `unlimitedStorage` means there
+    // is no denominator short of the disk, and inventing one would be the only
+    // thing here that could tell the user to stop recording.
+    const summary = deriveLibraryView(input({ usedBytes: 524_288_000 })).summary;
+    expect(summary).toBe('1 flow · 500.0 MB');
+    expect(summary).not.toMatch(/of|used|limit/);
+  });
+
+  it('counts the flows it is summarising', () => {
     expect(deriveLibraryView(input({ flows: [flow(), flow({ id: 'x' })] })).summary).toMatch(
       /^2 flows · /,
     );

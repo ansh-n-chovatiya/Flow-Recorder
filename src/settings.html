@@ -150,8 +150,8 @@
         <div class="section__head">
           <h2 class="section__title">Storage</h2>
           <p class="section__note">
-            Chrome allows extensions 10 MB. Recording stops saving once it is
-            full.
+            FlowSnap keeps flows on this machine and nowhere else. There is no
+            size limit — the only ceiling is your disk.
           </p>
         </div>
 
@@ -159,20 +159,9 @@
           <div class="storage-summary">
             <div class="storage-summary__figures">
               <span id="storage-used" class="storage-summary__used">—</span>
-              <span class="meta"
-                >of <span id="storage-quota">10.0 MB</span> used</span
-              >
+              <span class="meta">held by FlowSnap</span>
             </div>
-            <div id="storage-meter" class="meter" data-level="ok">
-              <div class="meter__track">
-                <div
-                  id="storage-fill"
-                  class="meter__fill"
-                  style="width: 0%"
-                ></div>
-              </div>
-              <p id="storage-detail" class="label"></p>
-            </div>
+            <p id="storage-detail" class="label"></p>
           </div>
 
           <div class="setting">

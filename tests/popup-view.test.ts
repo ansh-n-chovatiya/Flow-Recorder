@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Preflight, RecordingTarget } from '../src/features/recording/preflight.js';
 import { flowError } from '../src/shared/errors.js';
-import { MAX_STEPS, STORAGE_QUOTA, WARN_STEPS } from '../src/shared/constants.js';
+import { MAX_STEPS, WARN_STEPS } from '../src/shared/constants.js';
 import type { Step } from '../src/shared/types.js';
 import { derivePopupView, THUMBNAIL_LIMIT, type PopupInput } from '../src/ui/popup/view.js';
 
@@ -153,9 +153,7 @@ describe('recording', () => {
       paused: false,
       elapsedMs: 47_000,
       count: 1,
-      limit: MAX_STEPS,
-      nearLimit: false,
-      atLimit: false,
+      long: false,
       lastAction: 'Clicked "Save changes"',
       lastAgoMs: 2000,
     });
@@ -168,17 +166,27 @@ describe('recording', () => {
     expect(view.live?.elapsedMs).toBeNull();
   });
 
-  it('warns as the step cap approaches, and marks it once reached', () => {
-    const near = derivePopupView(
+  it('mentions a long flow only once it is one', () => {
+    const ordinary = derivePopupView(
+      input({ recording: 'recording', steps: Array.from({ length: WARN_STEPS - 1 }, () => step()) }),
+    );
+    expect(ordinary.live?.long).toBe(false);
+
+    const long = derivePopupView(
       input({ recording: 'recording', steps: Array.from({ length: WARN_STEPS }, () => step()) }),
     );
-    expect(near.live?.nearLimit).toBe(true);
-    expect(near.live?.atLimit).toBe(false);
+    expect(long.live?.long).toBe(true);
+  });
 
-    const at = derivePopupView(
-      input({ recording: 'recording', steps: Array.from({ length: MAX_STEPS }, () => step()) }),
+  it('keeps recording past the point the old build stopped', () => {
+    // 30 steps was the cap when storage was capped too. A recorder that stops
+    // mid-task makes the user repeat everything they just did.
+    const view = derivePopupView(
+      input({ recording: 'recording', steps: Array.from({ length: 200 }, () => step()) }),
     );
-    expect(at.live?.atLimit).toBe(true);
+    expect(view.body).toBe('live');
+    expect(view.live?.count).toBe(200);
+    expect(MAX_STEPS).toBeGreaterThan(200);
   });
 
   it('keeps showing the recording even when the user switches to a blocked tab', () => {
@@ -202,25 +210,23 @@ describe('recording', () => {
 });
 
 describe('storage', () => {
-  it('warns past three quarters and refuses to start when full', () => {
-    const ok = derivePopupView(input({ usedBytes: STORAGE_QUOTA * 0.5 }));
-    expect(ok.storage?.level).toBe('ok');
-    expect(ok.primary?.disabled).toBe(false);
-
-    const warn = derivePopupView(input({ usedBytes: STORAGE_QUOTA * 0.8 }));
-    expect(warn.storage?.level).toBe('warn');
-    expect(warn.primary?.disabled).toBe(false);
-
-    const full = derivePopupView(input({ usedBytes: STORAGE_QUOTA }));
-    expect(full.storage?.level).toBe('full');
-    // Starting a recording that cannot save a single step is the lie the old
-    // build told at the quota.
-    expect(full.primary?.disabled).toBe(true);
+  it('reports usage as a figure, with no ceiling to compare it against', () => {
+    expect(derivePopupView(input({ usedBytes: 5_242_880 })).storage).toEqual({
+      usedBytes: 5_242_880,
+    });
   });
 
-  it('clamps a reading that exceeds the quota', () => {
-    const view = derivePopupView(input({ usedBytes: STORAGE_QUOTA * 2 }));
-    expect(view.storage?.ratio).toBe(1);
+  it('reports nothing at all until usage has been measured', () => {
+    expect(derivePopupView(input({ usedBytes: null })).storage).toBeNull();
+  });
+
+  it('never disables Start over how much is stored', () => {
+    // The quota build greyed out Start at 10 MB, which was honest then: the next
+    // step genuinely could not be written. There is no such point now, and a
+    // dead Record button is the worst thing this popup could show.
+    for (const usedBytes of [0, 10_485_760, 5_368_709_120]) {
+      expect(derivePopupView(input({ usedBytes })).primary?.disabled).toBe(false);
+    }
   });
 });
 
@@ -247,7 +253,10 @@ describe('errors', () => {
     expect(view.notice).toBeNull();
   });
 
-  it('treats a full store as the more serious kind', () => {
+  it('names the disk, not FlowSnap, when there is no room to write', () => {
+    // With `unlimitedStorage` this can only mean the disk. Saying "storage is
+    // full" would send the user hunting for flows to delete, which would free
+    // almost nothing and is the wrong place to look.
     const view = derivePopupView(
       input({
         lastError: { code: 'STORAGE_QUOTA', message: 'Out of space.', at: NOW - 1000 },
@@ -255,6 +264,6 @@ describe('errors', () => {
     );
 
     expect(view.notice?.tone).toBe('danger');
-    expect(view.notice?.title).toBe('Storage is full');
+    expect(view.notice?.title).toBe('The disk is full');
   });
 });

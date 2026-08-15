@@ -58,8 +58,6 @@ const dom = {
   liveLabel: el('live-label'),
   liveTimer: el('live-timer'),
   liveCount: el('live-count'),
-  liveMeter: el('live-meter'),
-  liveMeterFill: el('live-meter-fill'),
   liveCap: el('live-cap'),
   liveLast: el('live-last'),
   pause: el<HTMLButtonElement>('btn-pause'),
@@ -76,9 +74,7 @@ const dom = {
   empty: el('s-empty'),
 
   footer: el('footer'),
-  storage: el('storage'),
   storageText: el('storage-text'),
-  storageFill: el('storage-fill'),
   library: el<HTMLButtonElement>('btn-library'),
 
   discardDialog: el<HTMLDialogElement>('discard-dialog'),
@@ -187,11 +183,10 @@ function render(view: PopupView): void {
     dom.liveTimer.textContent = live.elapsedMs == null ? '--:--' : formatElapsed(live.elapsedMs);
 
     dom.liveCount.textContent = String(live.count);
-    dom.liveMeter.dataset.level = live.atLimit ? 'full' : live.nearLimit ? 'warn' : 'ok';
-    dom.liveMeterFill.style.width = `${Math.min(100, (live.count / live.limit) * 100)}%`;
-    dom.liveCap.textContent = live.nearLimit
-      ? `${live.count} / ${live.limit} · approaching limit`
-      : `${live.count} / ${live.limit}`;
+    show(dom.liveCap, live.long);
+    if (live.long) {
+      dom.liveCap.textContent = 'This flow is getting long — it will still record, but exports take longer.';
+    }
 
     dom.liveLast.textContent = live.paused
       ? 'Nothing is being captured while paused'
@@ -217,11 +212,7 @@ function render(view: PopupView): void {
 
   show(dom.footer, view.storage !== null);
   if (view.storage) {
-    dom.storage.dataset.level = view.storage.level;
-    dom.storageText.textContent = `${formatBytes(view.storage.usedBytes)} / ${formatBytes(
-      view.storage.quotaBytes,
-    )}`;
-    dom.storageFill.style.width = `${Math.round(view.storage.ratio * 100)}%`;
+    dom.storageText.textContent = `${formatBytes(view.storage.usedBytes)} stored`;
   }
 
   show(dom.brandDot, view.recording !== 'idle');

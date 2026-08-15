@@ -502,15 +502,15 @@
 }
 
 /* ── Meter ──────────────────────────────────────────────────────────────────
- * Storage usage. The bar changes colour as it fills, because "7.9 MB of 10 MB"
- * only means something to someone already worried about it.
+ * A bar for a quantity with a real denominator — which now means export
+ * progress and nothing else.
+ *
+ * Storage used to have one, filling toward the 10 MB `chrome.storage.local`
+ * allowed. FlowSnap asks for `unlimitedStorage`, so the only ceiling left is the
+ * user's disk. A bar drawn against that reads empty forever and implies a budget
+ * nobody is managing, so storage is reported as a figure instead and the
+ * `warn`/`full` fills went with it.
  */
-
-.meter {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
 
 .meter__track {
   height: 4px;
@@ -524,14 +524,6 @@
   border-radius: inherit;
   background: var(--accent);
   transition: width var(--transition);
-}
-
-.meter[data-level='warn'] .meter__fill {
-  background: var(--warn);
-}
-
-.meter[data-level='full'] .meter__fill {
-  background: var(--danger);
 }
 
 /* ── Toast ──────────────────────────────────────────────────────────────────

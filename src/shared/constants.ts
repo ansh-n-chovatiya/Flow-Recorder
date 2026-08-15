@@ -1,10 +1,34 @@
 /** Tunables shared across the worker, content script, injected agent and UI. */
 
-/** Hard cap on steps per recording; the recorder stops itself on reaching it. */
-export const MAX_STEPS = 30;
+/**
+ * Runaway guard, not a product limit.
+ *
+ * This used to be 30, chosen when `chrome.storage.local` gave us 10 MB and one
+ * long flow could fill it. With `unlimitedStorage` the store is no longer the
+ * constraint, and a recorder that stops mid-task because it hit an arbitrary
+ * number is worse than a large flow — the user has to start again and repeat
+ * everything they just did.
+ *
+ * 500 was measured, not picked for roundness. Every capture rewrites the whole
+ * `recordedSteps` key, so the cost of a step grows with the flow; against real
+ * screenshot sizes (86 KB median across the 946 in `mcp-server/flows/`) that
+ * round trip costs about 8 ms at 30 steps, 43 ms at 200 and 106 ms at 500 —
+ * still inside `CAPTURE_MIN_INTERVAL_MS`, so the recorder never falls behind its
+ * own throttle. Past roughly this point the array would want splitting per step
+ * before the number goes any higher.
+ */
+export const MAX_STEPS = 500;
 
-/** Step count at which the recorder starts warning that the cap is close. */
-export const WARN_STEPS = 25;
+/**
+ * Step count past which the popup mentions the flow is getting long.
+ *
+ * Advice, not a warning — nothing fails here. Long flows take longer to export
+ * and are harder for a model to use well, which is worth one line so the user
+ * can decide to stop and start a second recording. It deliberately does not name
+ * `MAX_STEPS`: that number is a backstop, and pointing at it would turn a note
+ * about usefulness back into a note about running out of room.
+ */
+export const WARN_STEPS = 150;
 
 /**
  * How long to wait after an interaction before screenshotting, so the page has
@@ -39,20 +63,20 @@ export const PRECAPTURE_TTL_MS = 3000;
  */
 export const PAINT_TIMEOUT_MS = 50;
 
-/**
- * What Chrome actually allows in `chrome.storage.local` without the
- * `unlimitedStorage` permission. Shown to the user; never used as the guard.
+/*
+ * There is deliberately no storage quota constant here any more.
+ *
+ * `chrome.storage.local` defaults to 10 MB, which held about five ordinary
+ * flows. The manifest now asks for `unlimitedStorage`, so the only ceiling left
+ * is the user's disk — a number we cannot know and should not invent. Usage is
+ * still reported, because "how much is FlowSnap holding" is a fair question; it
+ * is reported as a figure rather than a bar, since a bar has to fill against
+ * something.
+ *
+ * A write can still fail if the disk really is full. That arrives as
+ * `STORAGE_QUOTA` from `chrome/storage.ts`, and is handled where it happens
+ * instead of being predicted in advance.
  */
-export const STORAGE_QUOTA = 10_485_760;
-
-/**
- * `chrome.storage.local` allows 10 MB. Screenshots are dropped once usage
- * approaches this, so step metadata is never the thing that fails to save.
- */
-export const STORAGE_BUDGET = 8_000_000;
-
-/** Fraction of the quota at which the storage meter starts warning. */
-export const STORAGE_WARN_RATIO = 0.75;
 
 /**
  * How recent a stored failure has to be for the popup to interrupt with it. An

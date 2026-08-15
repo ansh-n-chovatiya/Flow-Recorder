@@ -158,8 +158,9 @@ choices rather than drift:
   `All / Recent / Largest`. That set is one filter and two sorts wearing the
   same control — "All" of what, against a list that is already all of them?
 - **There is no Duplicate action.** The review frame's overflow menu offers one.
-  Duplicating doubles the largest thing in a 10 MB store for a use I could not
-  name; it can arrive in step 10 if one turns up.
+  It was originally left out because duplicating doubled the largest thing in a
+  10 MB store; that argument died with the quota (see below), so what remains is
+  simply that I could not name the use. It can arrive in step 10 if one turns up.
 
 One departure from the *prompt*: the annotation palette is a fixed set of
 values in `annotate-ops.ts`, not design tokens. That ink is baked into a JPEG
@@ -167,6 +168,72 @@ that leaves the machine, so it must not change when the theme does. The values
 are taken from the system's data colours so the two still look like one product,
 and the swatch borders are tokens — which is what makes the white swatch
 visible on a white panel, as the audit complained it was not.
+
+## The storage quota, and the designs that assumed it
+
+The brief and the frames were drawn against `chrome.storage.local`'s 10 MB
+default: §5 State B specifies a "Storage is full" screen, Prompt 1 specifies a
+`1.2 MB / 10 MB` meter in the popup footer, and Prompt 2's live counter has a
+progress bar "because a 30-step cap exists". The manifest now asks for
+**`unlimitedStorage`**, and none of those three things survive it.
+
+Measured against the 125 real recordings in `mcp-server/flows/`: 946
+screenshots, median 86 KB each; per flow, median 632 KB and 2.6 MB at the top.
+Base64 in `storage.local` adds about 37%. So 10 MB held roughly five ordinary
+flows — a library screen with search, three sorts and a size column, over a store
+that could not hold enough to sort.
+
+What changed, and why the frames are not simply wrong:
+
+| Frame | Now | Why |
+|---|---|---|
+| Storage meter, popup and library | A figure — `14.2 MB stored` | A bar needs a denominator. The only one left is the user's disk, and a bar against that reads empty forever while implying a budget nobody is managing. |
+| Settings meter with `45% used` | The same figure, plus per-step cost | Per-step is the number that lets someone predict what the next recording costs. A percentage of nothing does not. |
+| Live counter's `12 / 30` bar | The count alone | It filled toward a cap that no longer exists. |
+| "Storage is full" | "The disk is full" | With `unlimitedStorage` the only remaining write failure is the disk. Saying "storage" sends the user hunting for flows to delete, which frees almost nothing. |
+| `MAX_STEPS = 30` | `500`, as a runaway guard | Detailed below. |
+
+`MAX_STEPS` is no longer a product limit. Stopping a recording at 30 steps makes
+the user repeat everything they just did, and the number came from storage rather
+than from usefulness. It is now a backstop, and 500 was measured rather than
+picked for roundness.
+
+Every capture rewrites the whole `recordedSteps` key, so a step costs more the
+longer the flow is. Against real screenshot sizes that round trip is:
+
+| Steps | Rewritten per capture | Cost per capture |
+|---|---|---|
+| 30 | 6 MB | 8 ms |
+| 100 | 19 MB | 22 ms |
+| 200 | 38 MB | 43 ms |
+| 500 | 94 MB | 106 ms |
+
+`CAPTURE_MIN_INTERVAL_MS` is 550 ms, so even at the backstop the recorder never
+falls behind its own throttle. Going higher than 500 would mean splitting the
+array into a key per step first — which is the same change that would let
+screenshots move to IndexedDB, and neither is worth doing until a flow that long
+actually exists.
+
+`WARN_STEPS` moved from 25 to 150 and changed meaning with it: it no longer says
+the cap is close, it says the flow is getting long to export. It deliberately
+does not name `MAX_STEPS`, because pointing at the backstop would turn a note
+about usefulness back into a note about running out of room.
+
+Two deletions worth calling out separately:
+
+- The worker used to measure usage before every capture and **silently drop the
+  screenshot** past an 8 MB budget, so a long recording quietly degraded into
+  steps with no pictures. That is the one thing a screenshot recorder must not
+  do, and there is nothing left to trade away.
+- `screenshotOriginal` is now stored **only when annotating actually changed the
+  image**. A step with no highlight box held two byte-identical copies of the
+  same picture, and since the whole array is rewritten on every capture, that
+  waste was multiplied by the length of the recording. Every reader already
+  treats it as `screenshotOriginal ?? screenshot`, so null was always the right
+  way to say "the same one".
+
+`tests/manifest.test.ts` guards the permission, because the guard it replaced is
+gone — losing `unlimitedStorage` now means hitting 10 MB with nothing to catch it.
 
 ## 6. What the export gets right
 

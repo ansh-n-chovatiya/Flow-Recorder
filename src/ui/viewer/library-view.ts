@@ -7,7 +7,6 @@
  */
 
 import { countFailures, flowHost } from '../../core/flow/index.js';
-import { STORAGE_QUOTA, STORAGE_WARN_RATIO } from '../../shared/constants.js';
 import type { FlowMeta, RecordingState, Step, StepType } from '../../shared/types.js';
 import { formatBytes, formatDateTime, formatRelative } from '../format.js';
 
@@ -59,11 +58,12 @@ export interface FlowRowView {
   failures: number;
 }
 
+/**
+ * How much FlowSnap is holding. A figure, not a proportion: with
+ * `unlimitedStorage` there is no denominator short of the user's whole disk.
+ */
 export interface LibraryStorageView {
   usedBytes: number;
-  quotaBytes: number;
-  ratio: number;
-  level: 'ok' | 'warn' | 'full';
 }
 
 /** Which block fills the page. Exactly one, always. */
@@ -84,11 +84,7 @@ export interface LibraryView {
 export const THUMBNAIL_LIMIT = 4;
 
 function storageView(usedBytes: number | null): LibraryStorageView | null {
-  if (usedBytes == null) return null;
-
-  const ratio = Math.min(usedBytes / STORAGE_QUOTA, 1);
-  const level = ratio >= 1 ? 'full' : ratio >= STORAGE_WARN_RATIO ? 'warn' : 'ok';
-  return { usedBytes, quotaBytes: STORAGE_QUOTA, ratio, level };
+  return usedBytes == null ? null : { usedBytes };
 }
 
 /** `just now` while that is still true, an exact moment once it is not. */
@@ -162,9 +158,9 @@ function summaryLine(count: number, usedBytes: number | null): string {
   const flows = `${count} ${count === 1 ? 'flow' : 'flows'}`;
   if (usedBytes == null) return flows;
 
-  // Through `formatBytes`, so this line and the meter in the footer below it
-  // never disagree about how to write the same two numbers.
-  return `${flows} · ${formatBytes(usedBytes)} of ${formatBytes(STORAGE_QUOTA)} used`;
+  // Through `formatBytes`, so this line and the reading in the footer below it
+  // never disagree about how to write the same number.
+  return `${flows} · ${formatBytes(usedBytes)}`;
 }
 
 export function deriveLibraryView(input: LibraryInput): LibraryView {

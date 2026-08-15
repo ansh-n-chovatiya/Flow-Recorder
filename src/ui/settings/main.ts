@@ -9,11 +9,7 @@
 
 import { bytesInUse, getLocal, getSync, removeLocal, setLocal, setSync } from '../../chrome/storage.js';
 import { checkMcp } from '../../features/mcp/health.js';
-import {
-  DEFAULT_MCP_URL,
-  STORAGE_QUOTA,
-  STORAGE_WARN_RATIO,
-} from '../../shared/constants.js';
+import { DEFAULT_MCP_URL } from '../../shared/constants.js';
 import { savedFlowKey, type FlowMeta, type ThemePreference } from '../../shared/types.js';
 import { formatBytes } from '../format.js';
 import { hydrateIcons, icon } from '../icons.js';
@@ -41,9 +37,6 @@ const dom = {
   autoSendWarning: el('autosend-warning'),
 
   storageUsed: el('storage-used'),
-  storageQuota: el('storage-quota'),
-  storageMeter: el('storage-meter'),
-  storageFill: el('storage-fill'),
   storageDetail: el('storage-detail'),
 
   flowsSummary: el('flows-summary'),
@@ -150,13 +143,8 @@ let savedFlows: FlowMeta[] = [];
 
 async function refreshStorage(): Promise<void> {
   const used = await bytesInUse();
-  const ratio = Math.min(used / STORAGE_QUOTA, 1);
 
   dom.storageUsed.textContent = formatBytes(used);
-  dom.storageQuota.textContent = formatBytes(STORAGE_QUOTA);
-  dom.storageFill.style.width = `${Math.round(ratio * 100)}%`;
-  dom.storageMeter.dataset.level = ratio >= 1 ? 'full' : ratio >= STORAGE_WARN_RATIO ? 'warn' : 'ok';
-  dom.storageDetail.textContent = `${Math.round(ratio * 100)}% used`;
 
   const stored = await getLocal(['savedFlowsMeta', 'recordedSteps']);
   savedFlows = stored.ok && Array.isArray(stored.value.savedFlowsMeta)
@@ -168,6 +156,12 @@ async function refreshStorage(): Promise<void> {
     savedFlows.length === 0
       ? 'No saved flows.'
       : `${savedFlows.length} saved ${savedFlows.length === 1 ? 'flow' : 'flows'}, ${steps} steps in total. The flow you are recording now is not included.`;
+
+  // The figure above is meaningless without knowing what drives it. Screenshots
+  // are almost all of it, so the per-step cost is the number that lets someone
+  // predict what another recording will take.
+  dom.storageDetail.textContent =
+    steps > 0 ? `About ${formatBytes(Math.round(used / steps))} per step, mostly screenshots.` : '';
 
   dom.deleteFlows.disabled = savedFlows.length === 0;
 }

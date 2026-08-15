@@ -7,7 +7,7 @@
  */
 
 import { annotateScreenshot } from './annotator.js';
-import { bytesInUse, getLocal, getSync, setLocal } from '../chrome/storage.js';
+import { getLocal, getSync, setLocal } from '../chrome/storage.js';
 import { captureVisibleTab } from '../chrome/tabs.js';
 import {
   BADGE_COLOR,
@@ -15,8 +15,6 @@ import {
   MAX_STEPS,
   PRECAPTURE_TTL_MS,
   SETTLE_DELAY_MS,
-  STORAGE_BUDGET,
-  WARN_STEPS,
 } from '../shared/constants.js';
 import { flowError, type FlowError } from '../shared/errors.js';
 import type { WorkerRequest } from '../shared/messages.js';
@@ -85,13 +83,16 @@ async function captureAndSave(
   // "limit reached" note.
   if (!recordingActive) return;
 
+  // The backstop — see MAX_STEPS. Usually a page generating activity on its own,
+  // but a long enough session reaches it honestly, so the note does not guess at
+  // a cause or imply the user did something wrong.
   if (recordedSteps.length >= MAX_STEPS) {
     recordedSteps.push({
       type: 'note',
       url: step.url,
       timestamp: Date.now(),
       action: 'limit-reached',
-      value: `Recording stopped: reached ${MAX_STEPS}-step limit.`,
+      value: `Recording stopped at ${MAX_STEPS} steps, FlowSnap's safety limit. Every step up to here was saved.`,
       screenshot: null,
       stepNumber: recordedSteps.length + 1,
     });
@@ -99,10 +100,6 @@ async function captureAndSave(
     if (!written.ok) await reportError(written.error);
     updateBadge(recordedSteps.length);
     return;
-  }
-
-  if (recordedSteps.length >= WARN_STEPS) {
-    console.warn(`FlowSnap: ${recordedSteps.length} steps — approaching ${MAX_STEPS}-step limit.`);
   }
 
   let dataUrl: string | null = preShot;
@@ -117,19 +114,25 @@ async function captureAndSave(
     }
   }
 
-  // `getBytesInUse` avoids re-serialising the whole steps array — up to ~8 MB of
-  // base64 — just to measure it.
-  const used = await bytesInUse();
-  const overBudget = used + (dataUrl?.length ?? 0) > STORAGE_BUDGET;
-
+  // Every captured screenshot is kept. Until `unlimitedStorage`, this measured
+  // usage first and silently dropped the image past a budget — so a long
+  // recording quietly degraded into steps with no pictures, which is the one
+  // thing a screenshot recorder must not do. With no quota to stay under there
+  // is nothing left to trade away.
+  //
+  // The original is only stored when annotating actually changed the image. With
+  // no highlight box the two were byte-identical, so every such step paid twice
+  // for one picture — and the whole array is rewritten on every capture, so that
+  // waste was multiplied by the length of the recording. `screenshotOriginal` is
+  // read as `?? screenshot` everywhere, which is already what null means.
   let screenshot: string | null = null;
   let screenshotOriginal: string | null = null;
 
-  if (dataUrl && !overBudget) {
-    screenshotOriginal = dataUrl;
-    screenshot = elementBox ? await annotateScreenshot(dataUrl, elementBox, dpr) : dataUrl;
-  } else if (overBudget) {
-    await reportError(flowError('STORAGE_QUOTA', `${used} bytes in use`));
+  if (dataUrl) {
+    screenshot = await annotateScreenshot(dataUrl, elementBox, dpr);
+    // Compared rather than inferred from `elementBox`, because the annotator
+    // also hands back the source unchanged when it cannot get a canvas.
+    screenshotOriginal = screenshot === dataUrl ? null : dataUrl;
   }
 
   recordedSteps.push({

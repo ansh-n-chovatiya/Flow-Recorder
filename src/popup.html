@@ -89,12 +89,12 @@
           <span class="counter__unit">steps captured</span>
         </div>
 
-        <div id="live-meter" class="meter" data-level="ok">
-          <div class="meter__track">
-            <div id="live-meter-fill" class="meter__fill" style="width: 0%"></div>
-          </div>
-          <p id="live-cap" class="label"></p>
-        </div>
+        <!--
+          Only appears once a flow is long enough to be worth mentioning. There
+          is no bar here any more: it filled toward a 30-step cap that no longer
+          exists, and a bar with nothing to fill toward is a lie about a limit.
+        -->
+        <p id="live-cap" class="label hidden"></p>
 
         <p id="live-last" class="live__last truncate"></p>
 
@@ -151,15 +151,10 @@
     </main>
 
     <footer id="footer" class="popup__footer hidden">
-      <div id="storage" class="meter" data-level="ok">
-        <span class="storage__reading label">
-          <span data-icon="hard-drive"></span>
-          <span id="storage-text"></span>
-        </span>
-        <div class="meter__track">
-          <div id="storage-fill" class="meter__fill" style="width: 0%"></div>
-        </div>
-      </div>
+      <span class="storage__reading label">
+        <span data-icon="hard-drive"></span>
+        <span id="storage-text"></span>
+      </span>
       <button id="btn-library" class="btn btn--ghost btn--compact" type="button">
         <span>Library</span>
         <span data-icon="arrow-up-right"></span>
