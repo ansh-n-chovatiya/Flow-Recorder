@@ -1,0 +1,66 @@
+name: Release
+
+# Tag a commit `v1.1.0` and push it — this verifies, builds, zips dist/, and
+# attaches the zip to a GitHub Release. That zip is what a non-developer
+# downloads: unzip it and load the folder unpacked, no toolchain needed.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # A release whose zip reports a different version than its tag is worse
+      # than no release — Chrome shows the manifest version, not the tag.
+      - name: Tag matches package.json and manifest.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          MANIFEST=$(node -p "require('./public/manifest.json').version")
+          echo "tag=$TAG package.json=$PKG manifest.json=$MANIFEST"
+          if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$MANIFEST" ]; then
+            echo "::error::Version mismatch — bump package.json and run npm run sync-version before tagging."
+            exit 1
+          fi
+
+      - name: Verify and build
+        run: npm run verify
+
+      - name: Package
+        run: node scripts/package.mjs
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: releases/*.zip
+          generate_release_notes: true
+          body: |
+            ### Install
+
+            1. Download the `.zip` below and unzip it.
+            2. Open `chrome://extensions`, enable **Developer mode**.
+            3. **Load unpacked** → select the unzipped folder.
+            4. Pin FlowSnap to the toolbar and press **Start Recording**.
+
+            See the [changelog](https://github.com/ansh-n-chovatiya/Flow-Recorder/blob/main/CHANGELOG.md) for what changed.
+
+      # Still useful on a manual dispatch, where no release is created.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flowsnap
+          path: releases/*.zip

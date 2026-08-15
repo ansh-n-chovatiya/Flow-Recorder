@@ -3,6 +3,7 @@
   "name": "FlowSnap — AI Flow Recorder",
   "version": "1.0.0",
   "description": "Record browser flows and export them as AI-ready context for Claude",
+  "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
     "tabs",
@@ -15,31 +16,25 @@
     "http://127.0.0.1:7734/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["lib/page-injector.js"],
+      "js": ["injected/agent.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "lib/selector.js",
-        "content.js"
-      ],
-      "css": [
-        "styles/overlay.css"
-      ],
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
       "run_at": "document_idle"
     }
   ],
   "action": {
-    "default_popup": "popup/popup.html",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -53,12 +48,8 @@
   },
   "web_accessible_resources": [
     {
-      "resources": [
-        "viewer/*"
-      ],
-      "matches": [
-        "<all_urls>"
-      ]
+      "resources": ["viewer.html"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

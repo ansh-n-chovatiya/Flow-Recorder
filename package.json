@@ -1,0 +1,55 @@
+{
+  "name": "flowsnap",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chrome extension that records browser flows — clicks, inputs, network and console — and exports them as AI-ready context.",
+  "license": "MIT",
+  "author": "Ansh Chovatiya",
+  "type": "module",
+  "keywords": [
+    "chrome-extension",
+    "flow-recorder",
+    "screenshots",
+    "mcp",
+    "ai-context"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ansh-n-chovatiya/Flow-Recorder.git"
+  },
+  "homepage": "https://github.com/ansh-n-chovatiya/Flow-Recorder#readme",
+  "bugs": {
+    "url": "https://github.com/ansh-n-chovatiya/Flow-Recorder/issues"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "build": "npm run build:main && npm run build:content && npm run build:agent",
+    "build:main": "vite build",
+    "build:content": "vite build --config vite.content.config.ts",
+    "build:agent": "vite build --config vite.agent.config.ts",
+    "dev": "npm run build -- --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "sync-version": "node scripts/sync-version.mjs",
+    "version": "npm run sync-version && git add public/manifest.json",
+    "package": "npm run verify && node scripts/package.mjs",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/chrome": "^0.0.287",
+    "@types/node": "^26.2.0",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,78 @@
+name: CI
+
+# Every push and PR builds a loadable extension and attaches the zip. That zip
+# is what "a fresh build on every commit" means here: downloadable from the run,
+# without minting a Release for a commit nobody asked to publish.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # The version lives in two files. Catch drift here rather than at tag
+      # time, where the release workflow would refuse to publish.
+      - name: Versions agree
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          MANIFEST=$(node -p "require('./public/manifest.json').version")
+          test "$PKG" = "$MANIFEST" || {
+            echo "::error::package.json is $PKG but public/manifest.json is $MANIFEST — run npm run sync-version"
+            exit 1
+          }
+
+      # A dist/ that Chrome would reject is worth catching before a human tries
+      # to load it.
+      - name: Extension loads as an unpacked directory
+        run: |
+          for f in manifest.json background.js content.js popup.html viewer.html injected/agent.js; do
+            test -f "dist/$f" || { echo "::error::dist/$f is missing"; exit 1; }
+          done
+          node -e "
+            const m = require('./dist/manifest.json');
+            const fs = require('node:fs');
+            const refs = [
+              m.background.service_worker,
+              m.action.default_popup,
+              ...m.content_scripts.flatMap(c => [...(c.js ?? []), ...(c.css ?? [])]),
+              ...Object.values(m.icons),
+            ];
+            const missing = refs.filter(r => !fs.existsSync('dist/' + r));
+            if (missing.length) {
+              console.error('::error::manifest references missing files: ' + missing.join(', '));
+              process.exit(1);
+            }
+            console.log('manifest references ' + refs.length + ' files, all present');
+          "
+
+      - name: Package
+        run: node scripts/package.mjs --sha ${{ github.sha }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flowsnap-${{ github.sha }}
+          path: releases/*.zip
+          if-no-files-found: error
