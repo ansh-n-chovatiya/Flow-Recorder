@@ -6,7 +6,7 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [2.1.0] — 2026-08-15
 
 Connecting FlowSnap to Claude Code no longer means installing FlowSnap.
 
