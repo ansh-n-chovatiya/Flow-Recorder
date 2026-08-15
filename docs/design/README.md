@@ -138,6 +138,19 @@ empty as of step 8.
 | `features/export/download.ts` | The file-writing half of an export, split from the choosing half. |
 | `features/mcp/send.ts` | Send to Claude, lifted out of the viewer. |
 
+### The product mark
+
+`scripts/build-mark.mjs` rasterises `public/icons/icon{16,32,48,128}.png` from
+the same geometry as the inline SVG the popup, viewer and settings page draw —
+`npm run build:mark`. It is a supersampling rasteriser and a minimal PNG encoder
+with no dependencies, because `manifest.icons` is raster only and Chrome will
+not take the SVG.
+
+The icons it replaced were a red circle with a white slash, unrelated to
+anything else in the product and never updated when it was renamed. The toolbar
+icon cannot follow the theme — it sits in Chrome's chrome, not ours — so it uses
+the dark palette's brighter teal, which reads on a light toolbar as well.
+
 Two deliberate departures from the frames, both recorded here so they are
 choices rather than drift:
 

@@ -738,19 +738,34 @@
 /* ── App bar ────────────────────────────────────────────────────────────────
  * The top of a full-tab surface. Shared by the viewer and the settings page,
  * which is why it lives here rather than in either one's stylesheet.
+ *
+ * The bar spans the window — its hairline is the edge of the chrome — but its
+ * *contents* sit in the same frame as the page below, so the product mark is
+ * directly above the page title rather than out at the window's edge.
  */
 
 .appbar {
   position: sticky;
   top: 0;
   z-index: 10;
+  height: 52px;
+  padding: 0 var(--gutter);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.appbar__inner,
+.frame {
+  width: 100%;
+  max-width: var(--frame-max);
+  margin: 0 auto;
+}
+
+.appbar__inner {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  height: 52px;
-  padding: 0 var(--space-5);
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  height: 100%;
 }
 
 .appbar__actions {

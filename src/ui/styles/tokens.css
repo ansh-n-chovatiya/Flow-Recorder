@@ -146,8 +146,19 @@
   --popup-width: 360px;
   --popup-max-height: 600px;
   --rail-width: 208px;
-  --content-max: 1100px;
-  --content-max-wide: 1240px;
+
+  /*
+   * One frame for every full-tab surface — library, review, settings — so the
+   * app bar's contents line up with the page's, and moving between pages does
+   * not move the product's own left edge.
+   *
+   * 1440 rather than the brief's 1100: on the displays this is used on, an 1100
+   * column left a third of the window empty on either side, and the content is
+   * a tool being scanned rather than prose being read. The gutter is the only
+   * thing that shrinks below that.
+   */
+  --frame-max: 1440px;
+  --gutter: 32px;
 
   /* ── Motion ───────────────────────────────────────────────────────────── */
   --transition: 120ms ease-out;
@@ -284,5 +295,12 @@
 @media (prefers-reduced-motion: reduce) {
   :root {
     --pulse-duration: 0s;
+  }
+}
+
+/* A gutter is breathing room on a wide window and wasted width on a narrow one. */
+@media (max-width: 720px) {
+  :root {
+    --gutter: 16px;
   }
 }

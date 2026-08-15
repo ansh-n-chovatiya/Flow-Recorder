@@ -17,11 +17,18 @@
 
 /* ── Library ────────────────────────────────────────────────────────────── */
 
+/*
+ * The same frame as the app bar above it, so the page title sits directly under
+ * the product mark. `flex: 1` and the footer's `margin-top: auto` put the
+ * storage meter at the bottom of the window rather than halfway up it when the
+ * library holds two flows.
+ */
 .page {
+  flex: 1;
   width: 100%;
-  max-width: var(--content-max);
+  max-width: var(--frame-max);
   margin: 0 auto;
-  padding: var(--space-5) var(--space-5) var(--space-7);
+  padding: var(--space-5) var(--gutter) var(--space-6);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -246,6 +253,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  margin-top: auto;
   padding-top: var(--space-3);
   border-top: 1px solid var(--border);
 }
@@ -380,9 +388,9 @@
 .workspace {
   flex: 1;
   width: 100%;
-  max-width: var(--content-max-wide);
+  max-width: var(--frame-max);
   margin: 0 auto;
-  padding: var(--space-5);
+  padding: var(--space-5) var(--gutter) var(--space-6);
   display: grid;
   grid-template-columns: var(--rail-width) minmax(0, 1fr);
   gap: var(--space-5);

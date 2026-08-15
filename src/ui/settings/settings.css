@@ -10,18 +10,32 @@
 
 /* `.appbar` and `.brand` are in components.css — the viewer wears them too. */
 
+/*
+ * The same frame as the viewer, so moving between the two does not move the
+ * product's left edge. The rows read left-to-right regardless of how wide the
+ * window is — the label carries its explanation, and `.setting__note` is capped
+ * at 52ch so the prose never runs the full width even when the row does.
+ */
 .page {
-  max-width: 720px;
+  width: 100%;
+  max-width: var(--frame-max);
   margin: 0 auto;
-  padding: var(--space-6) var(--space-5) var(--space-7);
+  padding: var(--space-6) var(--gutter) var(--space-7);
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
 }
 
+/*
+ * Narrow: heading above its rows. Wide: heading beside them.
+ *
+ * The second layout is what the frame's width is *for* — a settings row
+ * stretched to 1400px puts its control an inch and a half from its label, and
+ * gains nothing by it. Here the extra width goes to the section's identity
+ * instead, and the rows keep a readable measure.
+ */
 .section {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: var(--space-4);
 }
 
@@ -31,6 +45,32 @@
   gap: var(--space-1);
   padding-bottom: var(--space-2);
   border-bottom: 1px solid var(--border);
+}
+
+.section__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@media (min-width: 900px) {
+  .section {
+    grid-template-columns: 280px minmax(0, 1fr);
+    gap: var(--space-6);
+    align-items: start;
+  }
+
+  /* Beside its rows, the heading needs no rule under it — the gap is the rule. */
+  .section__head {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .page > .section + .section {
+    padding-top: var(--space-6);
+    border-top: 1px solid var(--border);
+  }
 }
 
 .section__title {

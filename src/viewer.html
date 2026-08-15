@@ -20,28 +20,38 @@
     <!-- ── Library ──────────────────────────────────────────────────────── -->
     <div id="v-library" class="view">
       <header class="appbar">
-        <div class="brand">
-          <svg class="brand__mark" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-            <rect class="brand__mark-plate" width="20" height="20" rx="6" />
-            <path class="brand__mark-bolt" d="M11.4 3.4 5.9 11h3.2l-.5 5.6L14.1 9h-3.2z" />
-          </svg>
-          <span class="brand__name">FlowSnap</span>
-        </div>
+        <div class="appbar__inner">
+          <div class="brand">
+            <svg
+              class="brand__mark"
+              viewBox="0 0 20 20"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <rect class="brand__mark-plate" width="20" height="20" rx="6" />
+              <path
+                class="brand__mark-bolt"
+                d="M11.4 3.4 5.9 11h3.2l-.5 5.6L14.1 9h-3.2z"
+              />
+            </svg>
+            <span class="brand__name">FlowSnap</span>
+          </div>
 
-        <div class="appbar__actions">
-          <button
-            id="lib-settings"
-            class="btn btn--ghost btn--icon"
-            type="button"
-            aria-label="Settings"
-            title="Settings"
-          >
-            <span data-icon="settings"></span>
-          </button>
-          <button id="lib-new" class="btn btn--primary" type="button">
-            <span data-icon="circle-dot"></span>
-            <span>New recording</span>
-          </button>
+          <div class="appbar__actions">
+            <button
+              id="lib-settings"
+              class="btn btn--ghost btn--icon"
+              type="button"
+              aria-label="Settings"
+              title="Settings"
+            >
+              <span data-icon="settings"></span>
+            </button>
+            <button id="lib-new" class="btn btn--primary" type="button">
+              <span data-icon="circle-dot"></span>
+              <span>New recording</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -65,9 +75,23 @@
               />
             </div>
             <div class="segmented" role="group" aria-label="Sort flows">
-              <button class="segmented__option" type="button" data-sort="recent">Recent</button>
-              <button class="segmented__option" type="button" data-sort="largest">Largest</button>
-              <button class="segmented__option" type="button" data-sort="name">Name</button>
+              <button
+                class="segmented__option"
+                type="button"
+                data-sort="recent"
+              >
+                Recent
+              </button>
+              <button
+                class="segmented__option"
+                type="button"
+                data-sort="largest"
+              >
+                Largest
+              </button>
+              <button class="segmented__option" type="button" data-sort="name">
+                Name
+              </button>
             </div>
           </div>
         </div>
@@ -81,7 +105,11 @@
               <span id="current-dot" class="rec-dot"></span>
               <span id="current-status-text">Unsaved</span>
             </span>
-            <span id="current-errors" class="chip hidden" data-level="error"></span>
+            <span
+              id="current-errors"
+              class="chip hidden"
+              data-level="error"
+            ></span>
           </div>
           <h2 id="current-name" class="current__name">Current recording</h2>
           <p id="current-meta" class="meta"></p>
@@ -111,8 +139,8 @@
           <span data-icon="folder-open" data-icon-class="empty__icon"></span>
           <p class="empty__title">No flows yet</p>
           <p class="empty__body">
-            Record a browser session and it will appear here. Flows are stored on this device
-            only — nothing is uploaded unless you send it.
+            Record a browser session and it will appear here. Flows are stored
+            on this device only — nothing is uploaded unless you send it.
           </p>
         </section>
 
@@ -120,9 +148,14 @@
           <span data-icon="search" data-icon-class="empty__icon"></span>
           <p class="empty__title">Nothing matches that</p>
           <p class="empty__body">
-            No flow's name or site contains <span id="lib-nomatch-query" class="mono"></span>.
+            No flow's name or site contains
+            <span id="lib-nomatch-query" class="mono"></span>.
           </p>
-          <button id="lib-clear-search" class="btn btn--secondary" type="button">
+          <button
+            id="lib-clear-search"
+            class="btn btn--secondary"
+            type="button"
+          >
             Clear search
           </button>
         </section>
@@ -134,7 +167,11 @@
               <span id="lib-storage-text"></span>
             </span>
             <div class="meter__track">
-              <div id="lib-storage-fill" class="meter__fill" style="width: 0%"></div>
+              <div
+                id="lib-storage-fill"
+                class="meter__fill"
+                style="width: 0%"
+              ></div>
             </div>
           </div>
         </footer>
@@ -144,68 +181,82 @@
     <!-- ── Review ───────────────────────────────────────────────────────── -->
     <div id="v-review" class="view hidden">
       <header class="appbar appbar--review">
-        <button id="rv-back" class="btn btn--ghost" type="button">
-          <span data-icon="arrow-left"></span>
-          <span>Flows</span>
-        </button>
+        <div class="appbar__inner">
+          <button id="rv-back" class="btn btn--ghost" type="button">
+            <span data-icon="arrow-left"></span>
+            <span>Flows</span>
+          </button>
 
-        <div class="flowhead">
-          <div class="flowhead__row">
-            <h1 id="rv-name" class="flowhead__name truncate"></h1>
-            <button
-              id="rv-rename"
-              class="btn btn--ghost btn--icon btn--compact flowhead__rename"
-              type="button"
-              aria-label="Rename this flow"
-              title="Rename"
-            >
-              <span data-icon="pencil"></span>
-            </button>
-            <span id="rv-live" class="chip hidden" data-level="error">Recording</span>
+          <div class="flowhead">
+            <div class="flowhead__row">
+              <h1 id="rv-name" class="flowhead__name truncate"></h1>
+              <button
+                id="rv-rename"
+                class="btn btn--ghost btn--icon btn--compact flowhead__rename"
+                type="button"
+                aria-label="Rename this flow"
+                title="Rename"
+              >
+                <span data-icon="pencil"></span>
+              </button>
+              <span id="rv-live" class="chip hidden" data-level="error"
+                >Recording</span
+              >
+            </div>
+            <p id="rv-meta" class="mono flowhead__meta truncate"></p>
           </div>
-          <p id="rv-meta" class="mono flowhead__meta truncate"></p>
-        </div>
 
-        <div class="appbar__actions">
-          <button
-            id="rv-shortcuts"
-            class="btn btn--ghost btn--icon"
-            type="button"
-            aria-label="Keyboard shortcuts"
-            title="Keyboard shortcuts"
-          >
-            <span data-icon="circle-help"></span>
-          </button>
-          <button id="rv-export" class="btn btn--secondary" type="button">
-            <span data-icon="download"></span>
-            <span>Export</span>
-          </button>
-          <button id="rv-send" class="btn btn--primary" type="button">
-            <span data-icon="sparkles"></span>
-            <span>Send to Claude</span>
-          </button>
-
-          <div class="menu">
+          <div class="appbar__actions">
             <button
-              id="rv-more"
+              id="rv-shortcuts"
               class="btn btn--ghost btn--icon"
               type="button"
-              aria-label="More actions"
-              aria-haspopup="true"
-              aria-expanded="false"
+              aria-label="Keyboard shortcuts"
+              title="Keyboard shortcuts"
             >
-              <span data-icon="ellipsis"></span>
+              <span data-icon="circle-help"></span>
             </button>
-            <div id="rv-menu" class="menu__panel hidden" role="menu">
-              <button id="rv-save" class="menu__item" type="button" role="menuitem">
-                <span data-icon="folder-plus"></span>
-                <span>Save to library</span>
+            <button id="rv-export" class="btn btn--secondary" type="button">
+              <span data-icon="download"></span>
+              <span>Export</span>
+            </button>
+            <button id="rv-send" class="btn btn--primary" type="button">
+              <span data-icon="sparkles"></span>
+              <span>Send to Claude</span>
+            </button>
+
+            <div class="menu">
+              <button
+                id="rv-more"
+                class="btn btn--ghost btn--icon"
+                type="button"
+                aria-label="More actions"
+                aria-haspopup="true"
+                aria-expanded="false"
+              >
+                <span data-icon="ellipsis"></span>
               </button>
-              <hr class="divider" />
-              <button id="rv-delete" class="menu__item menu__item--danger" type="button" role="menuitem">
-                <span data-icon="trash-2"></span>
-                <span>Delete flow</span>
-              </button>
+              <div id="rv-menu" class="menu__panel hidden" role="menu">
+                <button
+                  id="rv-save"
+                  class="menu__item"
+                  type="button"
+                  role="menuitem"
+                >
+                  <span data-icon="folder-plus"></span>
+                  <span>Save to library</span>
+                </button>
+                <hr class="divider" />
+                <button
+                  id="rv-delete"
+                  class="menu__item menu__item--danger"
+                  type="button"
+                  role="menuitem"
+                >
+                  <span data-icon="trash-2"></span>
+                  <span>Delete flow</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -215,9 +266,16 @@
         <!-- Structural decision C: a sticky index, so a 30-step flow is
              navigable and "where did it break" is answerable at a glance. -->
         <aside id="rv-rail" class="rail">
-          <p class="label rail__label">Steps <span id="rail-count" class="mono"></span></p>
+          <p class="label rail__label">
+            Steps <span id="rail-count" class="mono"></span>
+          </p>
           <ol id="rail-list" class="rail__list"></ol>
-          <div id="rail-filters" class="rail__filters" role="group" aria-label="Filter steps"></div>
+          <div
+            id="rail-filters"
+            class="rail__filters"
+            role="group"
+            aria-label="Filter steps"
+          ></div>
         </aside>
 
         <main class="steps">
@@ -233,28 +291,40 @@
             <span data-icon="circle-dot" data-icon-class="empty__icon"></span>
             <p class="empty__title">This flow has no steps</p>
             <p class="empty__body">
-              Steps you delete can be restored with Ctrl+Z until you leave this flow.
+              Steps you delete can be restored with Ctrl+Z until you leave this
+              flow.
             </p>
-            <button class="btn btn--secondary" type="button" data-back>Back to flows</button>
+            <button class="btn btn--secondary" type="button" data-back>
+              Back to flows
+            </button>
           </section>
 
           <section id="rv-nomatch" class="empty hidden">
             <span data-icon="search" data-icon-class="empty__icon"></span>
             <p class="empty__title">No steps match this filter</p>
             <p class="empty__body" id="rv-nomatch-body"></p>
-            <button id="rv-clear-filter" class="btn btn--secondary" type="button">
+            <button
+              id="rv-clear-filter"
+              class="btn btn--secondary"
+              type="button"
+            >
               Show all steps
             </button>
           </section>
 
           <section id="rv-missing" class="empty hidden">
-            <span data-icon="triangle-alert" data-icon-class="empty__icon"></span>
+            <span
+              data-icon="triangle-alert"
+              data-icon-class="empty__icon"
+            ></span>
             <p class="empty__title">That flow is gone</p>
             <p class="empty__body">
-              It was deleted, or it was saved by a version of FlowSnap that stored flows
-              differently. Nothing was lost from the library.
+              It was deleted, or it was saved by a version of FlowSnap that
+              stored flows differently. Nothing was lost from the library.
             </p>
-            <button class="btn btn--secondary" type="button" data-back>Back to flows</button>
+            <button class="btn btn--secondary" type="button" data-back>
+              Back to flows
+            </button>
           </section>
         </main>
       </div>
@@ -278,7 +348,12 @@
       </div>
 
       <div class="dialog__body">
-        <div id="export-formats" class="formats" role="radiogroup" aria-label="Format"></div>
+        <div
+          id="export-formats"
+          class="formats"
+          role="radiogroup"
+          aria-label="Format"
+        ></div>
 
         <div class="field">
           <p class="label">Include</p>
@@ -290,8 +365,8 @@
           <div class="banner__body">
             <p class="banner__title">Captured bodies are not redacted</p>
             <p>
-              Request headers are redacted at capture. Request and response bodies are not, and
-              can contain tokens or personal data.
+              Request headers are redacted at capture. Request and response
+              bodies are not, and can contain tokens or personal data.
             </p>
           </div>
         </div>
@@ -312,7 +387,11 @@
 
         <div id="export-progress" class="progress hidden">
           <div class="meter__track">
-            <div id="export-progress-fill" class="meter__fill" style="width: 0%"></div>
+            <div
+              id="export-progress-fill"
+              class="meter__fill"
+              style="width: 0%"
+            ></div>
           </div>
           <p id="export-caption" class="label"></p>
         </div>
@@ -321,7 +400,9 @@
       <div class="dialog__footer">
         <span id="export-total" class="mono meta"></span>
         <div class="row">
-          <button id="export-cancel" class="btn btn--ghost" type="button">Cancel</button>
+          <button id="export-cancel" class="btn btn--ghost" type="button">
+            Cancel
+          </button>
           <button id="export-run" class="btn btn--primary" type="button">
             <span id="export-run-icon" data-icon="download"></span>
             <span id="export-run-label">Export</span>
@@ -338,8 +419,12 @@
           <p id="annotate-action" class="mono meta truncate"></p>
         </div>
         <div class="row">
-          <button id="annotate-cancel" class="btn btn--ghost" type="button">Cancel</button>
-          <button id="annotate-save" class="btn btn--primary" type="button">Save changes</button>
+          <button id="annotate-cancel" class="btn btn--ghost" type="button">
+            Cancel
+          </button>
+          <button id="annotate-save" class="btn btn--primary" type="button">
+            Save changes
+          </button>
         </div>
       </header>
 
@@ -355,10 +440,20 @@
         <aside class="props">
           <div id="annotate-ink" class="props__group">
             <p class="label">Stroke</p>
-            <div id="annotate-swatches" class="swatches" role="radiogroup" aria-label="Colour"></div>
+            <div
+              id="annotate-swatches"
+              class="swatches"
+              role="radiogroup"
+              aria-label="Colour"
+            ></div>
 
             <p class="label">Width</p>
-            <div id="annotate-widths" class="segmented" role="group" aria-label="Stroke width"></div>
+            <div
+              id="annotate-widths"
+              class="segmented"
+              role="group"
+              aria-label="Stroke width"
+            ></div>
 
             <label class="label" for="annotate-opacity">Opacity</label>
             <input
@@ -386,8 +481,8 @@
               value="16"
             />
             <p class="meta">
-              Redaction rewrites the pixels. The original is not recoverable from the exported
-              image.
+              Redaction rewrites the pixels. The original is not recoverable
+              from the exported image.
             </p>
           </div>
         </aside>
@@ -412,7 +507,13 @@
           >
             <span data-icon="plus"></span>
           </button>
-          <button id="annotate-fit" class="btn btn--ghost btn--compact" type="button">Fit</button>
+          <button
+            id="annotate-fit"
+            class="btn btn--ghost btn--compact"
+            type="button"
+          >
+            Fit
+          </button>
         </div>
 
         <div class="row">
@@ -462,10 +563,20 @@
           <p id="confirm-body"></p>
         </div>
         <div class="dialog__footer">
-          <button id="confirm-cancel" class="btn btn--secondary" type="submit" value="cancel">
+          <button
+            id="confirm-cancel"
+            class="btn btn--secondary"
+            type="submit"
+            value="cancel"
+          >
             Cancel
           </button>
-          <button id="confirm-ok" class="btn btn--danger" type="submit" value="ok"></button>
+          <button
+            id="confirm-ok"
+            class="btn btn--danger"
+            type="submit"
+            value="ok"
+          ></button>
         </div>
       </form>
     </dialog>
@@ -477,13 +588,29 @@
         </div>
         <div class="dialog__body">
           <div class="field">
-            <label id="name-label" class="field__label" for="name-input"></label>
-            <input id="name-input" class="input" type="text" autocomplete="off" />
+            <label
+              id="name-label"
+              class="field__label"
+              for="name-input"
+            ></label>
+            <input
+              id="name-input"
+              class="input"
+              type="text"
+              autocomplete="off"
+            />
           </div>
         </div>
         <div class="dialog__footer">
-          <button class="btn btn--secondary" type="submit" value="cancel">Cancel</button>
-          <button id="name-ok" class="btn btn--primary" type="submit" value="ok"></button>
+          <button class="btn btn--secondary" type="submit" value="cancel">
+            Cancel
+          </button>
+          <button
+            id="name-ok"
+            class="btn btn--primary"
+            type="submit"
+            value="ok"
+          ></button>
         </div>
       </form>
     </dialog>
@@ -512,7 +639,9 @@
           </dl>
         </div>
         <div class="dialog__footer">
-          <button class="btn btn--secondary" type="submit" value="close">Close</button>
+          <button class="btn btn--secondary" type="submit" value="close">
+            Close
+          </button>
         </div>
       </form>
     </dialog>
@@ -524,7 +653,10 @@
       <li class="flow-row">
         <button class="flow-row__open" type="button">
           <img class="flow-row__thumb" alt="" />
-          <span class="flow-row__thumb flow-row__thumb--blank" data-icon="image"></span>
+          <span
+            class="flow-row__thumb flow-row__thumb--blank"
+            data-icon="image"
+          ></span>
           <span class="flow-row__text">
             <span class="flow-row__name truncate"></span>
             <span class="flow-row__meta mono truncate"></span>
@@ -709,8 +841,22 @@
         </button>
         <div class="call__panels hidden">
           <div class="call__tabs" role="tablist">
-            <button class="call__tab" type="button" data-panel="request" role="tab">Request</button>
-            <button class="call__tab" type="button" data-panel="response" role="tab">Response</button>
+            <button
+              class="call__tab"
+              type="button"
+              data-panel="request"
+              role="tab"
+            >
+              Request
+            </button>
+            <button
+              class="call__tab"
+              type="button"
+              data-panel="response"
+              role="tab"
+            >
+              Response
+            </button>
           </div>
           <div class="call__panel" data-panel="request"></div>
           <div class="call__panel" data-panel="response"></div>
