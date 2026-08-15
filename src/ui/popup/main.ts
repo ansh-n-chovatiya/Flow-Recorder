@@ -1,16 +1,27 @@
 /**
- * Popup controller: recording state, button visibility, live step count.
+ * Popup controller.
  *
- * State changes are written to storage and nothing else. Every content script
+ * Reads state, hands it to `derivePopupView`, renders the result. Every decision
+ * about which state the popup is in lives in view.ts and is tested there; this
+ * file only knows how to put a view on screen and how to turn a click into a
+ * storage write.
+ *
+ * Recording state is written to storage and nothing else. Every content script
  * watches storage, so a recording follows the user across tabs — messaging only
  * the active tab is what made recording silently stop the moment you switched.
  */
 
-import { getLocal, setLocal, setSync } from '../../chrome/storage.js';
-import { preflight, type RecordingTarget } from '../../features/recording/preflight.js';
-import { DEFAULT_MCP_URL } from '../../shared/constants.js';
+import { bytesInUse, getLocal, setLocal } from '../../chrome/storage.js';
+import { prepare, probe, type Preflight } from '../../features/recording/preflight.js';
 import { sendToWorker } from '../../shared/messages.js';
-import type { RecordingState } from '../../shared/types.js';
+import type { RecordingState, Step, StoredError } from '../../shared/types.js';
+import { formatAgo, formatBytes, formatElapsed, formatRelative } from '../format.js';
+import { hydrateIcons, setIcon } from '../icons.js';
+import { initTheme } from '../theme.js';
+import { derivePopupView, type NoticeView, type PopupView } from './view.js';
+
+initTheme();
+hydrateIcons();
 
 function el<T extends HTMLElement = HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -18,203 +29,381 @@ function el<T extends HTMLElement = HTMLElement>(id: string): T {
   return node as T;
 }
 
-const statusEl = el('status');
-const stepCountEl = el('step-count');
-const targetEl = el('target');
-const noticeEl = el('notice');
-const btnStart = el<HTMLButtonElement>('btn-start');
-const btnStop = el<HTMLButtonElement>('btn-stop');
-const btnPause = el<HTMLButtonElement>('btn-pause');
-const btnResume = el<HTMLButtonElement>('btn-resume');
-const btnView = el<HTMLButtonElement>('btn-view');
-const btnClear = el<HTMLButtonElement>('btn-clear');
+const dom = {
+  brandDot: el('brand-dot'),
+  settings: el<HTMLButtonElement>('btn-settings'),
 
-const ALL_BUTTONS = [btnStart, btnStop, btnPause, btnResume, btnView, btnClear];
+  loading: el('s-loading'),
 
-const STATUS_TEXT: Record<RecordingState, string> = {
-  idle: 'Ready to record',
-  recording: '● Recording in progress...',
-  paused: '⏸ Recording paused',
+  target: el('s-target'),
+  targetFavicon: el<HTMLImageElement>('target-favicon'),
+  targetHost: el('target-host'),
+
+  blocked: el('s-blocked'),
+  blockedTitle: el('blocked-title'),
+  blockedUrl: el('blocked-url'),
+
+  notice: el('notice'),
+  noticeIcon: el('notice-icon'),
+  noticeTitle: el('notice-title'),
+  noticeBody: el('notice-body'),
+
+  start: el<HTMLButtonElement>('btn-start'),
+  startIcon: el('btn-start-icon'),
+  reload: el<HTMLButtonElement>('btn-reload'),
+
+  live: el('s-live'),
+  liveBanner: el('live-banner'),
+  liveDot: el('live-dot'),
+  liveLabel: el('live-label'),
+  liveTimer: el('live-timer'),
+  liveCount: el('live-count'),
+  liveMeter: el('live-meter'),
+  liveMeterFill: el('live-meter-fill'),
+  liveCap: el('live-cap'),
+  liveLast: el('live-last'),
+  pause: el<HTMLButtonElement>('btn-pause'),
+  resume: el<HTMLButtonElement>('btn-resume'),
+  stop: el<HTMLButtonElement>('btn-stop'),
+
+  flow: el('s-flow'),
+  flowCount: el('flow-count'),
+  flowWhen: el('flow-when'),
+  flowThumbs: el('flow-thumbs'),
+  view: el<HTMLButtonElement>('btn-view'),
+  clear: el<HTMLButtonElement>('btn-clear'),
+
+  empty: el('s-empty'),
+
+  footer: el('footer'),
+  storage: el('storage'),
+  storageText: el('storage-text'),
+  storageFill: el('storage-fill'),
+  library: el<HTMLButtonElement>('btn-library'),
+
+  discardDialog: el<HTMLDialogElement>('discard-dialog'),
+  discardBody: el('discard-body'),
 };
-
-/** Whether the active tab can be recorded, resolved when the popup opens. */
-let target: RecordingTarget | null = null;
-
-function showNotice(text: string, kind: 'blocked' | 'error'): void {
-  noticeEl.textContent = text;
-  noticeEl.className = kind;
-}
-
-function hideNotice(): void {
-  noticeEl.textContent = '';
-  noticeEl.className = 'hidden';
-}
-
-function updateUI(state: RecordingState, count: number): void {
-  statusEl.textContent = STATUS_TEXT[state];
-  statusEl.className = state === 'idle' ? '' : state;
-
-  for (const button of ALL_BUTTONS) button.classList.add('hidden');
-
-  const show = (...buttons: HTMLButtonElement[]) => {
-    for (const button of buttons) button.classList.remove('hidden');
-  };
-
-  if (state === 'recording') {
-    show(btnPause, btnStop);
-  } else if (state === 'paused') {
-    show(btnResume, btnStop);
-  } else {
-    show(btnStart);
-    // Starting is only offered when there is somewhere to record.
-    btnStart.disabled = target === null;
-    if (count > 0) show(btnView, btnClear);
-  }
-
-  stepCountEl.textContent = count === 1 ? '1 step captured' : `${count} steps captured`;
-}
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-async function readState(): Promise<{ state: RecordingState; count: number }> {
-  const stored = await getLocal(['recordingActive', 'recordingPaused', 'recordedSteps']);
-  if (!stored.ok) return { state: 'idle', count: 0 };
-
-  const { recordingActive, recordingPaused, recordedSteps } = stored.value;
-  return {
-    state: recordingActive ? (recordingPaused ? 'paused' : 'recording') : 'idle',
-    count: Array.isArray(recordedSteps) ? recordedSteps.length : 0,
-  };
+interface PopupState {
+  preflight: Preflight | null;
+  recording: RecordingState;
+  steps: Step[];
+  startedAt: number | null;
+  usedBytes: number | null;
+  lastError: StoredError | null;
 }
 
-/**
- * Surface the last failure the worker recorded. A capture that silently produced
- * no screenshot, or a write that hit the storage ceiling, is otherwise invisible.
- */
-async function showLastError(): Promise<boolean> {
-  const stored = await getLocal('lastError');
-  if (!stored.ok) return false;
+const state: PopupState = {
+  preflight: null,
+  recording: 'idle',
+  steps: [],
+  startedAt: null,
+  usedBytes: null,
+  lastError: null,
+};
 
-  const lastError = stored.value.lastError;
-  // Only recent failures are worth interrupting for; an hour-old one is noise.
-  if (!lastError || Date.now() - lastError.at > 60_000) return false;
-
-  showNotice(lastError.message, 'error');
-  return true;
+function show(node: HTMLElement, visible: boolean): void {
+  node.classList.toggle('hidden', !visible);
 }
 
-async function refresh(): Promise<void> {
-  const { state, count } = await readState();
-  updateUI(state, count);
+const NOTICE_ICON = {
+  info: 'info',
+  warn: 'triangle-alert',
+  danger: 'triangle-alert',
+} as const;
+
+function renderNotice(notice: NoticeView | null): void {
+  show(dom.notice, notice !== null);
+  if (!notice) return;
+
+  dom.notice.className = `banner banner--${notice.tone}`;
+  setIcon(dom.noticeIcon, NOTICE_ICON[notice.tone]);
+  dom.noticeTitle.textContent = notice.title;
+  dom.noticeBody.textContent = notice.body;
 }
 
-/** Resolve what the popup is pointing at, without touching the page. */
-async function resolveTarget(): Promise<void> {
-  const result = await preflight(false);
+function renderThumbs(thumbnails: string[], extra: number): void {
+  dom.flowThumbs.replaceChildren();
 
-  if (result.ok) {
-    target = result.value;
-    targetEl.textContent = target.host || target.url;
-    if (!(await showLastError())) hideNotice();
+  for (const src of thumbnails) {
+    const img = document.createElement('img');
+    img.className = 'thumbs__item';
+    img.src = src;
+    img.alt = '';
+    dom.flowThumbs.append(img);
+  }
+
+  if (extra > 0) {
+    const chip = document.createElement('span');
+    chip.className = 'chip chip--count';
+    chip.textContent = `+${extra}`;
+    dom.flowThumbs.append(chip);
+  }
+
+  show(dom.flowThumbs, thumbnails.length > 0);
+}
+
+function render(view: PopupView): void {
+  show(dom.loading, view.body === 'loading');
+  dom.loading.setAttribute('aria-hidden', String(view.body !== 'loading'));
+
+  show(dom.target, view.target !== null);
+  if (view.target) {
+    dom.targetHost.textContent = view.target.host || view.target.title || 'this tab';
+    const favicon = view.target.favIconUrl;
+    // Chrome hands back chrome:// favicon URLs for some tabs, which an extension
+    // page cannot load; only http(s) and data URLs are worth attempting.
+    const usable = favicon != null && /^(https?:|data:)/.test(favicon);
+    show(dom.targetFavicon, usable);
+    if (usable) dom.targetFavicon.src = favicon;
+  }
+
+  show(dom.blocked, view.blocked !== null);
+  if (view.blocked) {
+    dom.blockedTitle.textContent = view.blocked.title || 'Untitled tab';
+    dom.blockedUrl.textContent = view.blocked.url;
+  }
+
+  renderNotice(view.notice);
+
+  show(dom.start, view.primary !== null);
+  if (view.primary) {
+    dom.start.disabled = view.primary.disabled;
+    setIcon(dom.startIcon, view.primary.icon);
+  }
+  show(dom.reload, view.offerReload);
+
+  show(dom.live, view.live !== null);
+  if (view.live) {
+    const { live } = view;
+    dom.live.classList.toggle('live--paused', live.paused);
+
+    dom.liveBanner.dataset.state = live.paused ? 'paused' : 'recording';
+    dom.liveDot.classList.toggle('rec-dot--paused', live.paused);
+    dom.liveLabel.textContent = live.paused ? 'Paused' : 'Recording';
+    dom.liveTimer.textContent = live.elapsedMs == null ? '--:--' : formatElapsed(live.elapsedMs);
+
+    dom.liveCount.textContent = String(live.count);
+    dom.liveMeter.dataset.level = live.atLimit ? 'full' : live.nearLimit ? 'warn' : 'ok';
+    dom.liveMeterFill.style.width = `${Math.min(100, (live.count / live.limit) * 100)}%`;
+    dom.liveCap.textContent = live.nearLimit
+      ? `${live.count} / ${live.limit} · approaching limit`
+      : `${live.count} / ${live.limit}`;
+
+    dom.liveLast.textContent = live.paused
+      ? 'Nothing is being captured while paused'
+      : live.lastAction
+        ? `${live.lastAction}  ·  ${formatAgo(live.lastAgoMs ?? 0)}`
+        : 'Waiting for the first interaction';
+
+    show(dom.pause, !live.paused);
+    show(dom.resume, live.paused);
+  }
+
+  show(dom.flow, view.flow !== null);
+  if (view.flow) {
+    dom.flowCount.textContent = String(view.flow.count);
+    dom.flowWhen.textContent =
+      view.flow.lastAt == null
+        ? ''
+        : (formatRelative(Date.now() - view.flow.lastAt) ?? 'a while ago');
+    renderThumbs(view.flow.thumbnails, view.flow.extra);
+  }
+
+  show(dom.empty, view.body === 'empty');
+
+  show(dom.footer, view.storage !== null);
+  if (view.storage) {
+    dom.storage.dataset.level = view.storage.level;
+    dom.storageText.textContent = `${formatBytes(view.storage.usedBytes)} / ${formatBytes(
+      view.storage.quotaBytes,
+    )}`;
+    dom.storageFill.style.width = `${Math.round(view.storage.ratio * 100)}%`;
+  }
+
+  show(dom.brandDot, view.recording !== 'idle');
+  dom.brandDot.classList.toggle('rec-dot--paused', view.recording === 'paused');
+}
+
+function paint(): void {
+  render(derivePopupView({ ...state, now: Date.now() }));
+}
+
+// ── Reading ──────────────────────────────────────────────────────────────────
+
+async function readStored(): Promise<void> {
+  const stored = await getLocal([
+    'recordingActive',
+    'recordingPaused',
+    'recordedSteps',
+    'recordingStartedAt',
+    'lastError',
+  ]);
+
+  if (!stored.ok) {
+    state.lastError = { ...stored.error, at: Date.now() };
     return;
   }
 
-  target = null;
-  targetEl.textContent = '';
-  showNotice(result.error.message, 'blocked');
+  const { recordingActive, recordingPaused, recordedSteps, recordingStartedAt, lastError } =
+    stored.value;
+
+  state.recording = recordingActive ? (recordingPaused ? 'paused' : 'recording') : 'idle';
+  state.steps = Array.isArray(recordedSteps) ? recordedSteps : [];
+  state.startedAt = typeof recordingStartedAt === 'number' ? recordingStartedAt : null;
+  state.lastError = lastError ?? null;
+}
+
+async function readUsage(): Promise<void> {
+  state.usedBytes = await bytesInUse();
+}
+
+/**
+ * The timer is the only thing that changes without an event, so it is the only
+ * thing on an interval — and only while a recording is actually running.
+ */
+let ticker: ReturnType<typeof setInterval> | null = null;
+
+function syncTicker(): void {
+  const wanted = state.recording === 'recording';
+  if (wanted && ticker === null) ticker = setInterval(paint, 1000);
+  if (!wanted && ticker !== null) {
+    clearInterval(ticker);
+    ticker = null;
+  }
+}
+
+async function refresh(): Promise<void> {
+  await readStored();
+  await readUsage();
+  syncTicker();
+  paint();
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 
-btnStart.addEventListener('click', () => {
+async function beginRecording(): Promise<void> {
+  const ready = await prepare();
+
+  if (!ready.ok) {
+    // Re-probe rather than inventing a state: whatever went wrong, the popup
+    // should now show what is actually true of the tab.
+    state.preflight = await probe();
+    state.lastError = { ...ready.error, at: Date.now() };
+    paint();
+    return;
+  }
+
+  const written = await setLocal({
+    recordingActive: true,
+    recordingPaused: false,
+    recordedSteps: [],
+    recordingStartedAt: Date.now(),
+    lastError: null,
+  });
+
+  if (!written.ok) {
+    state.lastError = { ...written.error, at: Date.now() };
+    paint();
+    return;
+  }
+
+  await refresh();
+}
+
+dom.start.addEventListener('click', () => {
+  dom.start.disabled = true;
+  void beginRecording();
+});
+
+/**
+ * Reload before starting, so the MAIN-world agent is present for the page's own
+ * load. Injecting into an already-loaded page cannot recover the network calls
+ * and console output that happened before it landed.
+ */
+dom.reload.addEventListener('click', () => {
   void (async () => {
-    btnStart.disabled = true;
-
-    // Inject now if needed: a tab opened before FlowSnap was installed has no
-    // content script, and the old code reported success anyway.
-    const ready = await preflight(true);
-    if (!ready.ok) {
-      target = null;
-      showNotice(ready.error.message, 'blocked');
-      await refresh();
+    const found = await probe();
+    if (found.status === 'blocked') {
+      state.preflight = found;
+      paint();
       return;
     }
 
-    target = ready.value;
-    hideNotice();
-
-    const written = await setLocal({
-      recordingActive: true,
-      recordingPaused: false,
-      recordedSteps: [],
-      lastError: null,
-    });
-    if (!written.ok) {
-      showNotice(written.error.message, 'error');
-      await refresh();
-      return;
-    }
-
-    updateUI('recording', 0);
+    dom.reload.disabled = true;
+    await chrome.tabs.reload(found.target.tabId);
+    await beginRecording();
+    dom.reload.disabled = false;
   })();
 });
 
-btnStop.addEventListener('click', () => {
+dom.stop.addEventListener('click', () => {
   void (async () => {
-    await setLocal({ recordingActive: false, recordingPaused: false });
+    await setLocal({ recordingActive: false, recordingPaused: false, recordingStartedAt: null });
     await refresh();
   })();
 });
 
-btnPause.addEventListener('click', () => {
+dom.pause.addEventListener('click', () => {
   void (async () => {
     await setLocal({ recordingPaused: true });
     await refresh();
   })();
 });
 
-btnResume.addEventListener('click', () => {
+dom.resume.addEventListener('click', () => {
   void (async () => {
     await setLocal({ recordingPaused: false });
     await refresh();
   })();
 });
 
-btnView.addEventListener('click', () => {
+dom.view.addEventListener('click', () => {
   void chrome.tabs.create({ url: chrome.runtime.getURL('viewer.html') });
 });
 
-btnClear.addEventListener('click', () => {
+/**
+ * Both of these open the viewer today. They separate once the viewer splits into
+ * Library and Review (structural decision A) — no route is invented here in the
+ * meantime, because a hash nothing reads is a hash nobody maintains.
+ */
+dom.library.addEventListener('click', () => {
+  void chrome.tabs.create({ url: chrome.runtime.getURL('viewer.html') });
+});
+
+dom.settings.addEventListener('click', () => {
+  void chrome.runtime.openOptionsPage();
+});
+
+/**
+ * Discarding is irreversible and the steps are not written anywhere else yet, so
+ * it asks first — and says how much is about to be lost.
+ */
+dom.clear.addEventListener('click', () => {
+  const count = state.steps.length;
+  dom.discardBody.textContent =
+    count === 1
+      ? 'The one recorded step will be deleted. This cannot be undone.'
+      : `All ${count} recorded steps will be deleted. This cannot be undone.`;
+  dom.discardDialog.showModal();
+});
+
+dom.discardDialog.addEventListener('close', () => {
+  if (dom.discardDialog.returnValue !== 'discard') return;
+
   void (async () => {
     await sendToWorker({ type: 'CLEAR_STEPS' });
     await setLocal({
       recordedSteps: [],
       recordingActive: false,
       recordingPaused: false,
+      recordingStartedAt: null,
       lastError: null,
     });
-    hideNotice();
-    updateUI('idle', 0);
-  })();
-});
-
-// ── MCP server URL ───────────────────────────────────────────────────────────
-
-const mcpInput = el<HTMLInputElement>('mcp-url-input');
-const mcpSave = el<HTMLButtonElement>('mcp-url-save');
-const mcpStatus = el('mcp-url-status');
-
-chrome.storage.sync.get({ mcpServerUrl: DEFAULT_MCP_URL }, (data) => {
-  mcpInput.value = (data as { mcpServerUrl: string }).mcpServerUrl;
-});
-
-mcpSave.addEventListener('click', () => {
-  void (async () => {
-    const url = mcpInput.value.trim();
-    if (!url) return;
-    const written = await setSync({ mcpServerUrl: url });
-    mcpStatus.textContent = written.ok ? 'Saved!' : "Couldn't save";
-    setTimeout(() => (mcpStatus.textContent = ''), 2000);
+    await refresh();
   })();
 });
 
@@ -223,14 +412,22 @@ mcpSave.addEventListener('click', () => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
 
-  if ('lastError' in changes) void showLastError();
-
-  const relevant = ['recordedSteps', 'recordingActive', 'recordingPaused'];
-  if (relevant.some((key) => key in changes)) void refresh();
+  const watched = [
+    'recordedSteps',
+    'recordingActive',
+    'recordingPaused',
+    'recordingStartedAt',
+    'lastError',
+  ];
+  if (watched.some((key) => key in changes)) void refresh();
 });
 
+// ── Start ────────────────────────────────────────────────────────────────────
+
 void (async () => {
+  // Stored state first: it is what decides whether the popup shows a recording
+  // at all, and it resolves faster than the tab probe.
   await refresh();
-  await resolveTarget();
-  await refresh();
+  state.preflight = await probe();
+  paint();
 })();

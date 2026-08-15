@@ -425,11 +425,24 @@ Each step leaves a loadable extension. No step mixes a move with a behaviour cha
 | 3 | Extract `core/`: selector, describe, schema, export, zip. Pure, no `chrome.*`. | First test suite — selectors, schema inference, Markdown snapshots, ZIP round-trip. |
 | 4 | Introduce `chrome/` wrappers. Every direct call routed through them. | Lint rule passes; `lastError` handled in exactly one place (C7 closed). |
 | 5 | Build `features/recording` and `features/flows`. Fix C1–C5 here, with the old UI still attached. | Manual matrix: two tabs, navigation-on-click, rapid clicking, `chrome://` page, extension reload mid-recording. |
-| 6 | Design-system pass: `tokens.css` and the shared component set from the Stitch output. | Both themes render; no colour declared outside a token. |
-| 7 | Popup rebuilt, state by state, against the new session machine. | Each state screenshot-matched to its Stitch design, including `blocked` and `error`. |
+| 6 ✅ | Design-system pass: tokens, vendored fonts, generated icons, theme preference, the shared component set. | `npm run lint:tokens` — no colour outside `tokens.css`, enforced in CI. |
+| 7 ✅ | Popup rebuilt, state by state, against the new session machine. | `derivePopupView` is pure and covers loading, empty, flow, live, paused, blocked, needs-attach, quota and error — 17 tests. Settings moved to their own page (decision E). |
 | 8 | Viewer rebuilt, view by view: list → detail → editor → export. | Same, plus loading and empty states that do not exist today. |
 | 9 | CI, release workflow, version sync, README, CHANGELOG, LICENSE. | A pushed tag produces a downloadable zip that loads unpacked. |
 | 10 | Highest-value new features from the triage below. | — |
+
+Two things steps 6 and 7 deliberately did **not** do.
+
+The settings page carries only the settings that exist: theme, MCP address,
+auto-send, storage. Prompt 8 also specifies steps-per-recording, screenshot
+quality, capture toggles and redaction patterns — none of which the recorder
+reads. Those controls arrive with the features in step 10; a toggle that
+silently does nothing is worse than an absent one.
+
+And nothing here has been loaded in Chrome. Build, manifest references and the
+packaged zip are verified mechanically; the states worth exercising by hand are
+still C1 (record, switch tabs), C4 (click a link), C5 (`chrome://extensions`),
+plus the new theme preference across popup and settings at once.
 
 ---
 

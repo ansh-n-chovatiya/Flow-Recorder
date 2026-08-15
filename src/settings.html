@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FlowSnap settings</title>
+    <link rel="stylesheet" href="./ui/settings/settings.css" />
+  </head>
+  <body>
+    <!--
+      Only settings that do something are here. The design brief also specifies
+      capture and redaction controls; those settings do not exist in the recorder
+      yet, and a toggle that silently does nothing is worse than an absent one.
+      They arrive with the features, not before them.
+    -->
+    <header class="appbar">
+      <svg class="appbar__mark" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+        <rect class="appbar__mark-plate" width="20" height="20" rx="6" />
+        <path class="appbar__mark-bolt" d="M11.4 3.4 5.9 11h3.2l-.5 5.6L14.1 9h-3.2z" />
+      </svg>
+      <h1 class="brand__name">Settings</h1>
+    </header>
+
+    <main class="page">
+      <section class="section">
+        <div class="section__head">
+          <h2 class="section__title">Appearance</h2>
+          <p class="section__note">Applies to the popup and the flow viewer.</p>
+        </div>
+
+        <div class="setting">
+          <div class="setting__text">
+            <span class="setting__name" id="theme-label">Theme</span>
+            <span class="setting__note">
+              System follows whatever your operating system is set to.
+            </span>
+          </div>
+          <div class="setting__control segmented" role="group" aria-labelledby="theme-label">
+            <button class="segmented__option" type="button" data-theme-option="system">
+              System
+            </button>
+            <button class="segmented__option" type="button" data-theme-option="light">Light</button>
+            <button class="segmented__option" type="button" data-theme-option="dark">Dark</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section__head">
+          <h2 class="section__title">Claude and MCP</h2>
+          <p class="section__note">
+            Where recorded flows go when you send them to the local MCP server.
+          </p>
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="mcp-url">MCP server URL</label>
+          <div class="endpoint">
+            <input
+              id="mcp-url"
+              class="input input--mono"
+              type="url"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="http://127.0.0.1:7734/flows"
+            />
+            <button id="mcp-test" class="btn btn--secondary" type="button">Test connection</button>
+          </div>
+          <p id="mcp-result" class="result" role="status"></p>
+        </div>
+
+        <div class="setting">
+          <div class="setting__text">
+            <span class="setting__name" id="autosend-label">
+              Send flows automatically when recording stops
+            </span>
+            <span class="setting__note">
+              Sends the whole flow — screenshots and captured request bodies included — to the
+              address above every time you press Stop.
+            </span>
+          </div>
+          <label class="setting__control switch">
+            <input
+              id="mcp-autosend"
+              class="switch__input"
+              type="checkbox"
+              aria-labelledby="autosend-label"
+            />
+          </label>
+        </div>
+
+        <div id="autosend-warning" class="banner banner--warn hidden">
+          <span data-icon="triangle-alert" class="banner__icon"></span>
+          <div class="banner__body">
+            <p class="banner__title">Flows will leave this machine automatically</p>
+            <p>
+              Recorded pages can contain anything you were looking at, including personal data.
+              FlowSnap redacts request headers, but not request or response bodies.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section__head">
+          <h2 class="section__title">Storage</h2>
+          <p class="section__note">
+            Chrome allows extensions 10 MB. Recording stops saving once it is full.
+          </p>
+        </div>
+
+        <div class="storage-summary">
+          <div class="storage-summary__figures">
+            <span id="storage-used" class="storage-summary__used">—</span>
+            <span class="meta">of <span id="storage-quota">10.0 MB</span> used</span>
+          </div>
+          <div id="storage-meter" class="meter" data-level="ok">
+            <div class="meter__track">
+              <div id="storage-fill" class="meter__fill" style="width: 0%"></div>
+            </div>
+            <p id="storage-detail" class="label"></p>
+          </div>
+        </div>
+
+        <div class="setting">
+          <div class="setting__text">
+            <span class="setting__name">Saved flows</span>
+            <span class="setting__note" id="flows-summary">No saved flows.</span>
+          </div>
+          <button id="delete-flows" class="btn btn--ghost setting__control" type="button" disabled>
+            <span data-icon="trash-2"></span>
+            <span>Delete all flows</span>
+          </button>
+        </div>
+      </section>
+
+      <footer class="page__footer">
+        <span id="version">FlowSnap</span>
+      </footer>
+    </main>
+
+    <dialog id="delete-dialog" class="dialog">
+      <form method="dialog">
+        <div class="dialog__header">
+          <h2 class="dialog__title">Delete every saved flow?</h2>
+        </div>
+        <div class="dialog__body">
+          <p id="delete-body"></p>
+        </div>
+        <div class="dialog__footer">
+          <button class="btn btn--secondary" type="submit" value="cancel">Keep them</button>
+          <button class="btn btn--danger" type="submit" value="delete">Delete all flows</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toasts" id="toasts"></div>
+
+    <script type="module" src="./ui/settings/main.ts"></script>
+  </body>
+</html>

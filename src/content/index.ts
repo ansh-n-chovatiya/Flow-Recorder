@@ -374,6 +374,9 @@ function renderIndicator(): void {
     document.body.appendChild(indicator);
   }
 
-  indicator.textContent = isPaused ? '⏸ Paused' : '● Recording';
+  // The status dot is drawn by content.css as a ::before, so it can pulse and
+  // can stop pulsing under prefers-reduced-motion. It used to be a "●" in the
+  // text, which could do neither — and the design system allows no emoji.
+  indicator.textContent = isPaused ? 'Paused' : 'Recording';
   indicator.classList.toggle('paused', isPaused);
 }

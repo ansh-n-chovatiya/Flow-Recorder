@@ -1,0 +1,260 @@
+import { describe, expect, it } from 'vitest';
+import type { Preflight, RecordingTarget } from '../src/features/recording/preflight.js';
+import { flowError } from '../src/shared/errors.js';
+import { MAX_STEPS, STORAGE_QUOTA, WARN_STEPS } from '../src/shared/constants.js';
+import type { Step } from '../src/shared/types.js';
+import { derivePopupView, THUMBNAIL_LIMIT, type PopupInput } from '../src/ui/popup/view.js';
+
+const NOW = 1_700_000_000_000;
+
+const TARGET: RecordingTarget = {
+  tabId: 7,
+  windowId: 1,
+  url: 'https://github.com/anthropics/claude-code',
+  host: 'github.com',
+  title: 'claude-code',
+};
+
+const READY: Preflight = { status: 'ready', target: TARGET };
+const NEEDS_ATTACH: Preflight = { status: 'needs-attach', target: TARGET };
+const BLOCKED: Preflight = {
+  status: 'blocked',
+  error: flowError('TAB_NOT_RECORDABLE'),
+  title: 'Extensions',
+  url: 'chrome://extensions',
+};
+
+function step(overrides: Partial<Step> = {}): Step {
+  return {
+    type: 'click',
+    url: 'https://github.com',
+    timestamp: NOW - 5000,
+    action: 'Clicked "Save changes"',
+    element: { tag: 'button', cssSelector: 'button', xpath: '/button', boundingBox: null },
+    ...overrides,
+  } as Step;
+}
+
+function input(overrides: Partial<PopupInput> = {}): PopupInput {
+  return {
+    preflight: READY,
+    recording: 'idle',
+    steps: [],
+    startedAt: null,
+    usedBytes: 0,
+    lastError: null,
+    now: NOW,
+    ...overrides,
+  };
+}
+
+describe('while the tab is still being resolved', () => {
+  it('shows the loading skeleton and offers nothing', () => {
+    const view = derivePopupView(input({ preflight: null }));
+
+    expect(view.body).toBe('loading');
+    expect(view.primary).toBeNull();
+    // No storage reading either: a footer that appears a moment later moves
+    // everything above it.
+    expect(view.storage).toBeNull();
+  });
+});
+
+describe('idle', () => {
+  it('offers to start, and shows the empty state before anything is recorded', () => {
+    const view = derivePopupView(input());
+
+    expect(view.body).toBe('empty');
+    expect(view.primary).toEqual({ label: 'Start recording', icon: 'circle-dot', disabled: false });
+    expect(view.target?.host).toBe('github.com');
+    expect(view.flow).toBeNull();
+    expect(view.notice).toBeNull();
+  });
+
+  it('summarises a captured flow', () => {
+    const steps = [
+      step({ timestamp: NOW - 60_000, screenshot: 'data:image/jpeg;base64,a' }),
+      step({ timestamp: NOW - 30_000, screenshot: 'data:image/jpeg;base64,b' }),
+      step({ timestamp: NOW - 10_000 }),
+    ];
+
+    const view = derivePopupView(input({ steps }));
+
+    expect(view.body).toBe('flow');
+    expect(view.flow).toEqual({
+      count: 3,
+      lastAt: NOW - 10_000,
+      thumbnails: ['data:image/jpeg;base64,a', 'data:image/jpeg;base64,b'],
+      extra: 0,
+    });
+  });
+
+  it('caps thumbnails and counts the rest', () => {
+    const steps = Array.from({ length: 6 }, (_, index) =>
+      step({ screenshot: `data:image/jpeg;base64,${index}` }),
+    );
+
+    const view = derivePopupView(input({ steps }));
+
+    expect(view.flow?.thumbnails).toHaveLength(THUMBNAIL_LIMIT);
+    // Newest last, so the strip reads in the order the steps happened.
+    expect(view.flow?.thumbnails.at(-1)).toBe('data:image/jpeg;base64,5');
+    expect(view.flow?.extra).toBe(3);
+  });
+
+  it('does not count steps whose capture failed as thumbnails', () => {
+    const steps = [step({ screenshot: null }), step({ screenshot: undefined }), step()];
+
+    const view = derivePopupView(input({ steps }));
+
+    expect(view.flow?.count).toBe(3);
+    expect(view.flow?.thumbnails).toEqual([]);
+    expect(view.flow?.extra).toBe(0);
+  });
+});
+
+describe('a tab FlowSnap has not attached to', () => {
+  it('still offers to start, and explains what will be missing', () => {
+    const view = derivePopupView(input({ preflight: NEEDS_ATTACH }));
+
+    // The distinction that matters: recordable, just not yet listening. The old
+    // build treated this as success and captured nothing.
+    expect(view.primary?.disabled).toBe(false);
+    expect(view.offerReload).toBe(true);
+    expect(view.notice?.tone).toBe('info');
+  });
+});
+
+describe('a tab that cannot be recorded', () => {
+  it('disables the primary action and says why', () => {
+    const view = derivePopupView(input({ preflight: BLOCKED }));
+
+    expect(view.body).toBe('blocked');
+    expect(view.primary?.disabled).toBe(true);
+    expect(view.offerReload).toBe(false);
+    expect(view.target).toBeNull();
+    expect(view.blocked).toEqual({ title: 'Extensions', url: 'chrome://extensions' });
+    expect(view.notice?.title).toBe("FlowSnap can't record this tab");
+  });
+});
+
+describe('recording', () => {
+  it('reports elapsed time, the count and the last thing captured', () => {
+    const view = derivePopupView(
+      input({
+        recording: 'recording',
+        startedAt: NOW - 47_000,
+        steps: [step({ timestamp: NOW - 2000, action: 'Clicked "Save changes"' })],
+      }),
+    );
+
+    expect(view.body).toBe('live');
+    expect(view.live).toMatchObject({
+      paused: false,
+      elapsedMs: 47_000,
+      count: 1,
+      limit: MAX_STEPS,
+      nearLimit: false,
+      atLimit: false,
+      lastAction: 'Clicked "Save changes"',
+      lastAgoMs: 2000,
+    });
+    // Nothing to start while something is already running.
+    expect(view.primary).toBeNull();
+  });
+
+  it('reports an unknown start time rather than pretending it is zero', () => {
+    const view = derivePopupView(input({ recording: 'recording', startedAt: null }));
+    expect(view.live?.elapsedMs).toBeNull();
+  });
+
+  it('warns as the step cap approaches, and marks it once reached', () => {
+    const near = derivePopupView(
+      input({ recording: 'recording', steps: Array.from({ length: WARN_STEPS }, () => step()) }),
+    );
+    expect(near.live?.nearLimit).toBe(true);
+    expect(near.live?.atLimit).toBe(false);
+
+    const at = derivePopupView(
+      input({ recording: 'recording', steps: Array.from({ length: MAX_STEPS }, () => step()) }),
+    );
+    expect(at.live?.atLimit).toBe(true);
+  });
+
+  it('keeps showing the recording even when the user switches to a blocked tab', () => {
+    // A recording follows the user across tabs. Showing "can't record this tab"
+    // over a live recording would be both wrong and alarming.
+    const view = derivePopupView({
+      ...input({ recording: 'recording', steps: [step()] }),
+      preflight: BLOCKED,
+    });
+
+    expect(view.body).toBe('live');
+    expect(view.blocked).toBeNull();
+    expect(view.target).toBeNull();
+  });
+
+  it('is paused when it is paused', () => {
+    const view = derivePopupView(input({ recording: 'paused', steps: [step()] }));
+    expect(view.live?.paused).toBe(true);
+    expect(view.recording).toBe('paused');
+  });
+});
+
+describe('storage', () => {
+  it('warns past three quarters and refuses to start when full', () => {
+    const ok = derivePopupView(input({ usedBytes: STORAGE_QUOTA * 0.5 }));
+    expect(ok.storage?.level).toBe('ok');
+    expect(ok.primary?.disabled).toBe(false);
+
+    const warn = derivePopupView(input({ usedBytes: STORAGE_QUOTA * 0.8 }));
+    expect(warn.storage?.level).toBe('warn');
+    expect(warn.primary?.disabled).toBe(false);
+
+    const full = derivePopupView(input({ usedBytes: STORAGE_QUOTA }));
+    expect(full.storage?.level).toBe('full');
+    // Starting a recording that cannot save a single step is the lie the old
+    // build told at the quota.
+    expect(full.primary?.disabled).toBe(true);
+  });
+
+  it('clamps a reading that exceeds the quota', () => {
+    const view = derivePopupView(input({ usedBytes: STORAGE_QUOTA * 2 }));
+    expect(view.storage?.ratio).toBe(1);
+  });
+});
+
+describe('errors', () => {
+  it('surfaces a recent failure over anything else it might have said', () => {
+    const view = derivePopupView(
+      input({
+        preflight: NEEDS_ATTACH,
+        lastError: { code: 'CAPTURE_FAILED', message: 'No image for that step.', at: NOW - 5000 },
+      }),
+    );
+
+    expect(view.notice?.tone).toBe('warn');
+    expect(view.notice?.body).toBe('No image for that step.');
+  });
+
+  it('ignores a failure old enough to be irrelevant', () => {
+    const view = derivePopupView(
+      input({
+        lastError: { code: 'CAPTURE_FAILED', message: 'No image for that step.', at: NOW - 600_000 },
+      }),
+    );
+
+    expect(view.notice).toBeNull();
+  });
+
+  it('treats a full store as the more serious kind', () => {
+    const view = derivePopupView(
+      input({
+        lastError: { code: 'STORAGE_QUOTA', message: 'Out of space.', at: NOW - 1000 },
+      }),
+    );
+
+    expect(view.notice?.tone).toBe('danger');
+    expect(view.notice?.title).toBe('Storage is full');
+  });
+});

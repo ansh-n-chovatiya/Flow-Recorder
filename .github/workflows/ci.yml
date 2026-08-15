@@ -27,6 +27,10 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # A design system is only a system while nothing bypasses it.
+      - name: No colour outside the tokens
+        run: npm run lint:tokens
+
       - name: Test
         run: npm test
 
@@ -48,7 +52,7 @@ jobs:
       # to load it.
       - name: Extension loads as an unpacked directory
         run: |
-          for f in manifest.json background.js content.js popup.html viewer.html injected/agent.js; do
+          for f in manifest.json background.js content.js popup.html viewer.html settings.html injected/agent.js; do
             test -f "dist/$f" || { echo "::error::dist/$f is missing"; exit 1; }
           done
           node -e "
@@ -57,9 +61,13 @@ jobs:
             const refs = [
               m.background.service_worker,
               m.action.default_popup,
+              m.options_ui?.page,
               ...m.content_scripts.flatMap(c => [...(c.js ?? []), ...(c.css ?? [])]),
               ...Object.values(m.icons),
-            ];
+              // Web-accessible paths are easy to leave behind when an asset is
+              // renamed, and Chrome reports the failure only at runtime.
+              ...(m.web_accessible_resources ?? []).flatMap(r => r.resources ?? []),
+            ].filter(Boolean);
             const missing = refs.filter(r => !fs.existsSync('dist/' + r));
             if (missing.length) {
               console.error('::error::manifest references missing files: ' + missing.join(', '));

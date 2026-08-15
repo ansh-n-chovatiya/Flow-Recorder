@@ -29,16 +29,18 @@
     "build:main": "vite build",
     "build:content": "vite build --config vite.content.config.ts",
     "build:agent": "vite build --config vite.agent.config.ts",
+    "build:icons": "node scripts/build-icons.mjs",
     "dev": "npm run build -- --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "lint": "eslint .",
+    "lint:tokens": "node scripts/check-tokens.mjs",
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
     "sync-version": "node scripts/sync-version.mjs",
     "version": "npm run sync-version && git add public/manifest.json",
     "package": "npm run verify && node scripts/package.mjs",
-    "verify": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm run lint:tokens && npm run test && npm run build"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
@@ -47,6 +49,7 @@
     "eslint": "^9.17.0",
     "globals": "^15.14.0",
     "jsdom": "^29.1.1",
+    "lucide-static": "^1.31.0",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.0",
     "vite": "^8.2.1",

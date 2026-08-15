@@ -82,10 +82,10 @@
   --step-note: #4a5a6a;
 
   /* ── Type ─────────────────────────────────────────────────────────────────
-   * IBM Plex must be vendored into public/fonts and declared with @font-face
-   * before this stack means anything — a Chrome extension cannot fetch a font
-   * CDN under its own CSP, and an unavailable family fails silently to the
-   * system UI font.
+   * IBM Plex is vendored in public/fonts and declared in fonts.css; an extension
+   * cannot fetch a font CDN under its own CSP, and an unavailable family fails
+   * silently to the system UI font. The fallbacks below are not decoration —
+   * only the Latin subset ships, so any other script lands on them.
    */
   --font-ui: 'IBM Plex Sans', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
     sans-serif;
@@ -135,6 +135,9 @@
   /* ── Elevation — overlays only; depth is tonal everywhere else ────────── */
   --shadow-overlay: 0 12px 32px rgb(16 18 19 / 18%);
   --scrim: rgb(16 18 19 / 45%);
+
+  /* The one exception: a selected segment needs to sit above its own track. */
+  --shadow-raised: 0 1px 2px rgb(16 18 19 / 12%);
 
   /* ── Sizing ───────────────────────────────────────────────────────────── */
   --control-height: 32px;
@@ -211,6 +214,7 @@
 
     --shadow-overlay: 0 12px 32px rgb(0 0 0 / 45%);
     --scrim: rgb(0 0 0 / 60%);
+    --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%);
   }
 }
 
@@ -269,6 +273,7 @@
 
   --shadow-overlay: 0 12px 32px rgb(0 0 0 / 45%);
   --scrim: rgb(0 0 0 / 60%);
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%);
 }
 
 /*

@@ -136,6 +136,12 @@ export type RecordingState = 'idle' | 'recording' | 'paused';
 export interface LocalStorageShape {
   recordingActive: boolean;
   recordingPaused: boolean;
+  /**
+   * When the live recording began, for the popup's elapsed timer. `null` when
+   * nothing is recording — and possibly absent on a flow recorded by an older
+   * build, which the timer treats as "unknown" rather than "zero".
+   */
+  recordingStartedAt: number | null;
   recordedSteps: Step[];
   exportOptions: ExportOptions;
   savedFlowsMeta: FlowMeta[];
@@ -157,8 +163,15 @@ export function savedFlowKey(id: string): `savedFlow_${string}` {
   return `savedFlow_${id}`;
 }
 
+/**
+ * Which palette to render. `system` is the default and stamps nothing on the
+ * document, so `prefers-color-scheme` decides — see src/ui/styles/tokens.css.
+ */
+export type ThemePreference = 'system' | 'light' | 'dark';
+
 /** Everything the extension persists in `chrome.storage.sync`. */
 export interface SyncStorageShape {
+  theme: ThemePreference;
   mcpServerUrl: string;
   /**
    * Whether stopping a recording uploads it automatically. Off by default: it

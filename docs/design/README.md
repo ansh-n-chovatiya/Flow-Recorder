@@ -82,16 +82,42 @@ is the one screen with no usable frame. Implement it from the prompt text.
 ## 5. Smaller drift to correct while porting
 
 - **Icons are Material Symbols** in all 35 screens; the system specifies Lucide
-  at 16px / 1.5px stroke. Substitute on the way in.
+  at 16px / 1.5px stroke. Substitute on the way in — the geometry is generated
+  into `src/ui/icons.generated.ts` by `npm run build:icons`, so this is a
+  one-word swap. Markup names an icon (`<span data-icon="circle-dot"></span>`)
+  and never carries a path.
 - **Amber is inconsistent** — `#FBBF24` in 11 places against the token
   `#D9A441` in 8. Use the token.
 - **Weight 550 does not exist.** The brief specified it twice; static IBM Plex
   Sans ships 450/500/600, so it would have rounded silently. `tokens.css`
   corrects this to `--weight-medium: 500`.
-- **IBM Plex is not vendored yet.** The font stack in `tokens.css` names it
-  first, but a Chrome extension cannot fetch a font CDN under its own CSP. Step 6
-  must add the woff2 files to `public/fonts/` with `@font-face`, or the stack
-  falls back to the system UI font without warning.
+- ~~**IBM Plex is not vendored yet.**~~ Resolved in step 6: the woff2 files are
+  in `public/fonts/` and declared in `src/ui/styles/fonts.css`. See
+  [`fonts.md`](./fonts.md), in particular the `unicode-range` descriptor — only
+  the Latin subset ships, and that descriptor is what keeps a Cyrillic or CJK
+  page title from rendering as tofu.
+
+---
+
+## What step 6 built
+
+| File | What it is |
+|---|---|
+| `src/ui/styles/tokens.css` | The values. The only file allowed to name a colour. |
+| `src/ui/styles/fonts.css` | `@font-face` for the five vendored weights. |
+| `src/ui/styles/base.css` | Reset, document defaults, focus ring, six utilities. |
+| `src/ui/styles/components.css` | Button, chip, card, field, switch, segmented, banner, empty state, meter, toast, dialog, spinner, skeleton, record dot. |
+| `src/ui/styles/index.css` | The single stylesheet a page links. Order is load-bearing. |
+| `src/ui/icons.ts` + `icons.generated.ts` | Lucide geometry, generated from `lucide-static`. |
+| `src/ui/theme.ts` | The three-state preference, applied before first paint. |
+| `src/ui/format.ts`, `src/ui/toast.ts` | Shared so a phrase means one thing everywhere. |
+
+`npm run lint:tokens` enforces the rule the whole system rests on: no colour
+outside `tokens.css`. It runs in `verify` and in CI. Two files are exempt and
+both say why in the script — `public/content.css`, which is injected into
+somebody else's document where `tokens.css` does not exist, and `src/viewer.html`,
+which has not been rebuilt yet. **That second entry is the list of remaining
+work; delete from it, never add to it.**
 
 ## 6. What the export gets right
 

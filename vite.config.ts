@@ -23,6 +23,7 @@ export default defineConfig({
       input: {
         popup: resolve(import.meta.dirname, 'src/popup.html'),
         viewer: resolve(import.meta.dirname, 'src/viewer.html'),
+        settings: resolve(import.meta.dirname, 'src/settings.html'),
         background: resolve(import.meta.dirname, 'src/background/index.ts'),
       },
       output: {
