@@ -36,7 +36,7 @@
 
 What is missing is everything around it. There is no `package.json`, no build, no types, no lint, no tests, no CI, no release, and no module system: three of the five `lib/` files carry a comment forbidding you from wrapping them in a module, because the code depends on `<script>` tag order and shared global scope. The 1,311-line `viewer.js` holds the entire flow-management product — save, load, delete, edit, annotate, export, transmit — in one file with no seam between UI and Chrome APIs.
 
-**Seven correctness defects** are visible in the source without running the extension, and four of them fail silently: recording stops working when you switch tabs, screenshots can come from the wrong tab, storage writes are never checked for failure, and starting a recording on a page with no content script reports success. These are the things to fix under the redesign, not after it.
+**Eight correctness defects** are visible in the source without running the extension, and four of them fail silently: recording stops working when you switch tabs, screenshots can come from the wrong tab, storage writes are never checked for failure, and starting a recording on a page with no content script reports success. These are the things to fix under the redesign, not after it.
 
 ---
 
@@ -104,7 +104,7 @@ There is no state machine; recording state is derived independently in four plac
 
 ## 3 — Findings
 
-Seven correctness defects, ten fragilities, four duplications, six repository gaps. Every one is cited to a line.
+Eight correctness defects, ten fragilities, four duplications, six repository gaps. Every one is cited to a line.
 
 ### Correctness — these produce wrong or missing data
 
@@ -143,6 +143,12 @@ The capture happens 150 ms after the click, by which time a link or submit may h
 The `message` listener accepts anything carrying `__flowsnap_source__: 'page-injector'` without checking `event.source === window` or the origin. A cross-origin iframe, or the page's own script, can inject fabricated network calls and log lines into the recording — which then flow into an AI's context as if observed.
 
 > `content.js:14–17` · `page-injector.js:11` (`postMessage(…, '*')`)
+
+#### C8 · The recording indicator is baked into every screenshot
+
+`showRecordingIndicator()` adds a fixed-position pill to the page and nothing removes it before `captureVisibleTab` fires. Every screenshot therefore contains FlowSnap's own UI, which then ships to Claude as part of the recorded application. Visible in the shipped build's own screenshots.
+
+> `src/content/index.ts:252` (shown, never hidden) · `src/background/index.ts:66` (capture path)
 
 #### C7 · Storage failure is invisible
 
