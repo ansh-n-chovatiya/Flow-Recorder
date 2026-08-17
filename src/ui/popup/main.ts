@@ -303,6 +303,14 @@ async function beginRecording(): Promise<void> {
   }
 
   await refresh();
+
+  // Recording is live, so get out of the way. The popup overlays the page and
+  // has to be dismissed before the flow can start, and the click that dismisses
+  // it does not reach the page underneath — so the first interaction the user
+  // meant to record is the one that gets lost. The navigation step is captured
+  // from the storage change, not from here, and the on-page indicator and the
+  // toolbar badge carry the recording state once this window is gone.
+  window.close();
 }
 
 dom.start.addEventListener('click', () => {
