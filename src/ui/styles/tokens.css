@@ -145,7 +145,14 @@
   --control-height-primary: 40px;
   --popup-width: 360px;
   --popup-max-height: 600px;
-  --rail-width: 208px;
+  /*
+   * 280 rather than 208: at the narrower width every row read `Clicked "Sea…"`
+   * — the truncation landed inside the quoted label, which is the one part of
+   * the row that says which step it is, and the filter chips wrapped to three
+   * lines. The step column loses nothing that matters; a screenshot at 1100px
+   * is not read differently from one at 1170.
+   */
+  --rail-width: 280px;
 
   /*
    * One frame for every full-tab surface — library, review, settings — so the

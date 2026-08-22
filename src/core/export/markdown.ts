@@ -81,7 +81,14 @@ function appendStep(
     lines.push('');
   }
 
-  if (image) lines.push(`![${n}](${image})`);
+  /*
+   * The alt text carries the provenance because the image itself cannot. A
+   * model reading this treats a screenshot as evidence of what the page looked
+   * like; for an imported one that is the user's account, not the recorder's.
+   */
+  if (image) {
+    lines.push(`![${step.screenshotImported ? `${n} — added by hand` : n}](${image})`);
+  }
 
   if (step.networkCalls?.length && opts.network !== false) {
     lines.push('');

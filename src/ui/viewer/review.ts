@@ -9,8 +9,8 @@
  */
 
 import { compactBody } from '../../core/schema/index.js';
-import { statusClass } from '../../core/flow/index.js';
-import { sendFlow } from '../../features/mcp/send.js';
+import { statusClass, withImportedScreenshot } from '../../core/flow/index.js';
+import { ACCEPT, firstImage, importScreenshot } from '../../features/screenshots/import.js';
 import { deleteFlow, renameFlow } from '../../features/flows/store.js';
 import type { ConsoleEntry, NetworkCall, Step } from '../../shared/types.js';
 import { hydrateIcons } from '../icons.js';
@@ -20,7 +20,8 @@ import { openAnnotate } from './annotate.js';
 import { confirm } from './dialogs.js';
 import { clone, el, find, show } from './dom.js';
 import { openExport } from './export-dialog.js';
-import { deriveReviewView, type StepCardView } from './review-view.js';
+import { openSend } from './send-dialog.js';
+import { deriveReviewView, type StepCardView, type StepFilter } from './review-view.js';
 import { LIBRARY } from './route.js';
 
 const dom = {
@@ -53,6 +54,8 @@ const dom = {
   nomatchBody: el('rv-nomatch-body'),
   clearFilter: el<HTMLButtonElement>('rv-clear-filter'),
   missing: el('rv-missing'),
+
+  shotFile: el<HTMLInputElement>('shot-file'),
 
   zoomDialog: el<HTMLDialogElement>('zoom-dialog'),
   zoomImage: el<HTMLImageElement>('zoom-image'),
@@ -101,7 +104,12 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     if (flow) openExport({ steps: flow.steps, title: flow.name });
   });
 
-  dom.send.addEventListener('click', () => void send());
+  // The dialog does the sending, so what the flow costs is on screen before it
+  // is spent rather than after.
+  dom.send.addEventListener('click', () => {
+    const { flow } = app.state;
+    if (flow) openSend({ steps: flow.steps, name: flow.name, id: flow.id ?? undefined });
+  });
 
   dom.more.addEventListener('click', () => {
     const open = dom.menu.classList.contains('hidden');
@@ -194,31 +202,144 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     });
   }
 
-  async function send(): Promise<void> {
+  /**
+   * Change which steps are listed, from a chip, from Escape, or from the
+   * empty state's way out.
+   *
+   * The scroll is the point of having it in one place. A filter that removes
+   * steps makes the page shorter, and the browser answers by clamping the
+   * scroll position — which lands you somewhere arbitrary in a list you have
+   * just changed. Going back to the top is the same movement made deliberately,
+   * and to somewhere that means something: the first step that matched.
+   */
+  function setFilter(id: StepFilter): void {
+    if (app.state.filter === id) return;
+
+    app.state.filter = id;
+    app.paint();
+    window.scrollTo({ top: 0 });
+  }
+
+  // ── Replacing a screenshot ─────────────────────────────────────────────
+
+  /**
+   * Which step the file picker is filling in.
+   *
+   * The picker is one element for the whole screen — thirty cards carrying
+   * thirty inputs is thirty file dialogs to keep straight — so the card that
+   * opened it is remembered here and read back in the `change` handler.
+   */
+  let pickingFor: number | null = null;
+
+  /**
+   * Put a user-supplied image on a step.
+   *
+   * The old step is captured before the write and offered back through the
+   * toast: replacing a screenshot destroys the captured one, and an action that
+   * destroys evidence with no way back is one people are right to hesitate over.
+   */
+  async function useImage(index: number, file: File): Promise<void> {
     const { flow } = app.state;
-    if (!flow) return;
+    const before = flow?.steps[index];
+    if (!flow || !before) return;
 
-    dom.send.disabled = true;
-    const label = find(dom.send, 'span:last-child');
-    const original = label.textContent;
-    label.textContent = 'Sending…';
-
-    const sent = await sendFlow(flow.name, flow.steps, flow.id ?? undefined);
-
-    dom.send.disabled = false;
-    label.textContent = original;
-
-    if (!sent.ok) {
-      showToast({ message: sent.error.message, tone: 'danger', durationMs: 8000 });
+    const imported = await importScreenshot(file);
+    if (!imported.ok) {
+      showToast({ message: imported.error.message, tone: 'danger', durationMs: 6000 });
       return;
     }
 
+    await editSteps((steps) => {
+      steps[index] = withImportedScreenshot(steps[index], imported.value);
+      return steps;
+    });
+
     showToast({
-      message: sent.value.prompt
-        ? 'Flow sent. The prompt is on your clipboard — paste it into Claude.'
-        : `Flow sent as ${sent.value.id}. Chrome refused the clipboard, so ask Claude for that id.`,
+      message: `Screenshot replaced on step ${index + 1}.`,
       tone: 'success',
-      durationMs: 8000,
+      undo: () => {
+        void editSteps((steps) => {
+          steps[index] = before;
+          return steps;
+        });
+      },
+    });
+  }
+
+  /** Open the picker on behalf of one step. */
+  function pickImage(index: number): void {
+    pickingFor = index;
+    // Set from the constant rather than trusted from the markup, so the picker
+    // and `validateImageFile` cannot drift into disagreeing about what is
+    // allowed.
+    dom.shotFile.accept = ACCEPT;
+    // Cleared first so choosing the same file twice in a row still fires
+    // `change` — otherwise a failed import cannot be retried with the same file.
+    dom.shotFile.value = '';
+    dom.shotFile.click();
+  }
+
+  dom.shotFile.addEventListener('change', () => {
+    const index = pickingFor;
+    const file = dom.shotFile.files?.[0];
+    pickingFor = null;
+    if (index !== null && file) void useImage(index, file);
+  });
+
+  /**
+   * Drag a file onto a card, or paste one into it.
+   *
+   * Both are wired per card rather than on the document: the target has to be
+   * the step the image belongs to, and a page-level handler would have to guess
+   * which one that is.
+   */
+  function acceptDrops(target: HTMLElement, index: number): void {
+    const mark = (dropping: boolean): void => {
+      target.dataset.dropping = String(dropping);
+    };
+
+    target.addEventListener('dragover', (event) => {
+      if (!event.dataTransfer?.types.includes('Files')) return;
+      // Without this the browser navigates to the dropped file.
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      mark(true);
+    });
+
+    target.addEventListener('dragleave', () => mark(false));
+
+    target.addEventListener('drop', (event) => {
+      event.preventDefault();
+      mark(false);
+
+      const files = [...(event.dataTransfer?.files ?? [])];
+      const image = firstImage(files) as File | null;
+
+      if (!image) {
+        showToast({ message: 'Drop an image file to use it as this screenshot.' });
+        return;
+      }
+      void useImage(index, image);
+    });
+  }
+
+  /**
+   * Paste an image onto the focused card.
+   *
+   * The reason this feature exists is someone taking a screenshot by hand, and
+   * the system shortcut for that puts the image on the clipboard — so making
+   * them save it to disk first, then find it in a picker, would be asking them
+   * to put it down and pick it up again.
+   */
+  function acceptPaste(card: HTMLElement, index: number): void {
+    card.addEventListener('paste', (event) => {
+      const files = [...(event.clipboardData?.files ?? [])];
+      const image = firstImage(files) as File | null;
+      if (!image) return;
+
+      // Only now, so pasting text into the notes field is left alone.
+      event.preventDefault();
+      void useImage(index, image);
     });
   }
 
@@ -479,18 +600,42 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
 
     // ── Screenshot ─────────────────────────────────────────────────────
     const shot = find(node, '.shot');
+    const empty = find(node, '.shot-empty');
+
+    // Exactly one of the two: the picture, or the offer of one.
     if (card.screenshot) {
+      empty.remove();
+
       const image = find<HTMLImageElement>(shot, '.shot__image');
       image.src = card.screenshot;
-      image.alt = `Screenshot for step ${card.number}`;
+      image.alt = card.screenshotImported
+        ? `Screenshot added by hand for step ${card.number}`
+        : `Screenshot for step ${card.number}`;
+
+      // Present or absent, never hidden — a chip that says nothing is a chip
+      // that should not be in the DOM.
+      if (!card.screenshotImported) find(shot, '.shot__badge').remove();
+
       find(shot, '[data-action="zoom"]').addEventListener('click', () => {
         dom.zoomImage.src = card.screenshot as string;
-        dom.zoomImage.alt = `Screenshot for step ${card.number}`;
+        dom.zoomImage.alt = image.alt;
         dom.zoomDialog.showModal();
       });
+
+      acceptDrops(shot, card.index);
     } else {
       shot.remove();
+      empty.addEventListener('click', () => pickImage(card.index));
+      acceptDrops(empty, card.index);
     }
+
+    // Wired whether or not there is a picture yet — a step that never got one
+    // is the main reason this exists.
+    acceptPaste(node, card.index);
+
+    find(node, '[data-action="replace-shot"]').addEventListener('click', () =>
+      pickImage(card.index),
+    );
 
     const annotate = find(node, '[data-action="annotate"]');
     if (card.screenshot ?? step.screenshotOriginal) {
@@ -708,17 +853,11 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       return;
     }
 
-    if (event.key === 'Escape' && app.state.filter !== 'all') {
-      app.state.filter = 'all';
-      app.paint();
-    }
+    if (event.key === 'Escape' && app.state.filter !== 'all') setFilter('all');
   });
 
   dom.zoomClose.addEventListener('click', () => dom.zoomDialog.close());
-  dom.clearFilter.addEventListener('click', () => {
-    app.state.filter = 'all';
-    app.paint();
-  });
+  dom.clearFilter.addEventListener('click', () => setFilter('all'));
 
   // ── Painting ───────────────────────────────────────────────────────────
 
@@ -772,10 +911,7 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
         button.setAttribute('aria-pressed', String(chip.active));
         button.disabled = chip.disabled;
         button.textContent = chip.count > 0 ? `${chip.label} ${chip.count}` : chip.label;
-        button.addEventListener('click', () => {
-          app.state.filter = chip.id;
-          app.paint();
-        });
+        button.addEventListener('click', () => setFilter(chip.id));
         return button;
       }),
     );

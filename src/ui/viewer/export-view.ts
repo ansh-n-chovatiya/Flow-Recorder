@@ -161,7 +161,8 @@ const FORMAT_ICON: Record<ExportFormat, IconName> = {
   json: 'braces',
 };
 
-const INCLUDE_LABEL: Record<keyof ExportOptions, string> = {
+/** Shared with the send dialog, so one part is never named two things. */
+export const INCLUDE_LABEL: Record<keyof ExportOptions, string> = {
   images: 'Screenshots',
   network: 'Network calls',
   logs: 'Console logs',

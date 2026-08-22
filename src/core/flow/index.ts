@@ -60,6 +60,30 @@ export function flowHost(steps: Step[]): string {
   return '';
 }
 
+/**
+ * A step wearing a screenshot the user supplied instead of one we captured.
+ *
+ * Three fields move together, which is why this is a function rather than a
+ * spread at the call site:
+ *
+ *   - `screenshotOriginal` goes. It is the un-annotated base the image editor
+ *     draws from, and leaving the old one behind means opening the annotator on
+ *     a replaced step silently reverts to the picture that was replaced.
+ *   - `highlightBox` goes. It is in the capture's coordinate space, so against
+ *     a different image it marks an arbitrary rectangle.
+ *   - `screenshotImported` is set, because a screenshot is read everywhere as
+ *     evidence of what the page looked like, and for this one that is a claim
+ *     nobody checked.
+ *
+ * Pure — see tests/screenshot-import.test.ts.
+ */
+export function withImportedScreenshot(step: Step, dataUrl: string): Step {
+  const next: Step = { ...step, screenshot: dataUrl, screenshotImported: true };
+  delete next.screenshotOriginal;
+  next.highlightBox = null;
+  return next;
+}
+
 // ── Reading failure out of a step ────────────────────────────────────────────
 
 export type StatusClass = '2xx' | '3xx' | '4xx' | '5xx';

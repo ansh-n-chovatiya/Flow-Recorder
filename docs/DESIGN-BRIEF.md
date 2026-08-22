@@ -576,9 +576,15 @@ Run them in order — later screens reference earlier ones. Paste one at a time.
 >   on hover. Shown only when the URL differs from the previous step, and then
 >   prefixed with a 12px `corner-down-right` icon and the mono label `PAGE
 >   CHANGED`.
-> - **Screenshot:** max height 320px, object-fit cover from the top, 8px radius,
->   1px border, on a `#0A0E0F` mat. A `maximize-2` icon button in the top-right
->   corner on hover opens it full size. Do **not** render screenshots full-bleed.
+> - **Screenshot:** the whole capture at its own aspect ratio — full width,
+>   `height: auto`, 8px radius, 1px border, on a `#0A0E0F` mat. A `maximize-2`
+>   icon button in the top-right corner on hover opens it full size.
+>
+>   *Superseded.* The brief called for a 320px cap cropped from the top and said
+>   explicitly not to render screenshots full-bleed. Shipped, that crop cut the
+>   page mid-content, and since a cropped shot looks identical to a short one,
+>   the part a step was recorded to show could silently be below the cut. Height
+>   is the cost and the step rail already jumps past it.
 > - **Detail rows, collapsed by default**, each a 28px row with a chevron, a
 >   label, and a count chip: **Selectors**, **Network (3)**, **Console (1)**.
 >   Network and Console rows show their most severe status as a chip on the right

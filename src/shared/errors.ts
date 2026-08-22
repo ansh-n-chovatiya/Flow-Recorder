@@ -17,6 +17,7 @@ export type FlowErrorCode =
   | 'CAPTURE_FAILED'
   | 'CAPTURE_RATE_LIMITED'
   | 'INJECTION_FAILED'
+  | 'IMAGE_UNUSABLE'
   | 'MCP_UNREACHABLE';
 
 export interface FlowError {
@@ -44,6 +45,9 @@ const MESSAGES: Record<FlowErrorCode, string> = {
   CAPTURE_RATE_LIMITED:
     'Chrome limits how often extensions can screenshot. Some steps may have no image.',
   INJECTION_FAILED: "FlowSnap couldn't start on this tab. Reload the page and try again.",
+  // The fallback only. Every real instance overrides it, because what to do
+  // about a 40 MB file and what to do about a PDF are different sentences.
+  IMAGE_UNUSABLE: "That file can't be used as a screenshot.",
   // Names the likeliest cause rather than the symptom: the server runs inside a
   // Claude Code session, so "unreachable" almost always means none is open. The
   // last clause matters — the flow is in the library, so this is a retry, not a
@@ -64,8 +68,16 @@ function describeDetail(detail: unknown): string | undefined {
   }
 }
 
-export function flowError(code: FlowErrorCode, detail?: unknown): FlowError {
-  return { code, message: MESSAGES[code], detail: describeDetail(detail) };
+/**
+ * `message` overrides the canned sentence for this one instance.
+ *
+ * Used where the reason varies with what the user did rather than with what
+ * Chrome refused — an unusable image is a different sentence for a PDF, an
+ * empty file and a 40 MB one, and collapsing the three into one line throws
+ * away the half that says what to do instead.
+ */
+export function flowError(code: FlowErrorCode, detail?: unknown, message?: string): FlowError {
+  return { code, message: message ?? MESSAGES[code], detail: describeDetail(detail) };
 }
 
 /**

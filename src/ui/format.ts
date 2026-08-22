@@ -15,6 +15,22 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / MB).toFixed(1)} MB`;
 }
 
+/**
+ * Bytes of text as the tokens a model will charge for them.
+ *
+ * Four characters to a token is the rule of thumb Anthropic publishes for
+ * English prose, and JSON keys and URLs are denser than that — so this reads as
+ * a floor, which is why every caller prefixes it with `~`. It exists because
+ * "3.4 MB" answers a question about disk and the question being asked here is
+ * about context.
+ */
+export function formatTokens(bytes: number): string {
+  const tokens = Math.round(Math.max(0, bytes) / 4);
+  if (tokens < 1000) return `${tokens}`;
+  if (tokens < 10_000) return `${(tokens / 1000).toFixed(1)}k`;
+  return `${Math.round(tokens / 1000)}k`;
+}
+
 const MINUTE = 60_000;
 const HOUR = MINUTE * 60;
 const DAY = HOUR * 24;

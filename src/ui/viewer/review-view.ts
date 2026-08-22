@@ -84,6 +84,12 @@ export interface StepCardView {
   title: string | null;
   value: string | null;
   screenshot: string | null;
+  /**
+   * The screenshot was supplied by the user, not captured. Shown on the card
+   * because the rest of it reads as a record of what happened, and this one
+   * frame is a record of what the user says happened.
+   */
+  screenshotImported: boolean;
   /** `null` for a step with no element — a navigation, or a synthesised note. */
   selectors: { css: string; xpath: string } | null;
   network: DetailSummary<StatusClass | null> | null;
@@ -191,6 +197,7 @@ function cardView(steps: Step[], index: number, activeIndex: number | null): Ste
     title: step.title ?? null,
     value: step.value ?? null,
     screenshot: step.screenshot ?? null,
+    screenshotImported: step.screenshotImported === true,
     selectors: step.element
       ? { css: step.element.cssSelector, xpath: step.element.xpath }
       : null,

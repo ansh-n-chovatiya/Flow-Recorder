@@ -12,10 +12,43 @@ import { getSync } from '../../chrome/storage.js';
 import { DEFAULT_MCP_URL, FLOW_SCHEMA_VERSION } from '../../shared/constants.js';
 import { flowError } from '../../shared/errors.js';
 import { err, ok, type Result } from '../../shared/result.js';
-import type { FlowPayload, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowPayload, Step } from '../../shared/types.js';
 
 /** How long to wait before calling a silent address unreachable. */
 const TIMEOUT_MS = 10_000;
+
+/**
+ * What a send carries when nobody has chosen otherwise.
+ *
+ * Everything, because that is what every send did before the choice existed —
+ * a default that quietly dropped screenshots would be a data loss disguised as
+ * a feature.
+ */
+export const SEND_EVERYTHING: ExportOptions = { images: true, network: true, logs: true };
+
+/**
+ * Drop the parts of a flow the user chose not to hand over.
+ *
+ * Applied here rather than asked of the server: the point of the choice is that
+ * the unwanted data never leaves the machine, and a flag the server honours is
+ * not the same promise. Pure — see tests/send-view.test.ts.
+ */
+export function pruneSteps(steps: Step[], include: ExportOptions): Step[] {
+  if (include.images && include.network && include.logs) return steps;
+
+  return steps.map((step) => {
+    const next = { ...step };
+
+    if (!include.images) {
+      delete next.screenshot;
+      delete next.screenshotOriginal;
+    }
+    if (!include.network) delete next.networkCalls;
+    if (!include.logs) delete next.consoleLogs;
+
+    return next;
+  });
+}
 
 export interface SendResult {
   /** The id the server stored the flow under. */
@@ -48,13 +81,15 @@ export async function sendFlow(
   name: string,
   steps: Step[],
   id = `flow-${Date.now()}`,
+  include: ExportOptions = SEND_EVERYTHING,
 ): Promise<Result<SendResult>> {
   if (steps.length === 0) return err(flowError('MCP_UNREACHABLE', 'nothing to send'));
 
   const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL });
   const url = settings.ok ? settings.value.mcpServerUrl : DEFAULT_MCP_URL;
 
-  const payload = buildPayload(id, name, steps, Date.now());
+  const sending = pruneSteps(steps, include);
+  const payload = buildPayload(id, name, sending, Date.now());
   const first = payload.startUrl;
 
   const abort = new AbortController();
@@ -72,7 +107,7 @@ export async function sendFlow(
 
     const body = (await response.json()) as { id?: string };
     const savedId = body.id ?? id;
-    const prompt = buildPrompt(savedId, steps, first);
+    const prompt = buildPrompt(savedId, sending, first);
 
     // The clipboard needs the document to be focused, which it is not if the
     // user clicked away while a large flow uploaded. The send still worked, so

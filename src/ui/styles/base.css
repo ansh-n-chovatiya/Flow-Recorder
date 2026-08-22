@@ -19,6 +19,17 @@
 html {
   /* The viewer is a full tab and can overflow; the popup never should. */
   -webkit-text-size-adjust: 100%;
+
+  /*
+   * Always reserve the scrollbar's width.
+   *
+   * Filtering a flow down to one step makes the page short enough to lose its
+   * scrollbar, and the whole layout used to jump sideways as it went — the
+   * filter chip you had just pressed moved out from under the pointer. The
+   * gutter costs a few pixels on a page that never scrolls; the alternative
+   * costs them intermittently, which is the version people notice.
+   */
+  scrollbar-gutter: stable;
 }
 
 body {

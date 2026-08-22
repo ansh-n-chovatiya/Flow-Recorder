@@ -69,6 +69,18 @@ interface StepBase {
   screenshot?: string | null;
   /** Un-annotated original, kept so the image editor has a clean base. */
   screenshotOriginal?: string | null;
+  /**
+   * Set when the user supplied this image themselves instead of the recorder
+   * capturing it — a modal that was gone by the time the shutter fired, a
+   * moment the settle delay missed.
+   *
+   * It exists because everything downstream reads a screenshot as evidence of
+   * what the page looked like at that instant. For an imported image that is a
+   * claim nobody checked, and the exports and the card say so rather than
+   * letting it pass as a capture. Absent means captured, so older flows load
+   * unchanged.
+   */
+  screenshotImported?: boolean;
   highlightBox?: BoundingBox | null;
   dpr?: number;
   title?: string;
@@ -171,6 +183,12 @@ export interface LocalStorageShape {
   recordingStartedAt: number | null;
   recordedSteps: Step[];
   exportOptions: ExportOptions;
+  /**
+   * Which parts of a flow the "Send to Claude" dialog hands over. Kept apart
+   * from `exportOptions` because the two answers differ: a ZIP on disk costs
+   * nothing to over-pack, and a flow in a model's context costs tokens.
+   */
+  sendOptions: ExportOptions;
   savedFlowsMeta: FlowMeta[];
   lastMcpFlowId: string;
   /** The most recent failure, so the UI can show what went wrong. */

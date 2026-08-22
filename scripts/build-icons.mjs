@@ -61,6 +61,8 @@ const ICONS = {
   // Screenshots
   image: 'annotate a screenshot',
   'maximize-2': 'open a screenshot full size',
+  'image-up': "replace a step's screenshot with a file",
+  'image-plus': 'add a screenshot to a step that has none',
 
   // Export formats
   'file-archive': 'the ZIP export',

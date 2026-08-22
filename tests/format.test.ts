@@ -5,6 +5,7 @@ import {
   formatDateTime,
   formatElapsed,
   formatRelative,
+  formatTokens,
 } from '../src/ui/format.js';
 
 const MINUTE = 60_000;
@@ -24,6 +25,24 @@ describe('formatBytes', () => {
     // would make the storage meter look broken at the start of a recording.
     expect(formatBytes(40)).toBe('1 KB');
     expect(formatBytes(0)).toBe('0 KB');
+  });
+});
+
+describe('formatTokens', () => {
+  it('reads as a count, not a size — the send dialog is asking about context', () => {
+    expect(formatTokens(400)).toBe('100');
+    expect(formatTokens(20_000)).toBe('5.0k');
+    expect(formatTokens(400_000)).toBe('100k');
+  });
+
+  it('keeps a decimal only while it still means something', () => {
+    expect(formatTokens(4 * 9_500)).toBe('9.5k');
+    expect(formatTokens(4 * 42_400)).toBe('42k');
+  });
+
+  it('treats a negative or empty flow as nothing rather than as a bug on screen', () => {
+    expect(formatTokens(0)).toBe('0');
+    expect(formatTokens(-100)).toBe('0');
   });
 });
 

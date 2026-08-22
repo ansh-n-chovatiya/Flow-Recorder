@@ -19,6 +19,17 @@ export default defineConfig({
     // Readable stack traces matter more than bytes for a developer tool.
     minify: false,
     sourcemap: true,
+    /*
+     * No `<link rel="modulepreload">` tags.
+     *
+     * Vite emits them with `crossorigin`, which on a `chrome-extension://` page
+     * puts the preload in a different request mode than the import that follows
+     * — so Chrome discards every one of them and prints two warnings per chunk:
+     * "cross-world extension resource mismatch", then "preloaded ... but not
+     * used". The hints were buying nothing anyway: these files are already on
+     * disk beside the page, so there is no round trip to race.
+     */
+    modulePreload: false,
     rollupOptions: {
       input: {
         popup: resolve(import.meta.dirname, 'src/popup.html'),
