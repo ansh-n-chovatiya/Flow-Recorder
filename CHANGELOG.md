@@ -6,6 +6,57 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [2.2.0] — 2026-08-22
+
+Two things the viewer decided for you, and the screenshot you needed but the
+recorder missed.
+
+### Added
+
+- **Send to Claude asks what to hand over.** It used to POST the whole
+  recording the moment it was pressed — the same choice-made-for-you the export
+  buttons were before they grew a dialog. The same three switches now appear,
+  priced the way this destination charges: an upload in bytes and a context cost
+  in tokens. Screenshots default on and network bodies and console logs off, the
+  opposite of the export defaults, because the server writes images to disk and
+  Claude pays only for the ones it opens, while bodies and logs are read back
+  with every step and are most of the context on a chatty API. Parts you switch
+  off are dropped before the request, not by the server afterwards.
+- **A step can take a screenshot you supply.** The recorder captures on a timer
+  and a timer misses things: a menu that closes on blur, a toast that lasted
+  800ms, a modal already gone when the shutter fired. Drop an image on the card,
+  paste one, or pick a file. A step whose capture failed now offers this instead
+  of showing nothing, and replacing a screenshot is undoable from the toast.
+- **Imported screenshots are marked as imported**, on the card and in the
+  Markdown alt text. A screenshot is read everywhere as evidence of what the
+  page looked like; for one supplied by hand that is a claim nobody checked.
+
+### Changed
+
+- **A screenshot shows the whole capture** rather than 320px cropped from the
+  top. The crop landed mid-content often enough that the one thing a step was
+  recorded to show could be the part below the cut, and a cropped shot is
+  indistinguishable from a short page. Length is the price, and the rail jumps
+  between steps, so it is paid by scrolling nobody has to do.
+- **The step rail is a sidebar the height of the viewport**, with the filters on
+  its floor. It was sized to its content, so a five-step flow drew a short box
+  floating in an empty column and put the filters wherever the last row ended.
+- **The rail is wider — 280px, from 208px.** At the old width rows truncated
+  inside the quoted label, which is the part that says which step a row is.
+- **Imported images are re-encoded** to a viewport-sized JPEG rather than kept
+  as they arrived, so one step's picture cannot cost more than the other thirty
+  together. SVG is refused: it is a document that can script and fetch.
+
+### Fixed
+
+- **Filtering the step list slid the layout sideways.** Narrowing to one step
+  made the page short enough to lose its scrollbar, moving the chip you had just
+  pressed out from under the pointer. The gutter is now always reserved.
+- **Two console warnings per chunk on every viewer load.** Vite emits
+  `modulePreload` tags with `crossorigin`, which Chrome discards on a
+  `chrome-extension://` page. The hints bought nothing — the files are already
+  on disk beside the page — so they are no longer emitted.
+
 ## [2.1.0] — 2026-08-15
 
 Connecting FlowSnap to Claude Code no longer means installing FlowSnap.
