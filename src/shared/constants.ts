@@ -106,3 +106,136 @@ export const BADGE_COLOR = '#FF3B30';
 /** Highlight box baked into screenshots. */
 export const ANNOTATION_STROKE = '#FF3B30';
 export const ANNOTATION_FILL = 'rgba(255, 59, 48, 0.08)';
+
+// ── React source attribution ─────────────────────────────────────────────────
+
+/** Marks control messages the content script posts *to* the MAIN-world agent. */
+export const CONTROL_MESSAGE_SOURCE = 'flowsnap-control';
+
+/**
+ * How many components of the chain above a clicked element are kept, counting
+ * outwards from the element.
+ *
+ * Upstream's picker keeps 50 because it draws a browsable tree. A flow wants to
+ * say where a click landed, and the far end of a deep tree is `App` wrapped in
+ * nine providers — nothing an AI can use, at the cost of a `toString()` and a
+ * hash each.
+ */
+export const MAX_COMPONENT_CHAIN = 12;
+
+/** Hard cap on raw fibers visited while walking (cycle guard). */
+export const MAX_FIBER_WALK = 2000;
+
+/**
+ * How long the content script waits for the component chain before writing the
+ * step without it.
+ *
+ * The chain crosses from the MAIN world by `postMessage`, which is a task, so it
+ * can land after the click handler has already run. The wait is a ceiling, not a
+ * delay: the message has normally arrived before this is even awaited, and the
+ * step then still passes through `afterPaint()` and the worker's 150 ms settle.
+ * A step is never held hostage to it — no chain simply means no chain.
+ */
+export const REACT_CHAIN_TIMEOUT_MS = 50;
+
+/** Chains held for a step that has not asked for them yet. */
+export const REACT_BUFFER_SIZE = 16;
+
+/**
+ * How long an unclaimed chain stays in the buffer.
+ *
+ * Some interactions are captured by the agent and then deliberately dropped by
+ * the recorder — a click on a `<select>` is covered by the `change` step
+ * instead. Those chains are never claimed, and this is what stops them
+ * accumulating.
+ */
+export const REACT_BUFFER_TTL_MS = 5000;
+
+/** How long a chain computed on `pointerdown` may be reused by the `click`. */
+export const REACT_PREWARM_TTL_MS = 1000;
+
+/**
+ * How many interactions may fail to find React before the agent gives up on a
+ * document and detaches.
+ *
+ * Not one: an SPA can mount React after the first interaction, and a click can
+ * land outside the React root on a page that is otherwise entirely React.
+ */
+export const REACT_PROBE_ATTEMPTS = 3;
+
+/** Length of the high-specificity needle taken from the head of `fn.toString()`. */
+export const NEEDLE_HEAD_LEN = 200;
+
+/** Length of the secondary needle taken from the function body. */
+export const NEEDLE_BODY_LEN = 80;
+
+/** Shortest needle worth searching; below this, false positives dominate. */
+export const MIN_NEEDLE_LEN = 12;
+
+/** Function sources longer than this are sliced before a needle is built. */
+export const MAX_FN_SOURCE_LEN = 65_536;
+
+/**
+ * Distinct components recorded per flow.
+ *
+ * A runaway guard for a page that renders thousands of one-off components, not
+ * a product limit — a real flow touches a handful. Hitting it is recorded in the
+ * table rather than passed over in silence.
+ */
+export const MAX_COMPONENTS_PER_FLOW = 128;
+
+/**
+ * Distinct occurrences of a needle worth counting.
+ *
+ * Above one the match is ambiguous and the path may be the wrong one; the exact
+ * number past a handful changes nothing anybody would do about it.
+ */
+export const MAX_MATCHES_TRACKED = 5;
+
+/** Scripts larger than this are assets or data, not code worth scanning. */
+export const MAX_RESOURCE_BYTES = 24 * 1024 * 1024;
+
+/**
+ * Source maps larger than this are skipped outright.
+ *
+ * The streaming decode means a big map costs time rather than memory, but the
+ * JSON parse ahead of it does not: the string and its parsed form both sit in
+ * the worker's heap at once, and an MV3 worker that overruns is killed with no
+ * warning and no error to report.
+ */
+export const MAX_MAP_BYTES = 64 * 1024 * 1024;
+
+/** Bundles fetched at once while resolving. */
+export const RESOLVE_CONCURRENCY = 4;
+
+/**
+ * Active resolution work permitted per flow.
+ *
+ * A ceiling for a pathological site — hundreds of chunks, no maps, nothing ever
+ * matching — not a product limit. Whatever is cut off is recorded as `skipped`
+ * with a sentence rather than left looking unresolvable.
+ */
+export const MAX_RESOLVE_MS_PER_FLOW = 30_000;
+
+/**
+ * Quiet time after a step before resolution runs.
+ *
+ * Resolution happens *during* recording, on idle, because the page is still open
+ * and its bundles are still warm in the HTTP cache. Waiting for Stop would mean
+ * fetching bundles for a tab that may be closed, from a session that may have
+ * expired. Long enough that a burst of clicks resolves once, not once each.
+ */
+export const RESOLVE_DEBOUNCE_MS = 1500;
+
+/** Bundle texts held in the worker's cache at once, and their total size. */
+export const BUNDLE_CACHE_ENTRIES = 24;
+export const BUNDLE_CACHE_BYTES = 48 * 1024 * 1024;
+
+/**
+ * Script URLs remembered per origin.
+ *
+ * A code-split app can legitimately load a hundred chunks; a page that
+ * generates script URLs in a loop is a runaway, and searching more than this
+ * would cost more than the answer is worth.
+ */
+export const MAX_SCRIPTS_PER_ORIGIN = 200;

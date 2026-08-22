@@ -28,6 +28,74 @@ export interface ElementRef {
   xpath: string;
   boundingBox: BoundingBox | null;
   ariaLabel?: string | null;
+  /** The React components this element sits inside, when the page is React. */
+  react?: ElementReactRef;
+}
+
+/**
+ * Component *ids*, not paths.
+ *
+ * A path repeated across forty steps is pure token waste, and at the moment a
+ * step is written the resolution that would produce it has not happened yet.
+ * The ids index `FlowReact.components`, which is filled in asynchronously and
+ * merged at export time.
+ */
+export interface ElementReactRef {
+  /** Component ids, outermost first. */
+  chain: string[];
+  /** The walk hit its cap, so `chain[0]` is not the root component. */
+  truncated?: boolean;
+}
+
+/** Why a component's source is not a resolved original file. */
+export type ComponentStatus =
+  | 'resolved'
+  | 'compiled-only'
+  | 'ambiguous'
+  | 'not-found'
+  | 'no-map'
+  | 'map-error'
+  | 'unfetchable'
+  | 'skipped'
+  | 'pending';
+
+/**
+ * Where one React component was written.
+ *
+ * Every outcome that is not `resolved` carries a `detail` sentence. A flow that
+ * silently omits a path reads as "this component has no source"; one that says
+ * *the component is in a lazy chunk that was never loaded* tells whoever reads
+ * it what to do instead. Both this extension and its sibling hold that line.
+ */
+export interface ComponentSource {
+  /** displayName at capture time — minified on a production build, which is fine. */
+  name: string;
+  status: ComponentStatus;
+  via?: 'debug-source' | 'bundle-search';
+  /** Normalised, repo-relative where possible: `src/components/Cart.tsx`. */
+  source?: string;
+  /** 1-based, for humans and editors — source maps are 0-based, converted once. */
+  line?: number;
+  column?: number;
+  /** Kept verbatim when the source map recorded an absolute local path. */
+  absolutePath?: string;
+  /** The resolved path is inside node_modules, so this is not the user's code. */
+  dependency?: boolean;
+  /** Position in the served bundle. Present whenever a bundle match was made. */
+  compiled?: { url: string; line: number; column: number };
+  /** Distinct places the needle matched. Above 1 the path may be the wrong one. */
+  matchCount?: number;
+  /** One sentence, whenever `status` is not `resolved`. */
+  detail?: string;
+}
+
+/** React facts about the page a flow was recorded on. */
+export interface FlowReact {
+  detected: boolean;
+  version?: string;
+  build?: 'development' | 'production' | 'unknown';
+  /** Keyed by component id, as referenced by `ElementReactRef.chain`. */
+  components: Record<string, ComponentSource>;
 }
 
 export interface NetworkCall {
@@ -160,6 +228,12 @@ export interface FlowPayload {
   timestamp: number;
   startUrl?: string;
   steps: Step[];
+  /**
+   * Absent entirely when the page was not React. Additive, so this is not a
+   * `schemaVersion` bump — a server that predates it ignores what it does not
+   * know, which is exactly what the version field exists to allow.
+   */
+  react?: FlowReact;
 }
 
 /** Which parts of a flow an export includes. */
@@ -191,8 +265,60 @@ export interface LocalStorageShape {
   sendOptions: ExportOptions;
   savedFlowsMeta: FlowMeta[];
   lastMcpFlowId: string;
+  /**
+   * Resolved (or pending) component sources for the live recording.
+   *
+   * Its own key rather than a field on the steps, because `recordedSteps` is
+   * rewritten wholesale by every capture while this is written by the resolver:
+   * one key with two writers loses updates. Merged into the flow at export time
+   * and pruned to the ids the surviving steps still reference.
+   */
+  reactComponents: Record<string, ComponentSource>;
+  /** React facts about the page, minus the component table. */
+  reactMeta: Omit<FlowReact, 'components'> | null;
+  /**
+   * Search needles for components still awaiting resolution.
+   *
+   * Deliberately a separate key from `reactComponents`: a needle is 200
+   * characters of the site's own compiled source and is an input to resolution,
+   * never part of a flow. Keeping it in a key that is never merged into a
+   * payload is what makes "needles never ship" structural rather than a rule
+   * somebody has to remember.
+   */
+  reactNeedles: Record<string, ComponentNeedle>;
+  /**
+   * Script URLs seen on each page of the recording, keyed by document URL.
+   *
+   * Persisted rather than held in the worker, because the worker is killed
+   * whenever Chrome feels like it and a needle captured on page A must still be
+   * searched against page A's bundles afterwards. A flow that crosses pages has
+   * a different set per page, so this is not one flat list.
+   */
+  reactScripts: Record<string, string[]>;
   /** The most recent failure, so the UI can show what went wrong. */
   lastError: StoredError | null;
+}
+
+/**
+ * What the resolver needs to find one component in the page's bundles, captured
+ * at click time because the page may be gone by the time it is searched.
+ */
+export interface ComponentNeedle {
+  head: string;
+  body?: string;
+  bodyOffset?: number;
+  /** The page the component was seen on — its bundles are the ones to search. */
+  pageUrl: string;
+  /**
+   * How many of that page's scripts this component has already been searched
+   * against, when a search came back empty.
+   *
+   * A lazy chunk can load minutes after the click that wanted it, so "not found"
+   * is worth revisiting — but only once there is somewhere new to look. Without
+   * this, every resolver pass would rescan every bundle for every component it
+   * has already failed to find.
+   */
+  searched?: number;
 }
 
 /** A FlowError plus when it happened, as persisted for the UI to read. */

@@ -17,11 +17,21 @@ import {
 import { generateSelector, generateXPath } from '../core/selector/index.js';
 import {
   AGENT_MESSAGE_SOURCE,
+  CONTROL_MESSAGE_SOURCE,
   INDICATOR_ID,
   INPUT_DEBOUNCE_MS,
   PAINT_TIMEOUT_MS,
+  REACT_BUFFER_SIZE,
+  REACT_BUFFER_TTL_MS,
+  REACT_CHAIN_TIMEOUT_MS,
 } from '../shared/constants.js';
-import { sendToWorker, type AgentMessage, type ContentRequest } from '../shared/messages.js';
+import { createChainBuffer } from '../core/react/chains.js';
+import {
+  sendToWorker,
+  type AgentMessage,
+  type CapturedComponent,
+  type ContentRequest,
+} from '../shared/messages.js';
 import type { BoundingBox, ConsoleEntry, DraftStep, NetworkCall } from '../shared/types.js';
 
 let isRecording = false;
@@ -34,6 +44,21 @@ let pendingNetworkCalls: NetworkCall[] = [];
 function clearBuffers(): void {
   pendingLogs = [];
   pendingNetworkCalls = [];
+  reactChains.clear();
+}
+
+// ── React component chains ───────────────────────────────────────────────────
+
+/** See `core/react/chains.ts` for why chains are keyed rather than buffered. */
+const reactChains = createChainBuffer<{ chain: CapturedComponent[]; truncated: boolean }>({
+  size: REACT_BUFFER_SIZE,
+  ttlMs: REACT_BUFFER_TTL_MS,
+  timeoutMs: REACT_CHAIN_TIMEOUT_MS,
+});
+
+/** Tell the agent whether to watch for interactions at all. */
+function postControl(recording: boolean): void {
+  window.postMessage({ __flowsnap_control__: CONTROL_MESSAGE_SOURCE, recording }, '*');
 }
 
 // ── Agent bridge ─────────────────────────────────────────────────────────────
@@ -54,6 +79,22 @@ window.addEventListener('message', (event: MessageEvent<AgentMessage>) => {
       level: data.level as ConsoleEntry['level'],
       args: data.args,
       timestamp: data.timestamp,
+    });
+  } else if (data.kind === 'react') {
+    reactChains.deliver({
+      eventTime: data.eventTime,
+      value: { chain: data.chain, truncated: data.truncated },
+      at: Date.now(),
+    });
+  } else if (data.kind === 'scripts') {
+    // Straight through to the worker. The content script keeps no state for
+    // this — the agent already sends each URL once, and the worker is the only
+    // thing that has to remember them across a page it may outlive.
+    void sendToWorker({ type: 'REACT_SCRIPTS', urls: data.urls, pageUrl: location.href });
+  } else if (data.kind === 'react-meta') {
+    void sendToWorker({
+      type: 'REACT_META',
+      meta: { detected: data.detected, version: data.version, build: data.build },
     });
   } else if (data.kind === 'network') {
     pendingNetworkCalls.push({
@@ -109,6 +150,9 @@ function applyState(recording: boolean, paused: boolean): void {
   isRecording = recording;
   isPaused = paused;
   if (!recording || paused) clearBuffers();
+  // Paused counts as not watching: the agent should not walk fibers for
+  // interactions that will never become steps.
+  postControl(recording && !paused);
   renderIndicator();
 }
 
@@ -195,23 +239,26 @@ document.addEventListener(
     // "Opened dropdown" step on every dropdown interaction.
     if (el.tagName.toLowerCase() === 'select') return;
 
-    requestScreenshotAndSave({
-      type: 'click',
-      url: window.location.href,
-      timestamp: Date.now(),
-      element: {
-        tag: el.tagName.toLowerCase(),
-        text: getElementText(el),
-        label: accessibleName(el) || getElementLabel(el),
-        role: el.getAttribute('role'),
-        type: el.getAttribute('type'),
-        cssSelector: generateSelector(el),
-        xpath: generateXPath(el),
-        boundingBox: toPlainRect(el.getBoundingClientRect()),
-        ariaLabel: el.getAttribute('aria-label'),
+    requestScreenshotAndSave(
+      {
+        type: 'click',
+        url: window.location.href,
+        timestamp: Date.now(),
+        element: {
+          tag: el.tagName.toLowerCase(),
+          text: getElementText(el),
+          label: accessibleName(el) || getElementLabel(el),
+          role: el.getAttribute('role'),
+          type: el.getAttribute('type'),
+          cssSelector: generateSelector(el),
+          xpath: generateXPath(el),
+          boundingBox: toPlainRect(el.getBoundingClientRect()),
+          ariaLabel: el.getAttribute('aria-label'),
+        },
+        action,
       },
-      action,
-    });
+      event.timeStamp,
+    );
   },
   true,
 );
@@ -223,7 +270,14 @@ document.addEventListener(
  * debounce window discarded the email step entirely — filling a form quickly
  * lost steps.
  */
-const inputTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
+/**
+ * The timer also carries the `timeStamp` of the event that armed it.
+ *
+ * The step is written 800 ms after the interaction, long after the component
+ * chain for it arrived, so the chain has to be claimed by the key of the event
+ * that *caused* the step rather than by whatever is current when it fires.
+ */
+const inputTimers = new WeakMap<Element, { timer: ReturnType<typeof setTimeout>; eventTime: number }>();
 
 document.addEventListener(
   'input',
@@ -234,11 +288,12 @@ document.addEventListener(
     if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return;
 
     const existing = inputTimers.get(el);
-    if (existing) clearTimeout(existing);
+    if (existing) clearTimeout(existing.timer);
 
-    inputTimers.set(
-      el,
-      setTimeout(() => {
+    const eventTime = event.timeStamp;
+    inputTimers.set(el, {
+      eventTime,
+      timer: setTimeout(() => {
         inputTimers.delete(el);
 
         const rawValue = el.value ?? '';
@@ -246,22 +301,25 @@ document.addEventListener(
         const value = isPassword ? '•'.repeat(rawValue.length) : rawValue;
         const label = getElementLabel(el);
 
-        requestScreenshotAndSave({
-          type: 'input',
-          url: window.location.href,
-          timestamp: Date.now(),
-          element: {
-            tag: el.tagName.toLowerCase(),
-            label,
-            cssSelector: generateSelector(el),
-            xpath: generateXPath(el),
-            boundingBox: toPlainRect(el.getBoundingClientRect()),
+        requestScreenshotAndSave(
+          {
+            type: 'input',
+            url: window.location.href,
+            timestamp: Date.now(),
+            element: {
+              tag: el.tagName.toLowerCase(),
+              label,
+              cssSelector: generateSelector(el),
+              xpath: generateXPath(el),
+              boundingBox: toPlainRect(el.getBoundingClientRect()),
+            },
+            value,
+            action: `Typed "${value}" into ${label}`,
           },
-          value,
-          action: `Typed "${value}" into ${label}`,
-        });
+          eventTime,
+        );
       }, INPUT_DEBOUNCE_MS),
-    );
+    });
   },
   true,
 );
@@ -282,39 +340,66 @@ document.addEventListener(
     const label = getElementLabel(el);
     const selectedText = el.options[el.selectedIndex]?.text || el.value;
 
-    requestScreenshotAndSave({
-      type: 'input',
-      url: window.location.href,
-      timestamp: Date.now(),
-      element: {
-        tag: 'select',
-        label,
-        cssSelector: generateSelector(el),
-        xpath: generateXPath(el),
-        boundingBox: toPlainRect(el.getBoundingClientRect()),
+    requestScreenshotAndSave(
+      {
+        type: 'input',
+        url: window.location.href,
+        timestamp: Date.now(),
+        element: {
+          tag: 'select',
+          label,
+          cssSelector: generateSelector(el),
+          xpath: generateXPath(el),
+          boundingBox: toPlainRect(el.getBoundingClientRect()),
+        },
+        value: selectedText,
+        action: `Selected "${selectedText}" from ${label}`,
       },
-      value: selectedText,
-      action: `Selected "${selectedText}" from ${label}`,
-    });
+      event.timeStamp,
+    );
   },
   true,
 );
 
-function requestScreenshotAndSave(step: DraftStep): void {
+/**
+ * `eventTime` is the `timeStamp` of the interaction that produced this step, and
+ * is how its component chain is claimed. Steps with no originating event — a
+ * navigation — pass nothing and simply carry no components.
+ */
+function requestScreenshotAndSave(step: DraftStep, eventTime?: number): void {
+  // Drained synchronously, exactly as before: waiting for a component chain must
+  // not change which console and network activity lands on which step.
   const enriched: DraftStep = {
     ...step,
     consoleLogs: pendingLogs.splice(0),
     networkCalls: pendingNetworkCalls.splice(0),
   };
 
-  void withIndicatorHidden(() =>
-    sendToWorker({
-      type: 'CAPTURE_AND_SAVE_STEP',
-      step: enriched,
-      elementBox: enriched.element?.boundingBox ?? null,
-      dpr: window.devicePixelRatio || 1,
-    }),
-  );
+  void (async () => {
+    let components: CapturedComponent[] | undefined;
+
+    if (eventTime !== undefined && enriched.element) {
+      const found = await reactChains.take(eventTime, Date.now());
+      if (found && found.chain.length > 0) {
+        components = found.chain;
+        enriched.element.react = {
+          chain: found.chain.map((component) => component.id),
+          ...(found.truncated ? { truncated: true } : {}),
+        };
+      }
+    }
+
+    await withIndicatorHidden(() =>
+      sendToWorker({
+        type: 'CAPTURE_AND_SAVE_STEP',
+        step: enriched,
+        elementBox: enriched.element?.boundingBox ?? null,
+        dpr: window.devicePixelRatio || 1,
+        components,
+        componentsPageUrl: components ? window.location.href : undefined,
+      }),
+    );
+  })();
 }
 
 // ── On-page indicator ────────────────────────────────────────────────────────

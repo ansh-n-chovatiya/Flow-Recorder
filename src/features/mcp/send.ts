@@ -9,6 +9,7 @@
 
 import { startUrl } from '../../core/flow/index.js';
 import { getSync } from '../../chrome/storage.js';
+import { sendToWorker } from '../../shared/messages.js';
 import { DEFAULT_MCP_URL, FLOW_SCHEMA_VERSION } from '../../shared/constants.js';
 import { flowError } from '../../shared/errors.js';
 import { err, ok, type Result } from '../../shared/result.js';
@@ -84,6 +85,16 @@ export async function sendFlow(
   include: ExportOptions = SEND_EVERYTHING,
 ): Promise<Result<SendResult>> {
   if (steps.length === 0) return err(flowError('MCP_UNREACHABLE', 'nothing to send'));
+
+  // Last chance to resolve React components while the recorded tab may still be
+  // open and its bundles still cached. It resolves nothing when there is nothing
+  // pending, and a worker that never answers costs the send nothing.
+  //
+  // Not `final`: this path also sends archived flows, and the pending components
+  // in storage belong to the *live* recording — writing them off as skipped
+  // because somebody re-sent last week's flow would be wrong. Phase 3 passes
+  // `final` once the send path can tell the two apart.
+  await sendToWorker({ type: 'RESOLVE_COMPONENTS', final: false });
 
   const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL });
   const url = settings.ok ? settings.value.mcpServerUrl : DEFAULT_MCP_URL;

@@ -9,16 +9,21 @@
 import { annotateScreenshot } from './annotator.js';
 import { getLocal, getSync, setLocal } from '../chrome/storage.js';
 import { captureVisibleTab } from '../chrome/tabs.js';
+import type { WorkerRequest } from '../shared/messages.js';
 import {
   BADGE_COLOR,
   DEFAULT_MCP_URL,
   MAX_STEPS,
   PRECAPTURE_TTL_MS,
+  RESOLVE_DEBOUNCE_MS,
   SETTLE_DELAY_MS,
 } from '../shared/constants.js';
 import { flowError, type FlowError } from '../shared/errors.js';
-import type { WorkerRequest } from '../shared/messages.js';
 import type { BoundingBox, DraftStep, Step } from '../shared/types.js';
+import type { CapturedComponent } from '../shared/messages.js';
+import { mergeComponents } from '../core/react/table.js';
+import { mergeScripts } from '../features/react/inventory.js';
+import { clearResolverCaches, resolvePending } from '../features/react/resolver.js';
 
 /** Serialises captures so concurrent clicks never clobber each other's write. */
 let captureQueue: Promise<void> = Promise.resolve();
@@ -63,13 +68,20 @@ async function captureAndSave(
   elementBox: BoundingBox | null,
   dpr: number,
   sender: chrome.runtime.MessageSender,
+  components?: CapturedComponent[],
+  componentsPageUrl?: string,
 ): Promise<void> {
   // A pre-capture is already the right frame — waiting would only let the page
   // navigate further away from the moment being described.
   const preShot = claimPrecapture(sender.tab?.id);
   if (!preShot) await delay(SETTLE_DELAY_MS);
 
-  const stored = await getLocal(['recordedSteps', 'recordingActive']);
+  const stored = await getLocal([
+    'recordedSteps',
+    'recordingActive',
+    'reactComponents',
+    'reactNeedles',
+  ]);
   if (!stored.ok) {
     await reportError(stored.error);
     return;
@@ -132,13 +144,94 @@ async function captureAndSave(
     stepNumber: recordedSteps.length + 1,
   } as Step);
 
-  const written = await setLocal({ recordedSteps });
+  const merged = components?.length
+    ? mergeComponents(
+        components,
+        componentsPageUrl ?? step.url,
+        stored.value.reactComponents ?? {},
+        stored.value.reactNeedles ?? {},
+      )
+    : null;
+
+  const written = await setLocal({
+    recordedSteps,
+    // Only when something actually changed: a flow that clicks one button forty
+    // times would otherwise rewrite an identical table forty times.
+    ...(merged?.changed ? { reactComponents: merged.table, reactNeedles: merged.needles } : {}),
+  });
   if (!written.ok) {
     await reportError(written.error);
     return;
   }
 
   updateBadge(recordedSteps.length);
+
+  if (merged?.changed) scheduleResolve();
+}
+
+// ── React source resolution ──────────────────────────────────────────────────
+
+/** Serialises passes, so two never write the component table at once. */
+let resolveQueue: Promise<void> = Promise.resolve();
+let resolveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Resolves whatever is pending, and writes back only what the resolver owns.
+ *
+ * `reactComponents` and `reactNeedles` are read and written here and nowhere
+ * else that runs concurrently — `recordedSteps` is deliberately not touched,
+ * because the capture queue rewrites it wholesale and two writers on one key
+ * lose each other's updates.
+ */
+async function runResolve(final: boolean): Promise<void> {
+  const stored = await getLocal(['reactComponents', 'reactNeedles', 'reactScripts']);
+  if (!stored.ok) return;
+
+  const needles = stored.value.reactNeedles ?? {};
+  const components = stored.value.reactComponents ?? {};
+  if (Object.keys(needles).length === 0 && !final) return;
+
+  const result = await resolvePending({
+    components,
+    needles,
+    scripts: stored.value.reactScripts ?? {},
+    final,
+  });
+
+  if (!result.changed) return;
+
+  const written = await setLocal({
+    reactComponents: result.components,
+    reactNeedles: result.needles,
+  });
+  if (!written.ok) await reportError(written.error);
+}
+
+function enqueueResolve(final: boolean): Promise<void> {
+  resolveQueue = resolveQueue.then(() =>
+    runResolve(final).catch((error: unknown) =>
+      // A failed pass costs some components their path and nothing else; the
+      // needles are still in storage and the next trigger retries them.
+      console.warn('FlowSnap: component resolution failed', error),
+    ),
+  );
+  return resolveQueue;
+}
+
+/**
+ * Resolution runs *during* recording, on idle, rather than only at the end.
+ *
+ * The page is still open, so its bundles are certain to be fetchable and warm
+ * in the HTTP cache — after the tab closes, a private or cookie-gated bundle may
+ * not be. It also means most components are already resolved by the time anyone
+ * presses Stop.
+ */
+function scheduleResolve(): void {
+  if (resolveTimer !== null) clearTimeout(resolveTimer);
+  resolveTimer = setTimeout(() => {
+    resolveTimer = null;
+    void enqueueResolve(false);
+  }, RESOLVE_DEBOUNCE_MS);
 }
 
 // ── MCP auto-export ──────────────────────────────────────────────────────────
@@ -188,6 +281,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
     changes.recordedSteps.newValue.length === 0;
   if (isClearing) return;
 
+  // The last chance while the page is still open and its bundles still cached.
+  // Not `final`: the user may sit in the review tab for a minute and press Send,
+  // which sweeps again, and calling anything skipped this early would be wrong.
+  if (resolveTimer !== null) {
+    clearTimeout(resolveTimer);
+    resolveTimer = null;
+  }
+  void enqueueResolve(false);
+
   void getLocal('recordedSteps').then((stored) => {
     const steps = stored.ok ? ((stored.value.recordedSteps ?? [])) : [];
     if (steps.length) void autoExportToMcp(steps);
@@ -217,11 +319,11 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
     }
 
     case 'CAPTURE_AND_SAVE_STEP': {
-      const { step, elementBox, dpr } = message;
+      const { step, elementBox, dpr, components, componentsPageUrl } = message;
       // Enqueue so captures run one at a time. A rejected step is swallowed so
       // one failure cannot break the chain for later steps.
       captureQueue = captureQueue.then(() =>
-        captureAndSave(step, elementBox, dpr, sender).catch((error: unknown) =>
+        captureAndSave(step, elementBox, dpr, sender, components, componentsPageUrl).catch((error: unknown) =>
           console.error('FlowSnap: captureAndSave rejected', error),
         ),
       );
@@ -229,6 +331,51 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
       // and waiting for the queue would hold the page's indicator hidden for as
       // long as the backlog takes.
       sendResponse({ ok: true });
+      return true;
+    }
+
+    case 'REACT_META': {
+      // Written once per recording, and never merged with a later contradiction:
+      // a flow that visits a React page and then a plain one was still recorded
+      // against React, and saying otherwise would lose that.
+      void getLocal('reactMeta').then((stored) => {
+        if (stored.ok && stored.value.reactMeta?.detected) {
+          sendResponse({ ok: true });
+          return;
+        }
+        void setLocal({ reactMeta: message.meta }).then((written) =>
+          sendResponse({ ok: written.ok }),
+        );
+      });
+      return true;
+    }
+
+    case 'REACT_SCRIPTS': {
+      // `sender.url` is Chrome's word for where the message came from; the
+      // page's own claim is only the fallback for a frame that has none.
+      const pageUrl = sender.url ?? message.pageUrl;
+      void getLocal('reactScripts').then((stored) => {
+        const merged = mergeScripts(stored.ok ? (stored.value.reactScripts ?? {}) : {}, pageUrl, message.urls);
+        if (!merged.changed) {
+          sendResponse({ ok: true });
+          return;
+        }
+        void setLocal({ reactScripts: merged.scripts }).then((written) => {
+          // A chunk that has only just loaded may be the one a component nobody
+          // could find lives in, so this is worth a pass of its own.
+          if (written.ok) scheduleResolve();
+          sendResponse({ ok: written.ok });
+        });
+      });
+      return true;
+    }
+
+    case 'RESOLVE_COMPONENTS': {
+      if (resolveTimer !== null) {
+        clearTimeout(resolveTimer);
+        resolveTimer = null;
+      }
+      void enqueueResolve(message.final).then(() => sendResponse({ ok: true }));
       return true;
     }
 
@@ -248,10 +395,15 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
     }
 
     case 'CLEAR_STEPS': {
+      clearResolverCaches();
       void setLocal({
         recordedSteps: [],
         recordingActive: false,
         recordingPaused: false,
+        reactComponents: {},
+        reactNeedles: {},
+        reactScripts: {},
+        reactMeta: null,
       }).then((written) => {
         updateBadge(0);
         sendResponse({ ok: written.ok });

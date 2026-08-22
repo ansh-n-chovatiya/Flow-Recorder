@@ -18,7 +18,9 @@ export type FlowErrorCode =
   | 'CAPTURE_RATE_LIMITED'
   | 'INJECTION_FAILED'
   | 'IMAGE_UNUSABLE'
-  | 'MCP_UNREACHABLE';
+  | 'MCP_UNREACHABLE'
+  | 'RESOURCE_UNFETCHABLE'
+  | 'RESOURCE_TOO_LARGE';
 
 export interface FlowError {
   code: FlowErrorCode;
@@ -54,6 +56,14 @@ const MESSAGES: Record<FlowErrorCode, string> = {
   // loss, and the old copy left people thinking they had just lost a recording.
   MCP_UNREACHABLE:
     'The FlowSnap MCP server is not running, so nothing was sent. Open Claude Code and try again — this flow is saved.',
+  // The last two never reach the popup: a bundle that will not load costs one
+  // component its source file and nothing else, and the flow says so in the
+  // component's own `detail`. They are `FlowError`s so that the fetch wrapper
+  // reports failure the same way every other call in `src/chrome/` does.
+  RESOURCE_UNFETCHABLE:
+    "One of the page's script bundles could not be read, so a component's source file is missing.",
+  RESOURCE_TOO_LARGE:
+    "One of the page's script bundles is too large to search, so a component's source file is missing.",
 };
 
 /** Coerce whatever Chrome or a `catch` handed us into one readable line. */
