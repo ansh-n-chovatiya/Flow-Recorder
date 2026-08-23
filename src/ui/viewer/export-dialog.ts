@@ -11,7 +11,7 @@
 import { exportFlow, suggestFilename } from '../../features/export/download.js';
 import { getLocal, setLocal } from '../../chrome/storage.js';
 import { flowHost } from '../../core/flow/index.js';
-import type { ExportOptions, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
 import { formatBytes } from '../format.js';
 import { hydrateIcons, setIcon } from '../icons.js';
 import { showToast } from '../toast.js';
@@ -50,6 +50,8 @@ interface Session {
   filename: string;
   busy: boolean;
   progress: { done: number; total: number } | null;
+  /** The component table, so the Markdown and JSON in the archive carry it. */
+  react: FlowReact | undefined;
 }
 
 let session: Session | null = null;
@@ -180,6 +182,7 @@ async function run(): Promise<void> {
     format: session.format,
     options: session.options,
     filename: view.filename,
+    react: session.react,
     onProgress: (done, total) => {
       if (!session) return;
       session.progress = { done, total };
@@ -203,9 +206,11 @@ async function run(): Promise<void> {
 export interface OpenExportOptions {
   steps: Step[];
   title: string;
+  /** The flow's component table, absent when the page was not React. */
+  react?: FlowReact | null;
 }
 
-export function openExport({ steps, title }: OpenExportOptions): void {
+export function openExport({ steps, title, react }: OpenExportOptions): void {
   if (steps.length === 0) {
     showToast({ message: 'There is nothing to export yet.' });
     return;
@@ -221,6 +226,7 @@ export function openExport({ steps, title }: OpenExportOptions): void {
     session = {
       steps,
       title,
+      react: react ?? undefined,
       format: 'zip',
       options,
       filename: suggestFilename(steps),

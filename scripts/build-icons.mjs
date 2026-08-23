@@ -57,6 +57,7 @@ const ICONS = {
   keyboard: 'an input step',
   'sticky-note': 'a note step',
   'corner-down-right': 'the page-changed marker',
+  atom: 'the React component a step happened in',
 
   // Screenshots
   image: 'annotate a screenshot',

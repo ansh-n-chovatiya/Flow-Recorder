@@ -183,9 +183,23 @@ let resolveTimer: ReturnType<typeof setTimeout> | null = null;
  * because the capture queue rewrites it wholesale and two writers on one key
  * lose each other's updates.
  */
-async function runResolve(final: boolean): Promise<void> {
-  const stored = await getLocal(['reactComponents', 'reactNeedles', 'reactScripts']);
+async function runResolve(requestedFinal: boolean): Promise<void> {
+  const stored = await getLocal([
+    'reactComponents',
+    'reactNeedles',
+    'reactScripts',
+    'recordingActive',
+  ]);
   if (!stored.ok) return;
+
+  /*
+   * A final pass writes off whatever is still pending as `skipped` — "the flow
+   * finished before this could be looked up". While a recording is live that is
+   * simply untrue, and the caller cannot always know: sending from the review
+   * tab looks the same whether or not the tab behind it is still capturing. The
+   * state lives here, so the rule is enforced here rather than at four callers.
+   */
+  const final = requestedFinal && !stored.value.recordingActive;
 
   const needles = stored.value.reactNeedles ?? {};
   const components = stored.value.reactComponents ?? {};

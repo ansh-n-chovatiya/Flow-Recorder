@@ -45,6 +45,16 @@ export interface ElementReactRef {
   chain: string[];
   /** The walk hit its cap, so `chain[0]` is not the root component. */
   truncated?: boolean;
+  /**
+   * Which of the chain the flow attributes this step to.
+   *
+   * Decided once, when the flow is frozen for export, and written down so that
+   * every reader of it — this extension, the MCP server, anything downstream —
+   * names the same component. The rule that picks it is four preference tiers
+   * deep (`core/react/owner.ts`); re-deriving it in each reader is how two
+   * halves of one document end up disagreeing about which button was clicked.
+   */
+  owner?: string;
 }
 
 /** Why a component's source is not a resolved original file. */
@@ -332,6 +342,17 @@ export interface StoredError {
 /** Archived flows are stored one key per flow, keyed by this. */
 export function savedFlowKey(id: string): `savedFlow_${string}` {
   return `savedFlow_${id}`;
+}
+
+/**
+ * An archived flow's React components, one key per flow.
+ *
+ * Separate from the steps because it is written by a different thing at a
+ * different time — and because a flow archived before this existed simply has
+ * no such key, which reads as "no components" rather than as a broken record.
+ */
+export function savedFlowReactKey(id: string): `savedFlowReact_${string}` {
+  return `savedFlowReact_${id}`;
 }
 
 /**

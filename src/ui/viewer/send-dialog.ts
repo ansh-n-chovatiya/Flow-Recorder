@@ -15,7 +15,7 @@
 import { sendFlow, type SendResult } from '../../features/mcp/send.js';
 import { getLocal, setLocal } from '../../chrome/storage.js';
 import { flowHost } from '../../core/flow/index.js';
-import type { ExportOptions, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
 import { formatBytes, formatTokens } from '../format.js';
 import { setIcon } from '../icons.js';
 import { showToast } from '../toast.js';
@@ -44,6 +44,9 @@ interface Session {
   id: string | undefined;
   options: ExportOptions;
   busy: boolean;
+  /** An archived flow's frozen table. Absent for the live recording, whose
+   *  table `sendFlow` reads back itself after its final resolve pass. */
+  react: FlowReact | undefined;
 }
 
 let session: Session | null = null;
@@ -138,7 +141,13 @@ async function run(): Promise<void> {
   session.busy = true;
   paint();
 
-  const sent = await sendFlow(session.name, session.steps, session.id, session.options);
+  const sent = await sendFlow(
+    session.name,
+    session.steps,
+    session.id,
+    session.options,
+    session.react,
+  );
 
   session.busy = false;
   paint();
@@ -167,9 +176,11 @@ export interface OpenSendOptions {
   name: string;
   /** The saved flow's id, so a re-send overwrites rather than piling up. */
   id?: string;
+  /** An archived flow's frozen component table; omitted for the recording. */
+  react?: FlowReact | null;
 }
 
-export function openSend({ steps, name, id }: OpenSendOptions): void {
+export function openSend({ steps, name, id, react }: OpenSendOptions): void {
   if (steps.length === 0) {
     showToast({ message: 'There is nothing to send yet.' });
     return;
@@ -182,7 +193,14 @@ export function openSend({ steps, name, id }: OpenSendOptions): void {
         ? { ...SEND_DEFAULTS, ...stored.value.sendOptions }
         : SEND_DEFAULTS;
 
-    session = { steps, name, id, options, busy: false };
+    session = {
+      steps,
+      name,
+      id,
+      options,
+      busy: false,
+      react: react ?? undefined,
+    };
 
     paint();
     dom.dialog.showModal();

@@ -101,14 +101,23 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
 
   dom.exportButton.addEventListener('click', () => {
     const { flow } = app.state;
-    if (flow) openExport({ steps: flow.steps, title: flow.name });
+    if (flow) openExport({ steps: flow.steps, title: flow.name, react: flow.react });
   });
 
   // The dialog does the sending, so what the flow costs is on screen before it
   // is spent rather than after.
   dom.send.addEventListener('click', () => {
     const { flow } = app.state;
-    if (flow) openSend({ steps: flow.steps, name: flow.name, id: flow.id ?? undefined });
+    if (flow) {
+      openSend({
+        steps: flow.steps,
+        name: flow.name,
+        id: flow.id ?? undefined,
+        // The live recording's table is re-read at send time, after the last
+        // resolve pass; an archived one is already frozen, so it travels here.
+        react: flow.id === null ? undefined : flow.react,
+      });
+    }
   });
 
   dom.more.addEventListener('click', () => {
@@ -598,6 +607,17 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     if (card.value) find(value, '.step__value-text').textContent = card.value;
     else value.remove();
 
+    // ── Component ──────────────────────────────────────────────────────
+    const react = find(node, '.step__react');
+    if (card.component) {
+      find(react, '.step__react-name').textContent = card.component.name;
+      const tag = find(react, '.step__react-tag');
+      if (card.component.dependency) tag.textContent = 'dependency';
+      else tag.remove();
+    } else {
+      react.remove();
+    }
+
     // ── Screenshot ─────────────────────────────────────────────────────
     const shot = find(node, '.shot');
     const empty = find(node, '.shot-empty');
@@ -680,6 +700,34 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       });
     } else {
       selectors.remove();
+    }
+
+    // ── Where that component lives ─────────────────────────────────────
+    const reactDetail = find(node, '.detail--react');
+    if (card.component) {
+      const { source, detail: why } = card.component;
+
+      const status = find(reactDetail, '.react__status');
+      // The chip states the doubt, so an unresolved component never sits under
+      // a heading that implies it has an answer.
+      if (why) status.textContent = 'unresolved';
+      else status.remove();
+
+      const sourceRow = find(reactDetail, '.selector');
+      if (source) {
+        find(sourceRow, '.react__source').textContent = source;
+        find(sourceRow, '[data-action="copy-source"]').addEventListener('click', () => {
+          void copy(source, 'source path');
+        });
+      } else {
+        sourceRow.remove();
+      }
+
+      const reason = find(reactDetail, '.react__detail');
+      if (why) reason.textContent = why;
+      else reason.remove();
+    } else {
+      reactDetail.remove();
     }
 
     // ── Network and console ────────────────────────────────────────────
@@ -813,7 +861,7 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'e') {
       event.preventDefault();
       const { flow } = app.state;
-      if (flow) openExport({ steps: flow.steps, title: flow.name });
+      if (flow) openExport({ steps: flow.steps, title: flow.name, react: flow.react });
       return;
     }
 
@@ -878,6 +926,7 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       const parts = [`${view.header.stepCount} ${view.header.stepCount === 1 ? 'step' : 'steps'}`];
       if (view.header.host) parts.push(view.header.host);
       if (view.header.when) parts.push(view.header.when);
+      if (view.header.components) parts.push(view.header.components);
       dom.meta.textContent = parts.join(' · ');
     } else {
       dom.name.textContent = '';

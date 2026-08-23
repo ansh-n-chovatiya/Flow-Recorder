@@ -8,8 +8,10 @@
 
 import { isStableSelector } from '../selector/index.js';
 import { compactBody } from '../schema/index.js';
-import { flowHost } from '../flow/index.js';
-import type { ExportOptions, Step } from '../../shared/types.js';
+import { flowHost, urlPath } from '../flow/index.js';
+import { formatSource, referencedComponentIds, stepOwner } from '../react/attribution.js';
+import { CAPPED_ID } from '../react/table.js';
+import type { ComponentSource, ExportOptions, FlowReact, Step } from '../../shared/types.js';
 
 /**
  * How a step's screenshot is referenced.
@@ -34,24 +36,15 @@ function imageRef(step: Step, index: number, strategy: ImageStrategy): string | 
   }
 }
 
-/** Pathname (+ search) of a URL, for compact page-change markers. */
-export function urlPath(url: string | undefined): string {
-  if (!url) return '';
-  try {
-    const u = new URL(url);
-    return u.pathname + u.search;
-  } catch {
-    return url;
-  }
-}
-
 /**
- * Host of the first URL we can parse, shown once in the header.
+ * Host of the first URL we can parse, shown once in the header, and the compact
+ * pathname used for page-change markers.
  *
- * It lives in `core/flow` now that the viewer's library also needs it; re-exported
- * here because this is where it has always been imported from.
+ * Both live in `core/flow` now that the viewer's library and the component table
+ * also need them; re-exported here because this is where they have always been
+ * imported from.
  */
-export { flowHost };
+export { flowHost, urlPath };
 
 /**
  * Append one step block. `prevPath` is the previous step's path; the returned
@@ -64,6 +57,7 @@ function appendStep(
   prevPath: string,
   image: string | null,
   opts: Partial<ExportOptions>,
+  components: Record<string, ComponentSource>,
 ): string {
   lines.push(`### ${n}. ${step.action || step.type}`);
 
@@ -73,6 +67,14 @@ function appendStep(
   if (step.element && isStableSelector(step.element.cssSelector)) {
     lines.push(`\`${step.element.cssSelector}\``);
   }
+
+  /*
+   * The component *name* only. Its path is in the table at the end of the
+   * document, so a flow that clicks one button forty times pays for that path
+   * once — the same rule that keeps full CSS selectors out of here.
+   */
+  const owner = stepOwner(step, components);
+  if (owner) lines.push(`⚛ ${owner.component.name}`);
 
   if (step.value) lines.push(`↳ value: "${step.value}"`);
 
@@ -126,10 +128,42 @@ function appendStep(
   return path;
 }
 
+/**
+ * The one place a component's source is written down.
+ *
+ * Every row states its own confidence, so the document cannot claim a path in
+ * one place and hedge about it in another. A component with nowhere to point
+ * still gets a row: its name appeared beside a step, and whoever looks it up
+ * deserves the reason rather than a gap.
+ */
+function appendComponents(lines: string[], react: FlowReact, steps: Step[]): void {
+  const rows = referencedComponentIds(steps)
+    .map((id) => react.components[id])
+    .filter((component): component is ComponentSource => Boolean(component))
+    .map((c) => `| ${c.name} | ${formatSource(c) ?? '—'} | ${c.detail ?? ''} |`);
+
+  if (rows.length === 0) return;
+
+  lines.push('## React components');
+  lines.push('');
+  lines.push('| Component | Source | Notes |');
+  lines.push('| --- | --- | --- |');
+  lines.push(...rows);
+  lines.push('');
+
+  const capped = react.components[CAPPED_ID];
+  if (capped?.detail) {
+    lines.push(`> ${capped.detail}`);
+    lines.push('');
+  }
+}
+
 export interface MarkdownOptions extends Omit<Partial<ExportOptions>, 'images'> {
   title?: string;
   /** `true`/`undefined` inlines base64; `false` omits; a strategy is explicit. */
   images?: ImageStrategy | boolean;
+  /** The flow's component table, when it was recorded on a React page. */
+  react?: FlowReact;
 }
 
 /** Render a flow as Markdown. */
@@ -163,9 +197,13 @@ export function exportToMarkdown(steps: Step[], options: MarkdownOptions = {}): 
 
   let prevPath = '';
   const opts: Partial<ExportOptions> = { network: options.network, logs: options.logs };
+  const components = options.react?.components ?? {};
   list.forEach((step, i) => {
-    prevPath = appendStep(lines, step, i + 1, prevPath, imageRef(step, i, strategy), opts);
+    const image = imageRef(step, i, strategy);
+    prevPath = appendStep(lines, step, i + 1, prevPath, image, opts, components);
   });
+
+  if (options.react) appendComponents(lines, options.react, list);
 
   return lines.join('\n');
 }

@@ -13,11 +13,18 @@
  */
 
 import { countByType, countFailures, flowHost, renumber } from '../../core/flow/index.js';
+import { buildFlowReact, pruneComponents } from '../../core/react/attribution.js';
 import { getLocal, removeLocal, setLocal } from '../../chrome/storage.js';
 import { sendToWorker } from '../../shared/messages.js';
 import { err, ok, type Result } from '../../shared/result.js';
 import { flowError } from '../../shared/errors.js';
-import { savedFlowKey, type FlowMeta, type Step } from '../../shared/types.js';
+import {
+  savedFlowKey,
+  savedFlowReactKey,
+  type FlowMeta,
+  type FlowReact,
+  type Step,
+} from '../../shared/types.js';
 import { makeThumbnail } from './thumbnail.js';
 
 /** A flow and its steps, whether it is the live recording or an archived one. */
@@ -27,6 +34,8 @@ export interface Flow {
   name: string;
   steps: Step[];
   meta: FlowMeta | null;
+  /** Absent when the flow was not recorded on a React page. */
+  react: FlowReact | null;
 }
 
 /** The name the unsaved recording is shown under until it is given one. */
@@ -72,6 +81,21 @@ export function writeCurrent(steps: Step[]): Promise<Result<void>> {
 }
 
 /**
+ * The live recording's React components, pruned to the steps given.
+ *
+ * The resolver writes `reactComponents` continuously while a recording runs, so
+ * this is a snapshot of an answer that is still being filled in — which is
+ * exactly why it is read at the moment it is needed rather than held anywhere.
+ * A read that fails costs the flow its component table and nothing else.
+ */
+export async function readCurrentReact(steps: Step[]): Promise<FlowReact | null> {
+  const stored = await getLocal(['reactComponents', 'reactMeta']);
+  if (!stored.ok) return null;
+
+  return buildFlowReact(steps, stored.value.reactMeta ?? null, stored.value.reactComponents ?? {}) ?? null;
+}
+
+/**
  * One saved flow. `null` means the id is not in storage — a link to a flow that
  * has since been deleted, which the viewer shows as a missing flow rather than
  * as an empty one.
@@ -84,13 +108,17 @@ export async function readFlow(id: string): Promise<Result<Flow | null>> {
   if (!meta) return ok(null);
 
   const key = savedFlowKey(id);
-  const stored = await getLocal(key);
+  const reactKey = savedFlowReactKey(id);
+  const stored = await getLocal([key, reactKey]);
   if (!stored.ok) return stored;
 
   const steps = stored.value[key];
   if (!Array.isArray(steps)) return ok(null);
 
-  return ok({ id, name: meta.name, steps: steps as Step[], meta });
+  // Flows archived before components were captured have no such key at all.
+  const react = (stored.value[reactKey] as FlowReact | undefined) ?? null;
+
+  return ok({ id, name: meta.name, steps: steps as Step[], meta, react });
 }
 
 // ── Describing ───────────────────────────────────────────────────────────────
@@ -145,7 +173,15 @@ export function approximateBytes(steps: Step[]): number {
 
 // ── Writing ──────────────────────────────────────────────────────────────────
 
-/** Archive the recording in progress under a name. */
+/**
+ * Archive the recording in progress under a name.
+ *
+ * Archiving is the moment a flow stops changing, so it is also the moment its
+ * component table is frozen: one last resolve pass while the recorded pages may
+ * still be open and their bundles still cached, then a snapshot. The pass is
+ * asked to be final; the worker refuses that if a recording is still running,
+ * because writing pending components off as skipped would then be a lie.
+ */
 export async function saveAsFlow(name: string, steps: Step[]): Promise<Result<FlowMeta>> {
   if (steps.length === 0) return err(flowError('STORAGE_WRITE', 'nothing to save'));
 
@@ -153,11 +189,17 @@ export async function saveAsFlow(name: string, steps: Step[]): Promise<Result<Fl
   const numbered = renumber(steps);
   const meta = await describeFlow(id, name, numbered, Date.now());
 
+  await sendToWorker({ type: 'RESOLVE_COMPONENTS', final: true });
+  const react = await readCurrentReact(numbered);
+
   // Steps first: if the index write fails, the orphaned key is overwritten by
   // the next save with the same timestamp-derived id or cleaned up by "delete
   // all". If the index went first and the steps failed, the library would list a
   // flow that cannot be opened.
-  const written = await setLocal({ [savedFlowKey(id)]: numbered });
+  const written = await setLocal({
+    [savedFlowKey(id)]: numbered,
+    ...(react ? { [savedFlowReactKey(id)]: react } : {}),
+  });
   if (!written.ok) return written;
 
   const flows = await listFlows();
@@ -184,7 +226,20 @@ export async function updateFlowSteps(id: string, steps: Step[]): Promise<Result
   if (!existing) return err(flowError('STORAGE_WRITE', `no flow ${id}`));
 
   const numbered = renumber(steps);
-  const written = await setLocal({ [savedFlowKey(id)]: numbered });
+
+  /*
+   * Deleting a step has to drop the components only that step reached, or the
+   * flow keeps shipping source paths for code nothing in it points at any more.
+   * Pruning against the surviving steps is idempotent, so an edit that changed
+   * nothing structural rewrites the same table.
+   */
+  const stored = await getLocal(savedFlowReactKey(id));
+  const react = stored.ok ? (stored.value[savedFlowReactKey(id)] as FlowReact | undefined) : undefined;
+
+  const written = await setLocal({
+    [savedFlowKey(id)]: numbered,
+    ...(react ? { [savedFlowReactKey(id)]: { ...react, components: pruneComponents(numbered, react.components) } } : {}),
+  });
   if (!written.ok) return written;
 
   // The step count is the signal that the *shape* of the flow changed and the
@@ -216,12 +271,12 @@ export async function renameFlow(id: string, name: string): Promise<Result<void>
  * a flow that is listed and openable, which is recoverable. The other order
  * leaves bytes in a 10 MB store that nothing can name.
  */
-export async function deleteFlow(id: string): Promise<Result<{ meta: FlowMeta; steps: Step[] }>> {
+export async function deleteFlow(id: string): Promise<Result<DeletedFlow>> {
   const flow = await readFlow(id);
   if (!flow.ok) return flow;
   if (!flow.value?.meta) return err(flowError('STORAGE_WRITE', `no flow ${id}`));
 
-  const removed = await removeLocal(savedFlowKey(id));
+  const removed = await removeLocal([savedFlowKey(id), savedFlowReactKey(id)]);
   if (!removed.ok) return removed;
 
   const flows = await listFlows();
@@ -230,12 +285,26 @@ export async function deleteFlow(id: string): Promise<Result<{ meta: FlowMeta; s
   const indexed = await writeIndex(flows.value.filter((entry) => entry.id !== id));
   if (!indexed.ok) return indexed;
 
-  return ok({ meta: flow.value.meta, steps: flow.value.steps });
+  return ok({ meta: flow.value.meta, steps: flow.value.steps, react: flow.value.react });
+}
+
+/** Everything a delete took, which is everything an undo has to put back. */
+export interface DeletedFlow {
+  meta: FlowMeta;
+  steps: Step[];
+  react: FlowReact | null;
 }
 
 /** Put a deleted flow back, for the undo on the toast. */
-export async function restoreFlow(meta: FlowMeta, steps: Step[]): Promise<Result<void>> {
-  const written = await setLocal({ [savedFlowKey(meta.id)]: steps });
+export async function restoreFlow(
+  meta: FlowMeta,
+  steps: Step[],
+  react: FlowReact | null = null,
+): Promise<Result<void>> {
+  const written = await setLocal({
+    [savedFlowKey(meta.id)]: steps,
+    ...(react ? { [savedFlowReactKey(meta.id)]: react } : {}),
+  });
   if (!written.ok) return written;
 
   const flows = await listFlows();

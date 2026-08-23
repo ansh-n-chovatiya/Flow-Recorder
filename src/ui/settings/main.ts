@@ -10,7 +10,12 @@
 import { bytesInUse, getLocal, getSync, removeLocal, setLocal, setSync } from '../../chrome/storage.js';
 import { checkMcp } from '../../features/mcp/health.js';
 import { DEFAULT_MCP_URL } from '../../shared/constants.js';
-import { savedFlowKey, type FlowMeta, type ThemePreference } from '../../shared/types.js';
+import {
+  savedFlowKey,
+  savedFlowReactKey,
+  type FlowMeta,
+  type ThemePreference,
+} from '../../shared/types.js';
 import { formatBytes } from '../format.js';
 import { hydrateIcons, icon } from '../icons.js';
 import { initTheme, loadTheme, saveTheme } from '../theme.js';
@@ -176,7 +181,9 @@ dom.deleteDialog.addEventListener('close', () => {
   if (dom.deleteDialog.returnValue !== 'delete') return;
 
   void (async () => {
-    const removed = await removeLocal(savedFlows.map((flow) => savedFlowKey(flow.id)));
+    const removed = await removeLocal(
+      savedFlows.flatMap((flow) => [savedFlowKey(flow.id), savedFlowReactKey(flow.id)]),
+    );
     if (!removed.ok) {
       showToast({ message: removed.error.message, tone: 'danger' });
       return;

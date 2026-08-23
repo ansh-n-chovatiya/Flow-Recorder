@@ -14,6 +14,7 @@ import {
   CURRENT_FLOW_NAME,
   listFlows,
   readCurrent,
+  readCurrentReact,
   readFlow,
   saveAsFlow,
   updateFlowSteps,
@@ -132,6 +133,9 @@ async function reload(): Promise<void> {
       name: CURRENT_FLOW_NAME,
       steps: state.current.steps,
       createdAt: state.current.steps[0]?.timestamp ?? null,
+      // Re-read on every reload rather than held: the resolver writes to this
+      // key while the recording runs, so a cached copy would go stale on screen.
+      react: await readCurrentReact(state.current.steps),
     };
     state.missing = false;
     paint();
@@ -150,6 +154,7 @@ async function reload(): Promise<void> {
       name: flow.value.name,
       steps: flow.value.steps,
       createdAt: flow.value.meta?.createdAt ?? null,
+      react: flow.value.react,
     };
     state.missing = false;
   }

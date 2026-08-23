@@ -47,6 +47,17 @@ export function startUrl(steps: Step[]): string | undefined {
   return steps[0]?.url;
 }
 
+/** Pathname (+ search) of a URL, for compact page-change markers. */
+export function urlPath(url: string | undefined): string {
+  if (!url) return '';
+  try {
+    const u = new URL(url);
+    return u.pathname + u.search;
+  } catch {
+    return url;
+  }
+}
+
 /** Host of the first URL we can parse. One unparseable URL must not blank it. */
 export function flowHost(steps: Step[]): string {
   for (const step of steps) {

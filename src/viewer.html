@@ -805,6 +805,15 @@
           <span class="step__value-text mono"></span>
         </p>
 
+        <!-- The component the click landed in. The name only, like the export:
+             the path is a detail, and repeating it on every card is the noise
+             the selectors disclosure exists to avoid. -->
+        <p class="step__react">
+          <span data-icon="atom" class="step__react-icon"></span>
+          <span class="step__react-name mono truncate"></span>
+          <span class="step__react-tag chip">dependency</span>
+        </p>
+
         <figure class="shot">
           <img class="shot__image" alt="" loading="lazy" />
           <!-- Everything else on the card is a record of what happened. This
@@ -867,6 +876,33 @@
                 <span data-icon="copy"></span>
               </button>
             </div>
+          </div>
+        </details>
+
+        <!-- Where that component was written. Behind a disclosure for the same
+             reason the selectors are: it is what you open when the name alone
+             was not enough. -->
+        <details class="detail detail--react">
+          <summary class="detail__summary">
+            <span data-icon="chevron-right" class="detail__chevron"></span>
+            <span class="detail__label">Component</span>
+            <span class="detail__worst chip react__status"></span>
+          </summary>
+          <div class="detail__body">
+            <div class="selector">
+              <span class="label">Source</span>
+              <code class="selector__value react__source"></code>
+              <button
+                class="btn btn--ghost btn--icon btn--compact react__copy"
+                type="button"
+                data-action="copy-source"
+                aria-label="Copy the source path"
+                title="Copy"
+              >
+                <span data-icon="copy"></span>
+              </button>
+            </div>
+            <p class="react__detail"></p>
           </div>
         </details>
 

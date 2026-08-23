@@ -13,7 +13,7 @@ import { createZip, dataUrlToBytes, type ZipEntry } from '../../core/export/zip.
 import { flowHost, pad2, renumber } from '../../core/flow/index.js';
 import { err, ok, type Result } from '../../shared/result.js';
 import { flowError } from '../../shared/errors.js';
-import type { ExportOptions, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
 import { EXTENSION, type ExportFormat } from './formats.js';
 
 export interface ExportRequest {
@@ -24,6 +24,8 @@ export interface ExportRequest {
   options: ExportOptions;
   /** Without an extension; this adds the one the format requires. */
   filename: string;
+  /** The flow's component table, absent when the page was not React. */
+  react?: FlowReact;
   /** Called as each screenshot is packed, so a large ZIP is not a frozen tab. */
   onProgress?: (done: number, total: number) => void;
 }
@@ -50,7 +52,7 @@ function breathe(): Promise<void> {
 }
 
 async function buildZip(request: ExportRequest): Promise<Blob> {
-  const { steps, options, title, onProgress } = request;
+  const { steps, options, title, onProgress, react } = request;
 
   const encoder = new TextEncoder();
   const files: ZipEntry[] = [];
@@ -85,13 +87,14 @@ async function buildZip(request: ExportRequest): Promise<Blob> {
         images: options.images ? { kind: 'file', names: imageNames } : { kind: 'none' },
         network: options.network,
         logs: options.logs,
+        react,
       }),
     ),
   });
 
   files.push({
     name: 'flow.json',
-    data: encoder.encode(exportToJSON(steps, { ...options, imageNames })),
+    data: encoder.encode(exportToJSON(steps, { ...options, imageNames, react })),
   });
 
   return createZip(files);
@@ -102,7 +105,7 @@ function hasImage(step: Step): boolean {
 }
 
 export async function exportFlow(request: ExportRequest): Promise<Result<string>> {
-  const { format, options, title } = request;
+  const { format, options, title, react } = request;
   // Numbered on the way out, so a flow with deleted steps exports 1, 2, 3 rather
   // than the capture-time 1, 2, 4.
   const steps = renumber(request.steps);
@@ -119,10 +122,16 @@ export async function exportFlow(request: ExportRequest): Promise<Result<string>
         images: options.images,
         network: options.network,
         logs: options.logs,
+        react,
       });
       download(filename, new Blob([markdown], { type: 'text/markdown' }));
     } else {
-      download(filename, new Blob([exportToJSON(steps, options)], { type: 'application/json' }));
+      download(
+        filename,
+        new Blob([exportToJSON(steps, { ...options, react })], {
+          type: 'application/json',
+        }),
+      );
     }
 
     return ok(filename);

@@ -10,7 +10,15 @@
 
 import { flowHost, formatDelta, stepFailed, worstLevel, worstStatus } from '../../core/flow/index.js';
 import type { StatusClass } from '../../core/flow/index.js';
-import type { ConsoleLevel, RecordingState, Step, StepType } from '../../shared/types.js';
+import { formatSource, stepOwner, summarizeComponents } from '../../core/react/attribution.js';
+import type {
+  ComponentSource,
+  ConsoleLevel,
+  FlowReact,
+  RecordingState,
+  Step,
+  StepType,
+} from '../../shared/types.js';
 import { formatDateTime, formatRelative } from '../format.js';
 import type { IconName } from '../icons.js';
 
@@ -23,6 +31,9 @@ export interface ReviewFlow {
   name: string;
   steps: Step[];
   createdAt: number | null;
+  /** The component table, or `null` when the page was not React. For the live
+   *  recording this is a snapshot: the resolver is still filling it in. */
+  react: FlowReact | null;
 }
 
 export interface ReviewInput {
@@ -92,10 +103,30 @@ export interface StepCardView {
   screenshotImported: boolean;
   /** `null` for a step with no element — a navigation, or a synthesised note. */
   selectors: { css: string; xpath: string } | null;
+  /** The React component this step happened in, or `null`. */
+  component: StepComponentView | null;
   network: DetailSummary<StatusClass | null> | null;
   console: DetailSummary<ConsoleLevel | null> | null;
   notes: string;
   active: boolean;
+}
+
+/**
+ * What the card says about the component a step happened in.
+ *
+ * The name is always shown; `source` and `detail` are two halves of the same
+ * answer and exactly one of them is worth reading. A step whose component is
+ * still `pending` says so rather than showing an empty row, because a blank
+ * where a path should be reads as "this component has no source file".
+ */
+export interface StepComponentView {
+  name: string;
+  /** `src/components/Cart.tsx:34`, or `null` when it has nowhere to point. */
+  source: string | null;
+  /** The one sentence for anything that is not a resolved original file. */
+  detail: string | null;
+  /** The path is inside `node_modules`, so this is not the user's own code. */
+  dependency: boolean;
 }
 
 export interface FilterChip {
@@ -114,6 +145,8 @@ export interface ReviewHeader {
   stepCount: number;
   host: string;
   when: string;
+  /** `8 components · 6 resolved`, or '' when the page was not React. */
+  components: string;
 }
 
 /** Which block fills the workspace. Exactly one, always. */
@@ -181,7 +214,31 @@ function detail<T, W>(items: T[] | undefined, worst: W): DetailSummary<W> | null
   return { count: items.length, worst };
 }
 
-function cardView(steps: Step[], index: number, activeIndex: number | null): StepCardView {
+function componentView(
+  step: Step,
+  components: Record<string, ComponentSource>,
+): StepComponentView | null {
+  const owner = stepOwner(step, components);
+  if (!owner) return null;
+
+  const { component } = owner;
+
+  return {
+    name: component.name,
+    source: formatSource(component),
+    // A resolved component's path speaks for itself; everything else owes the
+    // reader a reason, and `detail` is where the resolver wrote one.
+    detail: component.status === 'resolved' ? null : (component.detail ?? null),
+    dependency: component.dependency === true,
+  };
+}
+
+function cardView(
+  steps: Step[],
+  index: number,
+  activeIndex: number | null,
+  components: Record<string, ComponentSource>,
+): StepCardView {
   const step = steps[index];
 
   return {
@@ -201,6 +258,7 @@ function cardView(steps: Step[], index: number, activeIndex: number | null): Ste
     selectors: step.element
       ? { css: step.element.cssSelector, xpath: step.element.xpath }
       : null,
+    component: componentView(step, components),
     network: detail(step.networkCalls, worstStatus(step.networkCalls)),
     console: detail(step.consoleLogs, worstLevel(step.consoleLogs)),
     notes: step.notes ?? '',
@@ -249,6 +307,7 @@ function headerView(flow: ReviewFlow, now: number): ReviewHeader {
     stepCount: flow.steps.length,
     host: flowHost(flow.steps),
     when: at === null ? '' : (formatRelative(now - at) ?? formatDateTime(at, now)),
+    components: flow.react ? summarizeComponents(flow.react.components) : '',
   };
 }
 
@@ -292,12 +351,14 @@ export function deriveReviewView(input: ReviewInput): ReviewView {
     .map((_, index) => index)
     .filter((index) => passes(steps[index], filter));
 
+  const components = flow.react?.components ?? {};
+
   return {
     body: shown.length === 0 ? 'no-matches' : 'steps',
     header,
     live,
     rail: shown.map((index) => railRow(steps, index, activeIndex)),
-    steps: shown.map((index) => cardView(steps, index, activeIndex)),
+    steps: shown.map((index) => cardView(steps, index, activeIndex, components)),
     filters,
     failures,
     canExport: true,

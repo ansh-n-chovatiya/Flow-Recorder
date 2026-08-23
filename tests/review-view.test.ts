@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { ConsoleEntry, NetworkCall, Step } from '../src/shared/types.js';
-import {
-  deriveReviewView,
-  STEP_ICON,
-  type ReviewInput,
-} from '../src/ui/viewer/review-view.js';
+import type {
+  ComponentSource,
+  ConsoleEntry,
+  FlowReact,
+  NetworkCall,
+  Step,
+} from '../src/shared/types.js';
+import { deriveReviewView, STEP_ICON, type ReviewInput } from '../src/ui/viewer/review-view.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -39,7 +41,7 @@ const step = (over: Partial<Step> = {}): Step =>
 
 function input(over: Partial<ReviewInput> = {}): ReviewInput {
   return {
-    flow: { id: 'flow_1', name: 'Checkout', steps: [step()], createdAt: NOW - 60_000 },
+    flow: { id: 'flow_1', name: 'Checkout', steps: [step()], createdAt: NOW - 60_000, react: null },
     missing: false,
     filter: 'all',
     activeIndex: null,
@@ -67,7 +69,7 @@ describe('the states before there are steps', () => {
 
   it('keeps the header and the filters on an empty flow', () => {
     const view = deriveReviewView(
-      input({ flow: { id: 'flow_1', name: 'Checkout', steps: [], createdAt: NOW } }),
+      input({ flow: { id: 'flow_1', name: 'Checkout', steps: [], createdAt: NOW, react: null } }),
     );
 
     expect(view.body).toBe('empty');
@@ -87,12 +89,16 @@ describe('the header', () => {
       stepCount: 1,
       host: 'example.com',
       when: '1 minute ago',
+      // A flow recorded on a page that is not React says nothing about it.
+      components: '',
     });
   });
 
   it('will not offer to rename the live recording, which has no stored name', () => {
     const view = deriveReviewView(
-      input({ flow: { id: null, name: 'Current recording', steps: [step()], createdAt: NOW } }),
+      input({
+        flow: { id: null, name: 'Current recording', steps: [step()], createdAt: NOW, react: null },
+      }),
     );
 
     expect(view.header?.renameable).toBe(false);
@@ -101,7 +107,7 @@ describe('the header', () => {
   });
 
   it('marks the flow live only while the recorder is actually running', () => {
-    const live = { id: null, name: 'Current recording', steps: [step()], createdAt: NOW };
+    const live = { id: null, name: 'Current recording', steps: [step()], createdAt: NOW, react: null };
 
     expect(deriveReviewView(input({ flow: live, recording: 'recording' })).live).toBe(true);
     expect(deriveReviewView(input({ flow: live, recording: 'paused' })).live).toBe(true);
@@ -126,7 +132,9 @@ describe('the step card', () => {
       step({ url: 'https://example.com/a' }),
       step({ url: 'https://example.com/b' }),
     ];
-    const view = deriveReviewView(input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW } }));
+    const view = deriveReviewView(
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null } }),
+    );
 
     // A URL repeated on thirty cards is noise; a URL that changed is the story.
     expect(view.steps.map((card) => card.urlReason)).toEqual(['started', null, 'changed']);
@@ -139,8 +147,9 @@ describe('the step card', () => {
         consoleLogs: [log('log'), log('warn')],
       }),
     ];
-    const [card] = deriveReviewView(input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW } }))
-      .steps;
+    const [card] = deriveReviewView(
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null } }),
+    ).steps;
 
     expect(card.network).toEqual({ count: 2, worst: '5xx' });
     expect(card.console).toEqual({ count: 2, worst: 'warn' });
@@ -148,8 +157,9 @@ describe('the step card', () => {
 
   it('has no selectors row for a step with no element', () => {
     const steps = [step({ type: 'navigate', title: 'Home', element: undefined })];
-    const [card] = deriveReviewView(input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW } }))
-      .steps;
+    const [card] = deriveReviewView(
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null } }),
+    ).steps;
 
     expect(card.selectors).toBeNull();
     expect(card.network).toBeNull();
@@ -169,14 +179,19 @@ describe('elapsed time', () => {
       step({ timestamp: NOW + 90_000, consoleLogs: [log('error')] }),
     ];
 
-    const all = deriveReviewView(input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW } }));
+    const all = deriveReviewView(
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null } }),
+    );
     expect(all.steps.map((card) => card.delta)).toEqual([null, '+1.0s', '+1m 29s']);
 
     // Filtering to errors leaves only the third step. Reading "+1.0s" off it —
     // its delta from the previous *shown* card — would be a lie the user has no
     // way to catch.
     const errors = deriveReviewView(
-      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW }, filter: 'errors' }),
+      input({
+        flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null },
+        filter: 'errors',
+      }),
     );
     expect(errors.steps).toHaveLength(1);
     expect(errors.steps[0].delta).toBe('+1m 29s');
@@ -191,7 +206,7 @@ describe('filters', () => {
     step({ type: 'click', networkCalls: [call({ status: 500 })] }),
     step({ type: 'input', value: 'ada@' }),
   ];
-  const flow = { id: 'f', name: 'n', steps, createdAt: NOW };
+  const flow = { id: 'f', name: 'n', steps, createdAt: NOW, react: null };
 
   it('counts every filter, whichever one is active', () => {
     const view = deriveReviewView(input({ flow }));
@@ -231,7 +246,9 @@ describe('filters', () => {
   it('has its own empty state when a filter matches nothing', () => {
     // Reachable by deleting the last error while the Errors filter is on, which
     // is exactly when a bare "no steps" would look like data loss.
-    const view = deriveReviewView(input({ flow: { ...flow, steps: [step()] }, filter: 'navigate' }));
+    const view = deriveReviewView(
+      input({ flow: { ...flow, steps: [step()] }, filter: 'navigate' }),
+    );
 
     expect(view.body).toBe('no-matches');
     expect(view.steps).toHaveLength(0);
@@ -243,10 +260,88 @@ describe('the active step', () => {
   it('marks the same step in the rail and in the list', () => {
     const steps = [step(), step({ type: 'input', value: 'x' })];
     const view = deriveReviewView(
-      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW }, activeIndex: 1 }),
+      input({
+        flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null },
+        activeIndex: 1,
+      }),
     );
 
     expect(view.rail.map((row) => row.active)).toEqual([false, true]);
     expect(view.steps.map((card) => card.active)).toEqual([false, true]);
+  });
+});
+
+describe('the React component on a step', () => {
+  const chained = (chain: string[]) =>
+    step({
+      element: {
+        tag: 'button',
+        cssSelector: '#save',
+        xpath: '/html/body/button',
+        boundingBox: null,
+        react: { chain },
+      },
+    });
+
+  const react = (components: Record<string, ComponentSource>): FlowReact => ({
+    detected: true,
+    build: 'production',
+    components,
+  });
+
+  const view = (steps: Step[], components: Record<string, ComponentSource>) =>
+    deriveReviewView(
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: react(components) } }),
+    );
+
+  it('is null on every card when the flow carries no components', () => {
+    const plain = deriveReviewView(input({ flow: { id: 'f', name: 'n', steps: [chained(['cart'])], createdAt: NOW, react: null } }));
+    expect(plain.steps[0].component).toBeNull();
+  });
+
+  it('names the owning component and where it was written', () => {
+    const [card] = view([chained(['app', 'cart'])], {
+      app: { name: 'App', status: 'resolved', source: 'src/App.tsx', line: 1 },
+      cart: { name: 'AddToCartButton', status: 'resolved', source: 'src/Cart.tsx', line: 34 },
+    }).steps;
+
+    expect(card.component).toEqual({
+      name: 'AddToCartButton',
+      source: 'src/Cart.tsx:34',
+      detail: null,
+      dependency: false,
+    });
+  });
+
+  it('gives an unresolved component its reason instead of a blank row', () => {
+    const [card] = view([chained(['lazy'])], {
+      lazy: { name: 'LazyModal', status: 'not-found', detail: 'Its chunk was never loaded.' },
+    }).steps;
+
+    expect(card.component?.source).toBeNull();
+    expect(card.component?.detail).toBe('Its chunk was never loaded.');
+  });
+
+  it('marks a component that turned out to live in node_modules', () => {
+    const [card] = view([chained(['base'])], {
+      base: {
+        name: 'ButtonBase',
+        status: 'resolved',
+        source: 'node_modules/@mui/material/ButtonBase.js',
+        line: 12,
+        dependency: true,
+      },
+    }).steps;
+
+    expect(card.component?.dependency).toBe(true);
+  });
+
+  it('summarises the whole table once, in the header', () => {
+    const header = view([chained(['a', 'b'])], {
+      a: { name: 'App', status: 'resolved', source: 'src/App.tsx', line: 1 },
+      b: { name: 'Cart', status: 'pending' },
+    }).header;
+
+    expect(header?.components).toBe('2 components · 1 resolved');
   });
 });
