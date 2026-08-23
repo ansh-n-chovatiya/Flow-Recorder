@@ -1,7 +1,7 @@
 /**
  * Finding a component's compiled position inside a bundle.
  *
- * Ported from react-source-locator `src/core/bundle-search.ts` @ 6eb7a30, with
+ * Ported from react-source-locator `src/core/bundle-search.ts` @ 314488d, with
  * two divergences:
  *
  *   1. **No resource listing and no fetching.** Upstream asks DevTools for the

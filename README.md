@@ -241,6 +241,7 @@ npm run build      # writes dist/
 npm run dev        # rebuild on change
 npm run verify     # typecheck + lint + token guard + tests + all three builds
 npm run package    # a release ZIP in releases/, version-synced from package.json
+npm run core:drift # what has changed in the files shared with react-source-locator
 ```
 
 `npm run verify` is what CI runs. Run it before pushing.
@@ -259,8 +260,17 @@ src/
   shared/       types, errors, constants, messages
 public/         manifest, icons, fonts, content.css — copied verbatim
 scripts/        icon and mark generation, token guard, version sync, packaging
+docs/           SHARED-CORE.md — the files shared with react-source-locator
 mcp-server/     published to npm as flowsnap-mcp; not part of the extension build
 ```
+
+Six files under `src/core/react/` are shared by copy with the sibling extension
+[react-source-locator](https://github.com/ansh-n-chovatiya/react-source-locator).
+They are copies rather than a package on purpose, and four of the differences
+between the two versions are deliberate — the line base most dangerously, since
+getting it wrong opens every file one line off and nothing fails. Read
+[`docs/SHARED-CORE.md`](docs/SHARED-CORE.md) before copying anything between the
+repos, and run `npm run core:drift` to see what has moved upstream.
 
 Three rules hold the structure together:
 

@@ -2,7 +2,7 @@
  * Source maps: reading the annotation, parsing the JSON, and turning a position
  * in a served bundle back into the file somebody wrote.
  *
- * Ported from react-source-locator `src/core/sourcemap.ts` @ 6eb7a30, with three
+ * Ported from react-source-locator `src/core/sourcemap.ts` @ 314488d, with three
  * divergences:
  *
  *   1. **No fetching and no caching in here.** Upstream's module owns a fetch

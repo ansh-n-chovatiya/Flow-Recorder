@@ -2,7 +2,7 @@
  * Search needles: the slices of a component's compiled source that are looked
  * for in the page's bundles to find where it was defined.
  *
- * Ported from react-source-locator `src/core/bundle-search.ts` @ 6eb7a30
+ * Ported from react-source-locator `src/core/bundle-search.ts` @ 314488d
  * (`buildNeedles`), with the rejection rules below added — upstream builds a
  * needle from anything long enough, which quietly wastes a full bundle scan on
  * sources that cannot possibly match.

@@ -1,7 +1,7 @@
 /**
  * Base64-VLQ decoding for source maps.
  *
- * Ported from react-source-locator `src/core/vlq.ts` @ 6eb7a30.
+ * Ported from react-source-locator `src/core/vlq.ts` @ 314488d.
  *
  * One deliberate divergence, and it is the reason this file exists rather than
  * being copied verbatim: **decoding is streaming**. Upstream materialises every
