@@ -57,6 +57,13 @@ that button was in, and which file that component was written in.
   modules, a 12-deep chain costs 0.029 ms cold and 0.003 ms warm.
 - The resolver writes only its own two storage keys. `recordedSteps` is rewritten
   wholesale by the capture queue, and two writers on one key lose each other.
+- Three fixes found while building this were back-ported to `react-source-locator`
+  and released there as 2.2.0: the streaming decode, the `[native code]` needle
+  guard, and cutting bundler namespaces out of a normalised source path.
+- `docs/SHARED-CORE.md` and `npm run core:drift` for the six files shared by copy
+  with that extension. Extracting them into a package was designed and dropped —
+  four of the differences between the copies are deliberate, and the line base in
+  particular fails silently when confused. Neither affects the built extension.
 - 530 tests, 41 files.
 
 ## [2.2.0] — 2026-08-22
