@@ -205,3 +205,291 @@ function PatchedXHR(this: unknown): XMLHttpRequest {
 Object.setPrototypeOf(PatchedXHR, OriginalXHR);
 PatchedXHR.prototype = OriginalXHR.prototype;
 window.XMLHttpRequest = PatchedXHR as unknown as typeof XMLHttpRequest;
+
+// ── React component capture ──────────────────────────────────────────────────
+/*
+ * Fibers are only reachable from here.
+ *
+ * React stores its fiber as an expando (`__reactFiber$…`) on the DOM node, and
+ * expandos set by page scripts are invisible to an isolated-world content
+ * script. So the walk has to happen in the page's own context — which is what
+ * this file already is — and the result crosses to the recorder as a message,
+ * like everything else in here.
+ */
+
+import {
+  CONTROL_MESSAGE_SOURCE,
+  REACT_PREWARM_TTL_MS,
+  REACT_PROBE_ATTEMPTS,
+} from '../shared/constants.js';
+import type { CapturedComponent, ControlMessage } from '../shared/messages.js';
+import {
+  type ChainEntry,
+  type ChainResult,
+  type ComponentFn,
+  collectChain,
+  hasReactRoot,
+  isElement,
+} from '../core/react/fiber.js';
+import { componentId, nameOnlyId } from '../core/react/id.js';
+import { buildNeedle } from '../core/react/needle.js';
+
+/** Watching only while something is recording — see ControlMessage. */
+let reactActive = false;
+/** Set once React is known to be on the page at all. */
+let reactFound = false;
+/** Interactions that found no component while no React root was visible. */
+let reactProbes = 0;
+/** Nothing here is React; listeners are gone and never come back for this document. */
+let reactGaveUp = false;
+let reactMetaSent = false;
+/** True once any fiber has been seen carrying development-only bookkeeping. */
+let sawDevelopmentFiber = false;
+
+/**
+ * Component identity by function.
+ *
+ * This is what makes the feature affordable: a forty-step flow through a real
+ * app touches perhaps eight distinct components, so `toString()` and the hash
+ * run eight times rather than once per component per click.
+ */
+const componentCache = new WeakMap<ComponentFn, CapturedComponent>();
+
+/**
+ * The chain computed on `pointerdown`, reused by the `click` that follows.
+ *
+ * One slot rather than a map: it exists to bridge a single gesture, and a cache
+ * that outlives that would start answering with a tree the page has since
+ * re-rendered.
+ */
+let prewarm: { el: Element; result: ChainResult; at: number } | null = null;
+
+function describeEntry(entry: ChainEntry): CapturedComponent {
+  const debugSource = entry.debugSource
+    ? {
+        source: entry.debugSource.fileName ?? '',
+        line: Math.max(1, entry.debugSource.lineNumber ?? 1),
+        column: Math.max(1, entry.debugSource.columnNumber ?? 1),
+      }
+    : null;
+
+  if (!entry.fn) {
+    // An unsettled lazy component. Its name is all there is, and forcing it to
+    // resolve would mean recording the page changed what the page loaded.
+    return { id: nameOnlyId(entry.name), name: entry.name, debugSource };
+  }
+
+  const cached = componentCache.get(entry.fn);
+  // The cache is keyed by function, but `_debugSource` is per JSX call site, so
+  // it is filled in from whichever usage first carried one rather than cached.
+  if (cached) return debugSource && !cached.debugSource ? { ...cached, debugSource } : cached;
+
+  let source = '';
+  try {
+    source = entry.fn.toString();
+  } catch {
+    // Exotic proxies can throw here; the name still tells the reader something.
+    const nameOnly: CapturedComponent = { id: nameOnlyId(entry.name), name: entry.name, debugSource };
+    componentCache.set(entry.fn, nameOnly);
+    return nameOnly;
+  }
+
+  const built = buildNeedle(source);
+  const captured: CapturedComponent = built.ok
+    ? { id: componentId(entry.name, source), name: entry.name, needle: built.needle, debugSource }
+    : { id: nameOnlyId(entry.name), name: entry.name, needleRejection: built.reason, debugSource };
+
+  componentCache.set(entry.fn, captured);
+  return captured;
+}
+
+// ── Script inventory ─────────────────────────────────────────────────────────
+
+/**
+ * URLs already reported, so each is sent once per document.
+ *
+ * Survives a stop/start inside one page: the worker's inventory is keyed by
+ * origin and never forgets, so re-sending would be pure noise.
+ */
+const reportedScripts = new Set<string>();
+
+let scriptsObserver: PerformanceObserver | null = null;
+
+function reportScripts(urls: string[]): void {
+  const fresh: string[] = [];
+  for (const url of urls) {
+    if (!url || reportedScripts.has(url)) continue;
+    reportedScripts.add(url);
+    fresh.push(url);
+  }
+  if (fresh.length) emit({ kind: 'scripts', urls: fresh });
+}
+
+/**
+ * Starts reporting what the page loads.
+ *
+ * `buffered: true` replays entries from before recording began, which is what
+ * makes this work at all — the bundles that matter loaded during page load, long
+ * before anyone pressed record. The resource buffer is finite, so the `<script>`
+ * tags are also read straight from the DOM: those are the ones a long-lived page
+ * is most likely to have evicted.
+ */
+function startScriptInventory(): void {
+  if (scriptsObserver) return;
+
+  try {
+    scriptsObserver = new PerformanceObserver((list) => {
+      const urls: string[] = [];
+      for (const entry of list.getEntries()) {
+        if ((entry as PerformanceResourceTiming).initiatorType === 'script') urls.push(entry.name);
+      }
+      if (urls.length) reportScripts(urls);
+    });
+    scriptsObserver.observe({ type: 'resource', buffered: true });
+  } catch {
+    // No PerformanceObserver, or no resource timing. The DOM scan below still
+    // finds the bundles the HTML asked for, which is most of them.
+    scriptsObserver = null;
+  }
+
+  const fromDom: string[] = [];
+  for (const script of Array.from(document.querySelectorAll('script[src]'))) {
+    const src = (script as HTMLScriptElement).src;
+    if (src) fromDom.push(src);
+  }
+  reportScripts(fromDom);
+}
+
+function stopScriptInventory(): void {
+  scriptsObserver?.disconnect();
+  scriptsObserver = null;
+}
+
+/** React's version, but only when the DevTools hook happens to be installed. */
+function reactVersion(): string | undefined {
+  try {
+    const hook = (window as unknown as Record<string, unknown>).__REACT_DEVTOOLS_GLOBAL_HOOK__ as
+      | { renderers?: Map<number, { version?: string }> }
+      | undefined;
+    if (!hook?.renderers) return undefined;
+    for (const renderer of hook.renderers.values()) {
+      if (renderer?.version) return renderer.version;
+    }
+  } catch {
+    // A hostile or unusual hook object — the version is a nicety, not a need.
+  }
+  return undefined;
+}
+
+function sendReactMeta(detected: boolean): void {
+  if (reactMetaSent) return;
+  reactMetaSent = true;
+  emit({
+    kind: 'react-meta',
+    detected,
+    version: reactVersion(),
+    build: !detected ? undefined : sawDevelopmentFiber ? 'development' : 'production',
+  });
+}
+
+function chainFor(el: Element): ChainResult {
+  if (prewarm && prewarm.el === el && Date.now() - prewarm.at <= REACT_PREWARM_TTL_MS) {
+    return prewarm.result;
+  }
+  const result = collectChain(el);
+  prewarm = { el, result, at: Date.now() };
+  return result;
+}
+
+/**
+ * Gives up on this document.
+ *
+ * Only after several interactions have found nothing *and* no React root is
+ * visible: a single-page app can mount React after the first click, and a click
+ * can land outside the root on a page that is React everywhere else.
+ */
+function abandonReact(): void {
+  reactGaveUp = true;
+  prewarm = null;
+  detachReactListeners();
+  stopScriptInventory();
+  sendReactMeta(false);
+}
+
+function onReactInteraction(event: Event): void {
+  if (!reactActive || reactGaveUp) return;
+
+  const target = event.target;
+  if (!isElement(target)) return;
+
+  const result = chainFor(target);
+
+  if (result.entries.length === 0) {
+    if (reactFound) return; // React is here, this click simply was not in it
+    reactProbes++;
+    if (hasReactRoot(document)) {
+      reactFound = true;
+      return;
+    }
+    if (reactProbes >= REACT_PROBE_ATTEMPTS) abandonReact();
+    return;
+  }
+
+  reactFound = true;
+  if (result.entries.some((entry) => entry.development)) sawDevelopmentFiber = true;
+  sendReactMeta(true);
+  // Only once there is something to resolve: on a page with no React, the
+  // observer would report bundles nobody will ever search.
+  startScriptInventory();
+
+  emit({
+    kind: 'react',
+    // The recorder claims this by the same number: one dispatch, one timeStamp,
+    // identical in both worlds. Nothing else correlates the two safely.
+    eventTime: event.timeStamp,
+    chain: result.entries.map(describeEntry),
+    truncated: result.truncated,
+  });
+}
+
+/** Warms the chain so the click that follows pays nothing for it. */
+function onReactPointerDown(event: Event): void {
+  if (!reactActive || reactGaveUp) return;
+  const target = event.target;
+  if (isElement(target)) chainFor(target);
+}
+
+const REACT_EVENTS = ['click', 'input', 'change'] as const;
+
+function attachReactListeners(): void {
+  document.addEventListener('pointerdown', onReactPointerDown, true);
+  for (const type of REACT_EVENTS) document.addEventListener(type, onReactInteraction, true);
+}
+
+function detachReactListeners(): void {
+  document.removeEventListener('pointerdown', onReactPointerDown, true);
+  for (const type of REACT_EVENTS) document.removeEventListener(type, onReactInteraction, true);
+}
+
+window.addEventListener('message', (event: MessageEvent<ControlMessage>) => {
+  // Same window, same origin — the same check the recorder applies to us.
+  if (event.source !== window || event.origin !== window.location.origin) return;
+
+  const data = event.data;
+  if (!data || data.__flowsnap_control__ !== CONTROL_MESSAGE_SOURCE) return;
+  if (reactGaveUp) return;
+
+  const wanted = Boolean(data.recording);
+  if (wanted === reactActive) return;
+
+  reactActive = wanted;
+  if (wanted) {
+    attachReactListeners();
+    // A second recording in the same page already knows this is React.
+    if (reactFound) startScriptInventory();
+  } else {
+    detachReactListeners();
+    stopScriptInventory();
+    prewarm = null;
+  }
+});

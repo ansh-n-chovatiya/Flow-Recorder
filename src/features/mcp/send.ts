@@ -8,11 +8,14 @@
  */
 
 import { startUrl } from '../../core/flow/index.js';
+import { attributeSteps, pruneComponents } from '../../core/react/attribution.js';
 import { getSync } from '../../chrome/storage.js';
+import { readCurrentReact } from '../flows/store.js';
+import { sendToWorker } from '../../shared/messages.js';
 import { DEFAULT_MCP_URL, FLOW_SCHEMA_VERSION } from '../../shared/constants.js';
 import { flowError } from '../../shared/errors.js';
 import { err, ok, type Result } from '../../shared/result.js';
-import type { ExportOptions, FlowPayload, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowPayload, FlowReact, Step } from '../../shared/types.js';
 
 /** How long to wait before calling a silent address unreachable. */
 const TIMEOUT_MS = 10_000;
@@ -57,15 +60,40 @@ export interface SendResult {
   prompt: string | null;
 }
 
-/** The body of the POST. Pure, so the wire format is testable without a server. */
-export function buildPayload(id: string, name: string, steps: Step[], at: number): FlowPayload {
+/**
+ * The body of the POST. Pure, so the wire format is testable without a server.
+ *
+ * The component table is pruned to what the steps being sent actually point at:
+ * a user who dropped half the flow in the review tab, or turned a section off in
+ * the send dialog, must not still hand over the source paths of the code behind
+ * it. `react` is omitted entirely rather than sent empty, because the server and
+ * the reader both take its absence to mean "not a React page".
+ *
+ * A needle never appears here, and there is a test that says so. Needles live in
+ * their own storage key and are deleted the moment a component has an answer, so
+ * this is a guarantee about the shape of `ComponentSource` rather than a filter —
+ * which is the strong kind, and the assertion is what keeps it that way.
+ */
+export function buildPayload(
+  id: string,
+  name: string,
+  steps: Step[],
+  at: number,
+  react?: FlowReact | null,
+): FlowPayload {
+  const components = react ? pruneComponents(steps, react.components) : {};
+  const carries = react !== null && react !== undefined && Object.keys(components).length > 0;
+
   return {
     schemaVersion: FLOW_SCHEMA_VERSION,
     id,
     name,
     timestamp: at,
     startUrl: startUrl(steps),
-    steps,
+    // The owner is stamped here so the server does not have to know the rules
+    // that pick it — see `attributeSteps`.
+    steps: carries ? attributeSteps(steps, components) : steps,
+    ...(carries ? { react: { ...react, components } } : {}),
   };
 }
 
@@ -82,14 +110,28 @@ export async function sendFlow(
   steps: Step[],
   id = `flow-${Date.now()}`,
   include: ExportOptions = SEND_EVERYTHING,
+  /** An archived flow's frozen table. Omitted for the live recording, whose
+   *  table is read back here so it includes whatever the resolve below found. */
+  archivedReact?: FlowReact | null,
 ): Promise<Result<SendResult>> {
   if (steps.length === 0) return err(flowError('MCP_UNREACHABLE', 'nothing to send'));
+
+  // Last chance to resolve React components while the recorded tab may still be
+  // open and its bundles still cached. It resolves nothing when there is nothing
+  // pending, and a worker that never answers costs the send nothing.
+  //
+  // `final` is safe to ask for even though this path also sends archived flows:
+  // the worker downgrades it whenever a recording is still running, which is the
+  // only case where writing pending components off as skipped would be a lie.
+  await sendToWorker({ type: 'RESOLVE_COMPONENTS', final: true });
 
   const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL });
   const url = settings.ok ? settings.value.mcpServerUrl : DEFAULT_MCP_URL;
 
   const sending = pruneSteps(steps, include);
-  const payload = buildPayload(id, name, sending, Date.now());
+  // Read after the resolve, so the table carries what that last pass found.
+  const react = archivedReact ?? (await readCurrentReact(sending));
+  const payload = buildPayload(id, name, sending, Date.now(), react);
   const first = payload.startUrl;
 
   const abort = new AbortController();

@@ -1,0 +1,237 @@
+/**
+ * React fiber walking, for the MAIN-world agent.
+ *
+ * Ported from react-source-locator `src/injected/fiber.ts` @ 6eb7a30.
+ *
+ * Two deliberate divergences from upstream, both because this runs inside a
+ * *passive recorder* rather than behind an explicit "pick this element" action:
+ *
+ *   1. **Lazy components are never forced.** Upstream passes `force = true` on a
+ *      pick, which calls `_init()` and can start a dynamic `import()`. Here that
+ *      would mean the act of recording changes what the page loads, so the flow
+ *      no longer describes the session it claims to. An unresolved lazy
+ *      component is reported by name and nothing more.
+ *   2. **No DOM-node collection.** Upstream needs every host node a component
+ *      renders in order to draw hover highlights. Nothing here highlights.
+ *
+ * DOM-facing but free of `chrome.*` and module state, like `core/selector` and
+ * `core/describe` — which is what lets it be tested in jsdom.
+ */
+
+import { MAX_COMPONENT_CHAIN, MAX_FIBER_WALK } from '../../shared/constants.js';
+
+export interface DebugSource {
+  fileName?: string;
+  lineNumber?: number;
+  columnNumber?: number;
+}
+
+export interface Fiber {
+  type: unknown;
+  return: Fiber | null;
+  child: Fiber | null;
+  sibling: Fiber | null;
+  stateNode: unknown;
+  _debugSource?: DebugSource | null;
+  _debugOwner?: unknown;
+  _debugHookTypes?: unknown;
+}
+
+export type ComponentFn = ((...args: unknown[]) => unknown) & {
+  displayName?: string;
+  name?: string;
+};
+
+interface LazyPayload {
+  _status?: number;
+  _result?: unknown;
+}
+
+export interface WrapperType {
+  _payload?: LazyPayload;
+  displayName?: string;
+  render?: ComponentFn;
+  type?: ComponentFn;
+}
+
+/** Keys React stamps on a host node, and on a root container. */
+const FIBER_KEY_RE = /^__reactFiber\$|^__reactInternalInstance\$/;
+const CONTAINER_KEY_RE = /^__reactContainer\$|^_reactRootContainer$/;
+
+export function isElement(node: unknown): node is Element {
+  return !!node && (node as Node).nodeType === 1;
+}
+
+export function getFiber(el: Element): Fiber | null {
+  for (const key of Object.keys(el)) {
+    if (FIBER_KEY_RE.test(key)) return (el as unknown as Record<string, Fiber>)[key];
+  }
+  return null;
+}
+
+/**
+ * Resolves an already-settled `React.lazy` type, and only that.
+ *
+ * Upstream takes a `force` flag; this deliberately has none, so there is no call
+ * site that can start an import by accident. `_status === 1` means the payload
+ * resolved on its own, which is the only case we read.
+ */
+export function unwrapSettledLazy(type: WrapperType): ComponentFn | null {
+  const payload = type._payload;
+  if (!payload || payload._status !== 1) return null;
+
+  const resolved: unknown = payload._result;
+  if (typeof resolved === 'function') return resolved as ComponentFn;
+
+  const asModule = resolved as { default?: unknown } | null;
+  if (asModule && typeof asModule.default === 'function') return asModule.default as ComponentFn;
+  return null;
+}
+
+export function getComponentFn(fiber: Fiber): ComponentFn | null {
+  const type = fiber.type as WrapperType | ComponentFn | null;
+  if (!type) return null;
+
+  if (typeof type === 'function') return type;
+  if (type._payload) return unwrapSettledLazy(type);
+
+  if (typeof type.render === 'function') return type.render; // forwardRef
+  if (typeof type.type === 'function') return type.type; // memo
+  return null;
+}
+
+export function getDisplayName(fiber: Fiber): string {
+  const type = fiber.type as WrapperType | ComponentFn | null;
+  if (!type) return 'Anonymous';
+
+  if (typeof type === 'function') return type.displayName || type.name || 'Anonymous';
+
+  if (type._payload) {
+    const inner = unwrapSettledLazy(type);
+    return inner ? inner.displayName || inner.name || 'Anonymous' : 'Lazy(loading…)';
+  }
+
+  if (type.displayName) return type.displayName;
+  if (type.render) return type.render.displayName || type.render.name || 'ForwardRef';
+  if (type.type) return type.type.displayName || type.type.name || 'Memo';
+  return 'Anonymous';
+}
+
+/**
+ * `_debugSource` — the exact JSX location, on React 18 and earlier development
+ * builds. React 19 dropped it, which is why bundle search is the primary path
+ * rather than the fallback.
+ */
+export function getDebugSource(fiber: Fiber): DebugSource | null {
+  const src = fiber._debugSource;
+  if (!src || typeof src.fileName !== 'string') return null;
+  return src;
+}
+
+/**
+ * Whether this fiber came from a development build.
+ *
+ * Reads `_debugOwner`/`_debugHookTypes` rather than `_debugSource`, because
+ * those survive into React 19 where `_debugSource` does not — so the answer
+ * stays right across versions.
+ */
+export function isDevelopmentFiber(fiber: Fiber): boolean {
+  return fiber._debugOwner !== undefined || fiber._debugHookTypes !== undefined;
+}
+
+/** Is there a React root anywhere on this page? Distinct from "did this click land in a component". */
+export function hasReactRoot(doc: Document): boolean {
+  const candidates: Element[] = [];
+  if (doc.body) {
+    candidates.push(doc.body);
+    // A React app is nearly always mounted into a direct child of <body>.
+    for (const child of Array.from(doc.body.children)) candidates.push(child);
+  }
+  for (const id of ['root', 'app', '__next', '__nuxt']) {
+    const el = doc.getElementById(id);
+    if (el) candidates.push(el);
+  }
+
+  for (const el of candidates) {
+    for (const key of Object.keys(el)) {
+      if (CONTAINER_KEY_RE.test(key) || FIBER_KEY_RE.test(key)) return true;
+    }
+  }
+  return false;
+}
+
+/** Walks up from a DOM element to the nearest fiber backed by a component. */
+export function findNearestComponentFiber(el: Element): Fiber | null {
+  let node: Element | null = el;
+
+  while (node && node !== node.ownerDocument.documentElement) {
+    const fiber = getFiber(node);
+    if (fiber) {
+      let f: Fiber | null = fiber;
+      let walked = 0;
+      while (f && walked < MAX_FIBER_WALK) {
+        if (getComponentFn(f)) return f;
+        f = f.return;
+        walked++;
+      }
+    }
+    node = node.parentElement;
+  }
+
+  return null;
+}
+
+export interface ChainEntry {
+  name: string;
+  /** Null for a lazy component that has not settled — name only, no needle. */
+  fn: ComponentFn | null;
+  debugSource: DebugSource | null;
+  development: boolean;
+}
+
+export interface ChainResult {
+  entries: ChainEntry[];
+  /** The walk hit `MAX_COMPONENT_CHAIN`, so the outermost entry is not the root. */
+  truncated: boolean;
+}
+
+/**
+ * The component chain above an element, **outermost first**.
+ *
+ * Capped at `MAX_COMPONENT_CHAIN`, counting from the element outwards, so what
+ * is kept is the nearest — which is the part that identifies where a click
+ * landed. The far end of a deep tree is `App` wrapped in nine providers, and is
+ * worth nothing to whoever reads the flow.
+ */
+export function collectChain(el: Element, limit = MAX_COMPONENT_CHAIN): ChainResult {
+  const nearest = findNearestComponentFiber(el);
+  if (!nearest) return { entries: [], truncated: false };
+
+  const entries: ChainEntry[] = [];
+  let f: Fiber | null = nearest;
+  let walked = 0;
+  let truncated = false;
+
+  while (f && walked < MAX_FIBER_WALK) {
+    const fn = getComponentFn(f);
+    // A lazy fiber and the fiber it resolved to share one function; keep one.
+    if (fn === null || entries.length === 0 || entries[entries.length - 1].fn !== fn) {
+      if (entries.length >= limit) {
+        truncated = true;
+        break;
+      }
+      entries.push({
+        name: getDisplayName(f),
+        fn,
+        debugSource: getDebugSource(f),
+        development: isDevelopmentFiber(f),
+      });
+    }
+    f = f.return;
+    walked++;
+  }
+
+  // Built nearest-first by the walk; the chain reads outermost-first.
+  entries.reverse();
+  return { entries, truncated };
+}

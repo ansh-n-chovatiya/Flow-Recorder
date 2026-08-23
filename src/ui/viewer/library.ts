@@ -148,7 +148,7 @@ export function mountLibrary(app: App, onSaveCurrent: () => void): { paint: () =
       return;
     }
 
-    openExport({ steps: flow.value.steps, title: flow.value.name });
+    openExport({ steps: flow.value.steps, title: flow.value.name, react: flow.value.react });
   }
 
   async function removeRow(row: FlowRowView): Promise<void> {
@@ -173,7 +173,7 @@ export function mountLibrary(app: App, onSaveCurrent: () => void): { paint: () =
       message: `Deleted “${row.name}”.`,
       undo: () => {
         void (async () => {
-          const back = await restoreFlow(removed.value.meta, removed.value.steps);
+          const back = await restoreFlow(removed.value.meta, removed.value.steps, removed.value.react);
           if (!back.ok) {
             showToast({ message: back.error.message, tone: 'danger' });
             return;

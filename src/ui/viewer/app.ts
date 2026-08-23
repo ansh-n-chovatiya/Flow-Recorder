@@ -7,6 +7,7 @@
  * it is what the old 1,500-line viewer had none of.
  */
 
+import type { EditorLink } from '../../core/react/editor.js';
 import type { FlowMeta, RecordingState, Step } from '../../shared/types.js';
 import type { LibrarySort } from './library-view.js';
 import type { ReviewFlow, StepFilter } from './review-view.js';
@@ -32,6 +33,11 @@ export interface ViewerState {
   activeIndex: number | null;
   /** Deletions that Ctrl+Z can still take back, oldest first. */
   undo: { index: number; step: Step }[];
+  /**
+   * The settings behind "Open in editor". `null` until they have been read, and
+   * whenever there is no project root to resolve a path against.
+   */
+  editor: EditorLink | null;
 }
 
 export interface App {

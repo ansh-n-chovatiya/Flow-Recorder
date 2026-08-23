@@ -770,6 +770,46 @@
 }
 
 /*
+ * The component line sits between what the user did and the picture of it, at
+ * the same weight as the typed value: a fact about the step, not a heading.
+ */
+.step__react {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.step__react-icon {
+  color: var(--fg-faint);
+}
+
+.step__react-name {
+  min-width: 0;
+  font-size: var(--text-code);
+  color: var(--fg-muted);
+}
+
+/* Not the user's code. Said quietly, because it is a caveat and not a warning. */
+.step__react-tag {
+  color: var(--fg-faint);
+}
+
+.react__source {
+  font-size: var(--text-code);
+}
+
+/*
+ * Why there is no path. It reads as prose because it is a sentence, and the one
+ * place on the card where the extension explains itself rather than reports.
+ */
+.react__detail {
+  margin-top: var(--space-2);
+  font-size: var(--text-label);
+  color: var(--fg-faint);
+}
+
+/*
  * A screenshot shows the whole capture, at the aspect ratio it was taken in.
  *
  * This used to be capped at 320px and cropped from the top — decision D, on the

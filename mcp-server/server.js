@@ -80,6 +80,62 @@ function screenshotPath(dir, step) {
   return step.screenshotFile ? path.join(dir, 'screenshots', step.screenshotFile) : null;
 }
 
+/**
+ * The component a step happened in, if the flow says so.
+ *
+ * The extension writes the id down at export time (`element.react.owner`)
+ * precisely so this does not have to re-derive it: choosing between the twelve
+ * components a click sits inside takes four preference tiers, and a server that
+ * guessed differently would contradict the same flow's own markdown.
+ */
+function stepComponent(flow, step) {
+  const owner = step.element?.react?.owner;
+  return owner ? (flow.react?.components?.[owner] ?? null) : null;
+}
+
+/**
+ * Where a component was written, as one string.
+ *
+ * NOTE: this is text and only ever text. `source` came off a web page — it is
+ * whatever that page's source map claimed — so it is never joined to a
+ * directory, never opened, and never used to name a file on this machine.
+ * Screenshots are named by index for the same reason.
+ */
+function componentSource(component) {
+  if (component.source) {
+    return component.line ? `${component.source}:${component.line}` : component.source;
+  }
+  if (component.compiled) {
+    const { url, line, column } = component.compiled;
+    return `${url}:${line}:${column}`;
+  }
+  return null;
+}
+
+/** The one table, listing each component in the order the steps meet it. */
+function componentTable(flow) {
+  const components = flow.react?.components;
+  if (!components) return [];
+
+  const seen = new Set();
+  const rows = [];
+
+  for (const step of flow.steps) {
+    for (const id of step.element?.react?.chain ?? []) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+
+      const component = components[id];
+      if (!component) continue;
+      rows.push(
+        `| ${component.name} | ${componentSource(component) ?? '—'} | ${component.detail ?? ''} |`,
+      );
+    }
+  }
+
+  return rows;
+}
+
 function generateMarkdown(flow, dir) {
   const lines = [
     `# ${flow.name}`,
@@ -99,6 +155,12 @@ function generateMarkdown(flow, dir) {
     const selector = step.element?.cssSelector ?? step.selector;
     if (selector) lines.push(`- **Element:** \`${selector}\``);
     if (step.element?.label) lines.push(`- **Label:** ${step.element.label}`);
+
+    // The name only. Its path is in the table at the end, so a flow that clicks
+    // one button forty times spends the tokens on that path once.
+    const component = stepComponent(flow, step);
+    if (component) lines.push(`- **Component:** ${component.name}`);
+
     if (step.value) lines.push(`- **Value:** ${step.value}`);
     if (step.notes) lines.push(`- **Note:** ${step.notes}`);
 
@@ -121,6 +183,21 @@ function generateMarkdown(flow, dir) {
     }
     lines.push('');
   });
+
+  const rows = componentTable(flow);
+  if (rows.length) {
+    lines.push(
+      '## React components',
+      '',
+      'Where each component above was written, in this app\'s own source. Open',
+      'these files directly rather than searching for the component by name.',
+      '',
+      '| Component | Source | Notes |',
+      '| --- | --- | --- |',
+      ...rows,
+      '',
+    );
+  }
 
   return lines.join('\n');
 }
@@ -166,14 +243,16 @@ async function saveFlow(flow) {
     schemaVersion: flow.schemaVersion ?? 1,
   };
 
-  const data = { ...meta, steps: stepsClean };
+  // Additive, and absent entirely when the page was not React — which is also
+  // how every flow recorded before this existed reads.
+  const data = { ...meta, steps: stepsClean, ...(flow.react ? { react: flow.react } : {}) };
 
   // Awaited, not fired and forgotten: the POST response tells the extension the
   // flow is readable, and a tool call can arrive immediately after it.
   await Promise.all([
     ...writes,
     fs.writeFile(path.join(dir, 'flow.json'), JSON.stringify(data, null, 2), 'utf8'),
-    fs.writeFile(path.join(dir, 'flow.md'), generateMarkdown({ ...meta, steps: stepsClean }, dir), 'utf8'),
+    fs.writeFile(path.join(dir, 'flow.md'), generateMarkdown(data, dir), 'utf8'),
     fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify(meta), 'utf8'),
   ]);
 
@@ -321,7 +400,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_flow_errors',
       description:
-        'Only the steps that failed in a flow: console errors, failed and 4xx/5xx network calls with their bodies, the element involved, and the screenshot path for each. Far smaller than get_flow — call this first when debugging something that broke.',
+        'Only the steps that failed in a flow: console errors, failed and 4xx/5xx network calls with their bodies, the element involved, and the screenshot path for each. Far smaller than get_flow — call this first when debugging something that broke. On a React app each failing step also names the component it happened in; get_flow has the table mapping those names to source files.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string', description: 'Flow ID from list_flows' } },
@@ -331,7 +410,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_flow',
       description:
-        'The full recording: a markdown walkthrough plus the step JSON. Every step carries an absolute screenshotPath — read those image files directly with your own file tools, one at a time, rather than calling get_flow_screenshots.',
+        'The full recording: a markdown walkthrough plus the step JSON. Every step carries an absolute screenshotPath — read those image files directly with your own file tools, one at a time, rather than calling get_flow_screenshots. On a React app it also carries the source file and line of the component behind each step: read those files instead of searching the repo for the component by name.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string', description: 'Flow ID from list_flows' } },
@@ -414,6 +493,9 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
           action: step.action,
           url: step.url,
           element: step.element?.cssSelector ?? null,
+          // The one line that turns "something broke on this click" into a file
+          // to open. Its path is in get_flow's table rather than repeated here.
+          component: stepComponent(flow.json, step)?.name ?? undefined,
           screenshotPath: screenshotPath(flow.dir, step),
           consoleErrors: consoleErrors(step).map((entry) => truncate(entry.args.join(' '))),
           failedCalls: failedCalls(step).map((call) => ({

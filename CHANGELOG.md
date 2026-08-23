@@ -6,6 +6,66 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [2.3.0] — 2026-08-23
+
+A step no longer just says *a button was clicked*. It says which React component
+that button was in, and which file that component was written in.
+
+### Added
+
+- **Every step names the React component it happened in.** The nearest component
+  is rarely the one anybody means — clicking a MUI button lands on `ButtonBase`,
+  clicking a Radix item lands on `Primitive.div` — so the step is attributed to
+  the nearest component you own, with the surrounding chain kept beside it as the
+  evidence for that choice.
+- **And the file that component was written in, on a minified production
+  build.** FlowSnap fingerprints the component function as the page has it, finds
+  that fingerprint in a script the page already loaded, and reads that script's
+  source map back to `src/components/Cart.tsx:34`. It happens while you record,
+  when the page is still open and its bundles are still warm in the cache —
+  waiting for Stop would mean fetching from a tab that may be closed and a
+  session that may have expired.
+- **The answer reaches every reader.** The component is on the step card and in
+  the detail panel, in the Markdown, the JSON, the ZIP and the payload sent to
+  Claude — with the table of source paths written once per flow rather than
+  repeated on all twenty steps. `get_flow` and `get_flow_errors` now say the
+  paths are there, which is what turns "open `src/components/Cart.tsx`" into
+  something an assistant does instead of searching the repository for it.
+- **A component with no path says why it has none.** Its chunk never loaded, the
+  site ships no source maps, the fingerprint matched two places, the flow ended
+  first — each is a sentence on the step. A blank where a path should be reads as
+  *this component has no source file*, which is a different and untrue claim.
+- **Open in editor.** Set a project root in Settings and each recorded path
+  becomes a link that opens that file at that line. VS Code, Cursor, Windsurf,
+  Zed, Sublime, JetBrains, or a link template of your own.
+- **Settings for both halves.** Recording components and looking their files up
+  are separate switches, both on by default: naming a component costs nothing on
+  a page that is not React, and the lookup reads scripts the page already
+  fetched and uploads nothing. With the lookup off, steps still name their
+  components and say that is why they stop there.
+
+### Developer
+
+- `src/core/react/` — the resolution engine, ported from the sibling extension
+  `react-source-locator` with its provenance and divergences recorded in each
+  file's header. The largest divergence is a **streaming** source-map decode:
+  against a real 9.3 MB map, decoding the whole thing costs 54 MB of heap, while
+  streaming to the one line that matters costs none — and an MV3 worker that
+  overruns is killed with no warning and nothing to report.
+- Component capture is gated three times over: not recording, not React, or
+  switched off, and no listener is ever attached. Measured against the real
+  modules, a 12-deep chain costs 0.029 ms cold and 0.003 ms warm.
+- The resolver writes only its own two storage keys. `recordedSteps` is rewritten
+  wholesale by the capture queue, and two writers on one key lose each other.
+- Three fixes found while building this were back-ported to `react-source-locator`
+  and released there as 2.2.0: the streaming decode, the `[native code]` needle
+  guard, and cutting bundler namespaces out of a normalised source path.
+- `docs/SHARED-CORE.md` and `npm run core:drift` for the six files shared by copy
+  with that extension. Extracting them into a package was designed and dropped —
+  four of the differences between the copies are deliberate, and the line base in
+  particular fails silently when confused. Neither affects the built extension.
+- 530 tests, 41 files.
+
 ## [2.2.0] — 2026-08-22
 
 Two things the viewer decided for you, and the screenshot you needed but the

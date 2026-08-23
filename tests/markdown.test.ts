@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { exportToMarkdown, flowHost, urlPath } from '../src/core/export/markdown.js';
-import type { Step } from '../src/shared/types.js';
+import { CAPPED_ID } from '../src/core/react/table.js';
+import type { ComponentSource, FlowReact, Step } from '../src/shared/types.js';
 
 const click = (over: Partial<Step> = {}): Step =>
   ({
@@ -138,5 +139,90 @@ describe('exportToMarkdown', () => {
   it('renders notes as a blockquote', () => {
     const md = exportToMarkdown([click({ notes: 'first\nsecond' })]);
     expect(md).toContain('> first\n> second');
+  });
+});
+
+describe('exportToMarkdown · React components', () => {
+  const chained = (chain: string[]) =>
+    click({
+      element: {
+        tag: 'button',
+        cssSelector: '#save',
+        xpath: '/html[1]/body[1]/button[1]',
+        boundingBox: null,
+        react: { chain },
+      },
+    });
+
+  const react = (components: Record<string, ComponentSource>): FlowReact => ({
+    detected: true,
+    build: 'production',
+    components,
+  });
+
+  it('says nothing at all when the flow carries no React block', () => {
+    const md = exportToMarkdown([chained(['cart'])]);
+    expect(md).not.toContain('⚛');
+    expect(md).not.toContain('React components');
+  });
+
+  it('names the owning component on the step and its path only in the table', () => {
+    const md = exportToMarkdown([chained(['app', 'cart'])], {
+      react: react({
+        app: { name: 'App', status: 'resolved', source: 'src/App.tsx', line: 1 },
+        cart: { name: 'AddToCartButton', status: 'resolved', source: 'src/Cart.tsx', line: 34 },
+      }),
+    });
+
+    expect(md).toContain('⚛ AddToCartButton');
+    // The path is written down once, in the table — not on the step.
+    expect(md.split('src/Cart.tsx:34')).toHaveLength(2);
+    expect(md).toContain('| AddToCartButton | src/Cart.tsx:34 |');
+    expect(md).toContain('| App | src/App.tsx:1 |');
+  });
+
+  it('gives a component with nowhere to point a row and a reason', () => {
+    const md = exportToMarkdown([chained(['lazy'])], {
+      react: react({
+        lazy: { name: 'LazyModal', status: 'not-found', detail: 'Its chunk was never loaded.' },
+      }),
+    });
+
+    expect(md).toContain('| LazyModal | — | Its chunk was never loaded. |');
+  });
+
+  it('reports a compiled position when the bundle ships no source map', () => {
+    const md = exportToMarkdown([chained(['tag'])], {
+      react: react({
+        tag: {
+          name: 'PriceTag',
+          status: 'compiled-only',
+          compiled: { url: 'https://cdn.example.com/assets/main.js', line: 1, column: 88_214 },
+          detail: 'no source map',
+        },
+      }),
+    });
+
+    expect(md).toContain('| PriceTag | /assets/main.js:1:88214 | no source map |');
+  });
+
+  it('notes the cap below the table instead of listing it as a component', () => {
+    const md = exportToMarkdown([chained(['cart'])], {
+      react: react({
+        cart: { name: 'Cart', status: 'resolved', source: 'src/Cart.tsx', line: 3 },
+        [CAPPED_ID]: { name: 'FlowSnap', status: 'skipped', detail: 'More than 128 components.' },
+      }),
+    });
+
+    expect(md).toContain('> More than 128 components.');
+    expect(md).not.toContain('| FlowSnap |');
+  });
+
+  it('leaves out the table when the surviving steps reference nothing', () => {
+    const md = exportToMarkdown([click()], {
+      react: react({ cart: { name: 'Cart', status: 'resolved', source: 'src/Cart.tsx' } }),
+    });
+
+    expect(md).not.toContain('React components');
   });
 });
