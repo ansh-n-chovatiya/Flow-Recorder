@@ -11,6 +11,7 @@
 import { flowHost, formatDelta, stepFailed, worstLevel, worstStatus } from '../../core/flow/index.js';
 import type { StatusClass } from '../../core/flow/index.js';
 import { formatSource, stepOwner, summarizeComponents } from '../../core/react/attribution.js';
+import { componentEditorUrl, type EditorLink } from '../../core/react/editor.js';
 import type {
   ComponentSource,
   ConsoleLevel,
@@ -46,6 +47,12 @@ export interface ReviewInput {
   activeIndex: number | null;
   recording: RecordingState;
   now: number;
+  /**
+   * How to turn a source path into an editor link. `null` while settings are
+   * still being read, and whenever no project root has been set — in both cases
+   * the path is still shown, just without a button beside it.
+   */
+  editor: EditorLink | null;
 }
 
 /** The one icon per step type, used by the rail and the card header alike. */
@@ -127,6 +134,8 @@ export interface StepComponentView {
   detail: string | null;
   /** The path is inside `node_modules`, so this is not the user's own code. */
   dependency: boolean;
+  /** A link that opens the file, or `null` when nothing can be built. */
+  editorUrl: string | null;
 }
 
 export interface FilterChip {
@@ -217,6 +226,7 @@ function detail<T, W>(items: T[] | undefined, worst: W): DetailSummary<W> | null
 function componentView(
   step: Step,
   components: Record<string, ComponentSource>,
+  editor: EditorLink | null,
 ): StepComponentView | null {
   const owner = stepOwner(step, components);
   if (!owner) return null;
@@ -230,6 +240,7 @@ function componentView(
     // reader a reason, and `detail` is where the resolver wrote one.
     detail: component.status === 'resolved' ? null : (component.detail ?? null),
     dependency: component.dependency === true,
+    editorUrl: componentEditorUrl(component, editor),
   };
 }
 
@@ -238,6 +249,7 @@ function cardView(
   index: number,
   activeIndex: number | null,
   components: Record<string, ComponentSource>,
+  editor: EditorLink | null,
 ): StepCardView {
   const step = steps[index];
 
@@ -258,7 +270,7 @@ function cardView(
     selectors: step.element
       ? { css: step.element.cssSelector, xpath: step.element.xpath }
       : null,
-    component: componentView(step, components),
+    component: componentView(step, components, editor),
     network: detail(step.networkCalls, worstStatus(step.networkCalls)),
     console: detail(step.consoleLogs, worstLevel(step.consoleLogs)),
     notes: step.notes ?? '',
@@ -358,7 +370,7 @@ export function deriveReviewView(input: ReviewInput): ReviewView {
     header,
     live,
     rail: shown.map((index) => railRow(steps, index, activeIndex)),
-    steps: shown.map((index) => cardView(steps, index, activeIndex, components)),
+    steps: shown.map((index) => cardView(steps, index, activeIndex, components, input.editor)),
     filters,
     failures,
     canExport: true,

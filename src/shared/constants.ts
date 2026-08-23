@@ -163,6 +163,32 @@ export const REACT_PREWARM_TTL_MS = 1000;
  */
 export const REACT_PROBE_ATTEMPTS = 3;
 
+/**
+ * Defaults for the three React settings.
+ *
+ * Three contexts read them independently — the content script gates capture,
+ * the worker gates resolution, the settings page renders both — and a default
+ * that disagreed between them would show a switch that does not match what is
+ * actually happening. Both toggles default on: capture costs nothing on a page
+ * that is not React, and resolution's fetches are cache-first and never leave
+ * the machine.
+ */
+export const REACT_SETTING_DEFAULTS: {
+  reactCapture: boolean;
+  reactResolve: boolean;
+  projectRoot: string;
+  editor: string;
+  customEditorTemplate: string;
+} = {
+  reactCapture: true,
+  reactResolve: true,
+  projectRoot: '',
+  // VS Code, because its scheme is the one most other editors chose to answer
+  // to as well. Nothing is opened until a project root is set regardless.
+  editor: 'vscode',
+  customEditorTemplate: '',
+};
+
 /** Length of the high-specificity needle taken from the head of `fn.toString()`. */
 export const NEEDLE_HEAD_LEN = 200;
 
@@ -239,3 +265,12 @@ export const BUNDLE_CACHE_BYTES = 48 * 1024 * 1024;
  * would cost more than the answer is worth.
  */
 export const MAX_SCRIPTS_PER_ORIGIN = 200;
+
+/**
+ * How long a blank launcher tab is given to hand off to an editor.
+ *
+ * Chrome losing focus is the reliable signal that the handoff happened, so this
+ * only covers the case where nothing ever launched — long enough that the
+ * protocol prompt is not dismissed out from under the user while they read it.
+ */
+export const LAUNCHER_TAB_TIMEOUT_MS = 20_000;

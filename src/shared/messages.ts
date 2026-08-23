@@ -115,6 +115,18 @@ export interface ClearSteps {
   type: 'CLEAR_STEPS';
 }
 
+/**
+ * Hands an editor deep link (`vscode://…`) to the browser.
+ *
+ * The viewer cannot do this itself: navigating an extension page to a custom
+ * scheme is blocked, and the launch has to happen in a tab the worker can then
+ * dispose of.
+ */
+export interface OpenEditor {
+  type: 'OPEN_EDITOR';
+  url: string;
+}
+
 export type WorkerRequest =
   | CaptureAndSaveStep
   | Precapture
@@ -123,7 +135,8 @@ export type WorkerRequest =
   | ReactScripts
   | ResolveComponents
   | GetSteps
-  | ClearSteps;
+  | ClearSteps
+  | OpenEditor;
 
 export interface AnnotateScreenshotResponse {
   screenshot: string | null;
@@ -137,6 +150,12 @@ export interface OkResponse {
   ok: boolean;
 }
 
+/** Carries the reason, because a launch that quietly did nothing is a bug report. */
+export interface OpenEditorResponse {
+  ok: boolean;
+  error?: string;
+}
+
 export interface ResponseByType {
   /** Resolves once the capture is done, so the page can restore its indicator. */
   CAPTURE_AND_SAVE_STEP: OkResponse;
@@ -147,6 +166,7 @@ export interface ResponseByType {
   RESOLVE_COMPONENTS: OkResponse;
   GET_STEPS: GetStepsResponse;
   CLEAR_STEPS: OkResponse;
+  OPEN_EDITOR: OpenEditorResponse;
 }
 
 // ── UI → content script ──────────────────────────────────────────────────────

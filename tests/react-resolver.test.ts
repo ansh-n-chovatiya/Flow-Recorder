@@ -294,6 +294,32 @@ describe('resolvePending', () => {
     expect(result.needles).toEqual({});
   });
 
+  it('fetches nothing at all when resolution is switched off', async () => {
+    const { deps, fetched } = harness({ [BUNDLE_URL]: BUNDLE, [MAP_URL]: MAP });
+
+    const result = await resolvePending(input({ disabled: true }), deps);
+
+    expect(fetched).toEqual([]);
+    expect(result.changed).toBe(false);
+    expect(result.components.cart.status).toBe('pending');
+    // The needle survives, so switching the setting back on mid-recording still
+    // gets this component its path.
+    expect(result.needles.cart).toBeDefined();
+  });
+
+  it('says why, rather than "skipped", when the setting is what stopped it', async () => {
+    const { deps } = harness({ [BUNDLE_URL]: BUNDLE, [MAP_URL]: MAP });
+
+    const result = await resolvePending(input({ disabled: true, final: true }), deps);
+
+    expect(result.components.cart).toEqual({
+      name: 'Cart',
+      status: 'skipped',
+      detail: 'Finding source files is switched off in FlowSnap settings.',
+    });
+    expect(result.needles).toEqual({});
+  });
+
   it('leaves an already-answered component alone', async () => {
     const { deps, fetched } = harness({ [BUNDLE_URL]: BUNDLE, [MAP_URL]: MAP });
     const answered: ComponentSource = {

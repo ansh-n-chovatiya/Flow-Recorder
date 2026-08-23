@@ -9,7 +9,8 @@
 
 import { bytesInUse, getLocal, getSync, removeLocal, setLocal, setSync } from '../../chrome/storage.js';
 import { checkMcp } from '../../features/mcp/health.js';
-import { DEFAULT_MCP_URL } from '../../shared/constants.js';
+import { EDITORS } from '../../core/react/editor.js';
+import { DEFAULT_MCP_URL, REACT_SETTING_DEFAULTS } from '../../shared/constants.js';
 import {
   savedFlowKey,
   savedFlowReactKey,
@@ -34,6 +35,13 @@ const dom = {
   back: el<HTMLButtonElement>('back'),
 
   themeOptions: [...document.querySelectorAll<HTMLButtonElement>('[data-theme-option]')],
+
+  reactCapture: el<HTMLInputElement>('react-capture'),
+  reactResolve: el<HTMLInputElement>('react-resolve'),
+  projectRoot: el<HTMLInputElement>('project-root'),
+  editor: el<HTMLSelectElement>('editor'),
+  editorCustom: el('editor-custom'),
+  editorTemplate: el<HTMLInputElement>('editor-template'),
 
   mcpUrl: el<HTMLInputElement>('mcp-url'),
   mcpTest: el<HTMLButtonElement>('mcp-test'),
@@ -80,6 +88,91 @@ for (const button of dom.themeOptions) {
     void saveTheme(choice);
   });
 }
+
+// ── React components ─────────────────────────────────────────────────────────
+
+/**
+ * Resolution and the project root do nothing without a captured component, so
+ * they follow the master toggle rather than sitting there looking as though
+ * they still apply. Their stored values are left alone: switching capture back
+ * on restores whatever was chosen before, instead of silently resetting it.
+ */
+function markCapture(enabled: boolean): void {
+  dom.reactResolve.disabled = !enabled;
+  dom.projectRoot.disabled = !enabled;
+  dom.editor.disabled = !enabled;
+  dom.editorTemplate.disabled = !enabled;
+}
+
+/** The template field is only asked for when no built-in editor was chosen. */
+function markEditor(choice: string): void {
+  dom.editorCustom.classList.toggle('hidden', choice !== 'custom');
+}
+
+// The list is built from `EDITORS` rather than written out in the markup, so
+// this extension and its sibling cannot drift into offering different editors.
+for (const [value, { label }] of Object.entries(EDITORS)) {
+  const option = document.createElement('option');
+  option.value = value;
+  option.textContent = label;
+  dom.editor.append(option);
+}
+
+dom.editor.addEventListener('change', () => {
+  const choice = dom.editor.value;
+  markEditor(choice);
+
+  void setSync({ editor: choice }).then((written) => {
+    if (!written.ok) showToast({ message: written.error.message, tone: 'danger' });
+  });
+});
+
+dom.editorTemplate.addEventListener('change', () => {
+  const template = dom.editorTemplate.value.trim();
+  dom.editorTemplate.value = template;
+
+  void setSync({ customEditorTemplate: template }).then((written) => {
+    if (!written.ok) showToast({ message: written.error.message, tone: 'danger' });
+  });
+});
+
+dom.reactCapture.addEventListener('change', () => {
+  const enabled = dom.reactCapture.checked;
+  markCapture(enabled);
+
+  void setSync({ reactCapture: enabled }).then((written) => {
+    if (written.ok) return;
+    // Reflect the truth: the setting did not change, so neither should the UI.
+    dom.reactCapture.checked = !enabled;
+    markCapture(!enabled);
+    showToast({ message: written.error.message, tone: 'danger' });
+  });
+});
+
+dom.reactResolve.addEventListener('change', () => {
+  const enabled = dom.reactResolve.checked;
+
+  void setSync({ reactResolve: enabled }).then((written) => {
+    if (written.ok) return;
+    dom.reactResolve.checked = !enabled;
+    showToast({ message: written.error.message, tone: 'danger' });
+  });
+});
+
+/**
+ * Saved on blur, like the MCP address above it.
+ *
+ * The trailing slash goes because every path built from this joins one on, and
+ * `/repo//src/App.tsx` is a path no editor opens.
+ */
+dom.projectRoot.addEventListener('change', () => {
+  const root = dom.projectRoot.value.trim().replace(/[/\\]+$/, '');
+  dom.projectRoot.value = root;
+
+  void setSync({ projectRoot: root }).then((written) => {
+    if (!written.ok) showToast({ message: written.error.message, tone: 'danger' });
+  });
+});
 
 // ── MCP ──────────────────────────────────────────────────────────────────────
 
@@ -211,11 +304,25 @@ dom.deleteDialog.addEventListener('close', () => {
 void (async () => {
   markTheme(await loadTheme());
 
-  const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL, mcpAutoSend: false });
+  const settings = await getSync({
+    mcpServerUrl: DEFAULT_MCP_URL,
+    mcpAutoSend: false,
+    ...REACT_SETTING_DEFAULTS,
+  });
   if (settings.ok) {
     dom.mcpUrl.value = settings.value.mcpServerUrl;
     dom.autoSend.checked = settings.value.mcpAutoSend;
     dom.autoSendWarning.classList.toggle('hidden', !settings.value.mcpAutoSend);
+
+    dom.reactCapture.checked = settings.value.reactCapture;
+    dom.reactResolve.checked = settings.value.reactResolve;
+    dom.projectRoot.value = settings.value.projectRoot;
+    // An editor removed from `EDITORS` since it was chosen falls back to the
+    // default rather than leaving the select showing whatever is first.
+    dom.editor.value = settings.value.editor in EDITORS ? settings.value.editor : 'vscode';
+    dom.editorTemplate.value = settings.value.customEditorTemplate;
+    markCapture(settings.value.reactCapture);
+    markEditor(dom.editor.value);
   }
 
   const { version } = chrome.runtime.getManifest();

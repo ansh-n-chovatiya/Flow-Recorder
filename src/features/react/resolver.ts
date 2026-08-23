@@ -66,6 +66,15 @@ export interface ResolveInput {
    * left saying `pending`, which would read as "still working" forever.
    */
   final: boolean;
+  /**
+   * Resolution is switched off in settings. Nothing is fetched and nothing is
+   * searched; the final pass says so, so a reader sees a reason rather than a
+   * component that looks unresolvable.
+   *
+   * Needles are left in place until that final pass, which is what lets someone
+   * who switches the setting back on mid-recording still get their paths.
+   */
+  disabled?: boolean;
 }
 
 export interface ResolveOutput {
@@ -409,7 +418,7 @@ export async function resolvePending(
   const components = { ...input.components };
   const needles = { ...input.needles };
 
-  const ids = selectPending(input);
+  const ids = input.disabled ? [] : selectPending(input);
   if (ids.length === 0) {
     return finish(components, needles, input, false);
   }
@@ -483,12 +492,16 @@ function finish(
 
   let touched = changed;
 
+  const detail = input.disabled
+    ? 'Finding source files is switched off in FlowSnap settings.'
+    : 'The flow finished before this component could be looked up.';
+
   for (const [id, entry] of Object.entries(components)) {
     if (entry.status !== 'pending') continue;
     components[id] = {
       name: entry.name,
       status: 'skipped',
-      detail: 'The flow finished before this component could be looked up.',
+      detail,
     };
     delete needles[id];
     touched = true;

@@ -47,6 +47,7 @@ function input(over: Partial<ReviewInput> = {}): ReviewInput {
     activeIndex: null,
     recording: 'idle',
     now: NOW,
+    editor: null,
     ...over,
   };
 }
@@ -310,7 +311,45 @@ describe('the React component on a step', () => {
       source: 'src/Cart.tsx:34',
       detail: null,
       dependency: false,
+      editorUrl: null,
     });
+  });
+
+  it('offers an editor link once there is a project root to resolve against', () => {
+    const [card] = deriveReviewView(
+      input({
+        flow: {
+          id: 'f',
+          name: 'n',
+          steps: [chained(['cart'])],
+          createdAt: NOW,
+          react: react({
+            cart: { name: 'AddToCartButton', status: 'resolved', source: 'src/Cart.tsx', line: 34 },
+          }),
+        },
+        editor: { projectRoot: '/Users/me/shop', template: 'vscode://file/{path}:{line1}:{col1}' },
+      }),
+    ).steps;
+
+    // `vscode://file/` + an absolute path, so the doubled slash is correct.
+    expect(card.component?.editorUrl).toBe('vscode://file//Users/me/shop/src/Cart.tsx:34:1');
+  });
+
+  it('offers no link for a component that never resolved to a file', () => {
+    const [card] = deriveReviewView(
+      input({
+        flow: {
+          id: 'f',
+          name: 'n',
+          steps: [chained(['lazy'])],
+          createdAt: NOW,
+          react: react({ lazy: { name: 'LazyModal', status: 'not-found' } }),
+        },
+        editor: { projectRoot: '/Users/me/shop', template: 'vscode://file/{path}:{line1}:{col1}' },
+      }),
+    ).steps;
+
+    expect(card.component?.editorUrl).toBeNull();
   });
 
   it('gives an unresolved component its reason instead of a blank row', () => {

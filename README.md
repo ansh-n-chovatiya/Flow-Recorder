@@ -2,7 +2,7 @@
 
 **Record a bug in your browser. Hand your AI assistant everything it needs to fix it.**
 
-[![Version](https://img.shields.io/badge/version-2.1.0-6366f1)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.3.0-6366f1)](CHANGELOG.md)
 ![Chrome](https://img.shields.io/badge/chrome-116%2B-4285f4)
 [![MCP server](https://img.shields.io/npm/v/flowsnap-mcp?label=flowsnap-mcp)](https://www.npmjs.com/package/flowsnap-mcp)
 [![Licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
@@ -136,6 +136,7 @@ looks like the recording is missing rather than the server being unreachable.
 | **Selectors** | CSS selector, XPath, ARIA label, role, bounding box |
 | **Network** | `fetch` and `XMLHttpRequest` — method, URL, status, response body |
 | **Console** | `console.log`, `warn`, `error`, `info`, `debug` |
+| **React components** | The component each step happened in, and the file it was written in |
 
 Password fields are recorded as bullets, never as text.
 
@@ -147,6 +148,46 @@ that logs, those are captured like anything else.
 Console and network activity is attached to the **next** step, since that is when
 a step is written. A failure raised after your last click needs one more
 interaction before you stop recording, or it has nowhere to land.
+
+### React components
+
+On a React page each step also records the component the interaction happened
+in, and — where it can — the file that component was written in:
+
+```
+3. Clicked "Add to cart"
+   ⚛ AddToCartButton · src/components/Cart.tsx:34
+```
+
+This works on a minified production build. FlowSnap fingerprints the component
+function as the page has it, finds that fingerprint in a script the page already
+loaded, and reads that script's source map back to the original file. Nothing is
+uploaded and nothing new is fetched from the network where the browser cache can
+answer instead — the scripts read are the ones the page itself asked for.
+
+The point is what an assistant does with it: *the click on step 3 was in
+`src/components/Cart.tsx`* is the difference between opening one file and
+searching a repository.
+
+Where it stops, and what it says instead:
+
+- **Iframes are not covered.** An interaction inside a frame is recorded as a
+  step like any other, but no component is attributed to it.
+- **A chunk that never loaded cannot be searched.** A lazily-loaded component is
+  named but not located until something on the page loads its chunk.
+- **Minified names are minified.** On a production build the *name* is whatever
+  the minifier left behind. The file path is the real answer; the name is a hint.
+- **Ambiguity is reported, not resolved.** When a fingerprint matches more than
+  one place in the bundle, the step says so rather than picking one at random.
+- **No source map, no original file.** A site that ships none gets the position
+  in the compiled bundle, which is at least something to search for.
+- **Navigations are not attributed.** There is no element to start the walk from.
+
+Every one of those states carries a sentence saying which it is, so a component
+with no path never reads as a component with no source file.
+
+Capture and lookup are separate switches in Settings, and setting a **project
+root** turns each recorded path into a link that opens the file in your editor.
 
 ## Exporting
 
@@ -161,8 +202,10 @@ redact tool blacks out regions permanently before the flow leaves the machine.
 
 ## Settings
 
-Open from the popup's gear. Theme, storage usage, delete-all, and the MCP server
-URL with a **Test connection** button.
+Open from the popup's gear. Theme, storage usage, delete-all, the MCP server URL
+with a **Test connection** button, and the React component controls: whether to
+record components at all, whether to look their source files up, and the project
+root and editor that make a recorded path clickable.
 
 **Auto-send is off by default**, and turning it on shows a warning first. It
 ships whole flows — screenshots and captured request bodies — to the local server
@@ -187,7 +230,7 @@ auto-send.
 | `scripting` | Inject the recorder into a tab that predates the extension |
 | `storage`, `unlimitedStorage` | Keep flows locally; screenshots are large |
 | `downloads` | Write the export file you asked for |
-| `<all_urls>` | Record on whatever page has the bug |
+| `<all_urls>` | Record on whatever page has the bug, and read that page's own scripts and source maps to find which file a component came from |
 | `http://127.0.0.1:7734/*` | Send flows to the local MCP server |
 
 ## Development

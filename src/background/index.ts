@@ -9,12 +9,15 @@
 import { annotateScreenshot } from './annotator.js';
 import { getLocal, getSync, setLocal } from '../chrome/storage.js';
 import { captureVisibleTab } from '../chrome/tabs.js';
-import type { WorkerRequest } from '../shared/messages.js';
+import type { OpenEditorResponse, WorkerRequest } from '../shared/messages.js';
+import { isEditorScheme } from '../core/react/editor.js';
 import {
   BADGE_COLOR,
   DEFAULT_MCP_URL,
+  LAUNCHER_TAB_TIMEOUT_MS,
   MAX_STEPS,
   PRECAPTURE_TTL_MS,
+  REACT_SETTING_DEFAULTS,
   RESOLVE_DEBOUNCE_MS,
   SETTLE_DELAY_MS,
 } from '../shared/constants.js';
@@ -205,11 +208,17 @@ async function runResolve(requestedFinal: boolean): Promise<void> {
   const components = stored.value.reactComponents ?? {};
   if (Object.keys(needles).length === 0 && !final) return;
 
+  // A failed read leaves resolution on, matching the setting's own default: a
+  // storage hiccup should not quietly switch a feature off.
+  const settings = await getSync({ reactResolve: REACT_SETTING_DEFAULTS.reactResolve });
+  const disabled = settings.ok && !settings.value.reactResolve;
+
   const result = await resolvePending({
     components,
     needles,
     scripts: stored.value.reactScripts ?? {},
     final,
+    disabled,
   });
 
   if (!result.changed) return;
@@ -246,6 +255,60 @@ function scheduleResolve(): void {
     resolveTimer = null;
     void enqueueResolve(false);
   }, RESOLVE_DEBOUNCE_MS);
+}
+
+// ── Opening a file in an editor ──────────────────────────────────────────────
+
+/**
+ * Launches an editor deep link on the user's behalf.
+ *
+ * The viewer cannot: an extension page is not allowed to navigate itself to a
+ * custom scheme. The scheme is checked again here even though the viewer only
+ * ever offers links that already passed — this is the side that actually opens
+ * a tab, and a settings field that could produce `https://…` would otherwise be
+ * a way to make the extension open any page it likes.
+ */
+async function openEditor(url: string): Promise<OpenEditorResponse> {
+  if (!isEditorScheme(url)) return { ok: false, error: 'Not an editor link.' };
+
+  try {
+    const tab = await chrome.tabs.create({ url, active: true });
+    if (tab.id !== undefined) closeWhenLaunched(tab.id);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Disposes of the blank launcher tab once it has done its job.
+ *
+ * Timing alone cannot decide this: while Chrome's "open this application?"
+ * prompt is up, the tab looks exactly as it does when the launch has already
+ * happened — so a fixed delay either dismisses the prompt before it can be
+ * answered, or leaves blank tabs behind. Chrome losing focus means the editor
+ * took over, which is the signal. The timeout only covers a launch that never
+ * happened at all.
+ */
+function closeWhenLaunched(tabId: number): void {
+  let closed = false;
+
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
+    chrome.windows.onFocusChanged.removeListener(onFocusChanged);
+    void chrome.tabs.remove(tabId).catch(() => {
+      /* already closed by the user */
+    });
+  };
+
+  const onFocusChanged = (windowId: number): void => {
+    if (windowId === chrome.windows.WINDOW_ID_NONE) close();
+  };
+
+  chrome.windows.onFocusChanged.addListener(onFocusChanged);
+  const timer = setTimeout(close, LAUNCHER_TAB_TIMEOUT_MS);
 }
 
 // ── MCP auto-export ──────────────────────────────────────────────────────────
@@ -422,6 +485,11 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
         updateBadge(0);
         sendResponse({ ok: written.ok });
       });
+      return true;
+    }
+
+    case 'OPEN_EDITOR': {
+      void openEditor(message.url).then(sendResponse);
       return true;
     }
 

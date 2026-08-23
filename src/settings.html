@@ -9,9 +9,9 @@
   <body>
     <!--
       Only settings that do something are here. The design brief also specifies
-      capture and redaction controls; those settings do not exist in the recorder
-      yet, and a toggle that silently does nothing is worse than an absent one.
-      They arrive with the features, not before them.
+      redaction controls; that feature does not exist in the recorder yet, and a
+      toggle that silently does nothing is worse than an absent one. It arrives
+      with the feature, not before it.
     -->
     <header class="appbar">
       <div class="appbar__inner">
@@ -79,6 +79,98 @@
                 Dark
               </button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section__head">
+          <h2 class="section__title">React components</h2>
+          <p class="section__note">
+            On a React page, a step can record the component it happened in — and
+            which file that component was written in, so an AI opens the right
+            one instead of searching for it.
+          </p>
+        </div>
+
+        <div class="section__body">
+          <div class="setting">
+            <div class="setting__text">
+              <span class="setting__name" id="react-capture-label">
+                Record the component behind each step
+              </span>
+              <span class="setting__note">
+                Costs nothing on a page that is not React — the recorder looks
+                once, finds no React, and stops looking.
+              </span>
+            </div>
+            <label class="setting__control switch">
+              <input
+                id="react-capture"
+                class="switch__input"
+                type="checkbox"
+                aria-labelledby="react-capture-label"
+              />
+            </label>
+          </div>
+
+          <div class="setting">
+            <div class="setting__text">
+              <span class="setting__name" id="react-resolve-label">
+                Find the file each component came from
+              </span>
+              <span class="setting__note">
+                Reads the page's own scripts and source maps, from your browser
+                cache wherever it can. Nothing is uploaded. With this off a step
+                still names its component, it just cannot say where it lives.
+              </span>
+            </div>
+            <label class="setting__control switch">
+              <input
+                id="react-resolve"
+                class="switch__input"
+                type="checkbox"
+                aria-labelledby="react-resolve-label"
+              />
+            </label>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="project-root">Project root</label>
+            <input
+              id="project-root"
+              class="input input--mono"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="/Users/you/code/my-app"
+            />
+            <p class="label">
+              Optional. The folder those files live in on this machine — it turns
+              a recorded path into a link the viewer can open in your editor.
+            </p>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="editor">Editor</label>
+            <select id="editor" class="select"></select>
+          </div>
+
+          <div id="editor-custom" class="field hidden">
+            <label class="field__label" for="editor-template">Link template</label>
+            <input
+              id="editor-template"
+              class="input input--mono"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="myeditor://open?file={path}&amp;line={line1}"
+            />
+            <p class="label">
+              {path} is the absolute file path. {line1} and {col1} count from 1;
+              {line} and {col} count from 0. It has to be an app link — an
+              http:// or file:// template is refused.
+            </p>
           </div>
         </div>
       </section>

@@ -8,8 +8,9 @@
  * decision it used to make inline now lives in a pure module with tests.
  */
 
-import { bytesInUse, getLocal } from '../../chrome/storage.js';
+import { bytesInUse, getLocal, getSync } from '../../chrome/storage.js';
 import { flowHost } from '../../core/flow/index.js';
+import { editorTemplate } from '../../core/react/editor.js';
 import {
   CURRENT_FLOW_NAME,
   listFlows,
@@ -20,6 +21,7 @@ import {
   updateFlowSteps,
   writeCurrent,
 } from '../../features/flows/store.js';
+import { REACT_SETTING_DEFAULTS } from '../../shared/constants.js';
 import type { RecordingState, Step } from '../../shared/types.js';
 import { formatDateTime } from '../format.js';
 import { hydrateIcons } from '../icons.js';
@@ -46,6 +48,7 @@ const state: ViewerState = {
   filter: 'all',
   activeIndex: null,
   undo: [],
+  editor: null,
 };
 
 const app: App = {
@@ -240,6 +243,34 @@ function suggestName(steps: Step[]): string {
   return host || `Recording — ${formatDateTime(Date.now())}`;
 }
 
+// ── The editor link ──────────────────────────────────────────────────────────
+
+/**
+ * Reads the two settings that decide whether a source path is clickable.
+ *
+ * Both have to be present: a root with no usable template has nowhere to send
+ * the file, and a template with no root has no absolute path to send. Either
+ * one missing leaves `state.editor` null, which is the view model's signal to
+ * show the path and no button.
+ */
+async function readEditorSettings(): Promise<void> {
+  const stored = await getSync(REACT_SETTING_DEFAULTS);
+  if (!stored.ok) return;
+
+  const { projectRoot, editor, customEditorTemplate } = stored.value;
+  const template = editorTemplate(editor, customEditorTemplate);
+
+  state.editor = projectRoot && template ? { projectRoot, template } : null;
+}
+
+/** Settings live in another tab, so what is on screen has to follow them. */
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync') return;
+  if (!['projectRoot', 'editor', 'customEditorTemplate'].some((key) => key in changes)) return;
+
+  void readEditorSettings().then(paint);
+});
+
 // ── Live updates ─────────────────────────────────────────────────────────────
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -264,3 +295,4 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // right skeleton is showing while it loads rather than the wrong one.
 paint();
 void reload();
+void readEditorSettings().then(paint);

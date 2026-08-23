@@ -371,4 +371,30 @@ export interface SyncStorageShape {
    * configured, which should be a decision, not a surprise.
    */
   mcpAutoSend: boolean;
+  /**
+   * Whether a step records the React component it happened in.
+   *
+   * The master switch for the whole feature: off means the agent never attaches
+   * its listeners, so a page that is not being attributed costs nothing at all.
+   */
+  reactCapture: boolean;
+  /**
+   * Whether captured components are looked up in the page's own bundles and
+   * source maps to find the file they were written in.
+   *
+   * Separate from capture because the two have different costs: naming a
+   * component is free, while finding its file reads the page's scripts. With
+   * this off a step still names its component, and every entry says why it has
+   * no path rather than looking as though it has no source.
+   */
+  reactResolve: boolean;
+  /**
+   * Absolute local path the recorded source paths sit under, so the viewer can
+   * offer to open one in an editor. Empty means no link is offered.
+   */
+  projectRoot: string;
+  /** A key into `EDITORS` in core/react/editor.ts, or `custom`. */
+  editor: string;
+  /** Used when `editor` is `custom`. Supports {path} {line} {col} {line1} {col1}. */
+  customEditorTemplate: string;
 }

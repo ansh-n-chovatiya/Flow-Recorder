@@ -24,6 +24,7 @@ import {
   REACT_BUFFER_SIZE,
   REACT_BUFFER_TTL_MS,
   REACT_CHAIN_TIMEOUT_MS,
+  REACT_SETTING_DEFAULTS,
 } from '../shared/constants.js';
 import { createChainBuffer } from '../core/react/chains.js';
 import {
@@ -56,9 +57,21 @@ const reactChains = createChainBuffer<{ chain: CapturedComponent[]; truncated: b
   timeoutMs: REACT_CHAIN_TIMEOUT_MS,
 });
 
+/**
+ * The master capture setting. Assumed on until the read below says otherwise:
+ * a recording that starts in the same tick as the page loads should attribute
+ * its first click, and the setting is on for all but the user who turned it off.
+ */
+let captureReact = REACT_SETTING_DEFAULTS.reactCapture;
+
 /** Tell the agent whether to watch for interactions at all. */
 function postControl(recording: boolean): void {
   window.postMessage({ __flowsnap_control__: CONTROL_MESSAGE_SOURCE, recording }, '*');
+}
+
+/** What the agent should be doing right now: recording, live, and switched on. */
+function syncAgent(): void {
+  postControl(isRecording && !isPaused && captureReact);
 }
 
 // ── Agent bridge ─────────────────────────────────────────────────────────────
@@ -152,7 +165,7 @@ function applyState(recording: boolean, paused: boolean): void {
   if (!recording || paused) clearBuffers();
   // Paused counts as not watching: the agent should not walk fibers for
   // interactions that will never become steps.
-  postControl(recording && !paused);
+  syncAgent();
   renderIndicator();
 }
 
@@ -179,6 +192,41 @@ chrome.storage.onChanged.addListener((changes, area) => {
     // flow shows where the user went rather than jumping between contexts.
     if (active && !paused && !wasRecording) captureNavigationStep();
   });
+});
+
+// ── The capture setting ──────────────────────────────────────────────────────
+
+function applyCaptureSetting(enabled: boolean): void {
+  if (enabled === captureReact) return;
+  captureReact = enabled;
+  // Chains already collected for a step that has not claimed them are dropped:
+  // turning capture off should stop attribution now, not after the buffer
+  // drains into the next two steps.
+  if (!enabled) reactChains.clear();
+  syncAgent();
+}
+
+void chrome.storage.sync
+  .get({ reactCapture: REACT_SETTING_DEFAULTS.reactCapture })
+  .then((stored) => {
+    applyCaptureSetting(stored.reactCapture !== false);
+  })
+  .catch(() => {
+    // Sync storage is unavailable in some profiles. The default is on, which is
+    // what `captureReact` already holds.
+  });
+
+/**
+ * The toggle takes effect immediately, including part-way through a recording.
+ *
+ * A setting that only applied to the next recording would leave someone who has
+ * just switched capture off watching components keep being recorded, with
+ * nothing on screen to explain why.
+ */
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync' || !('reactCapture' in changes)) return;
+  // A cleared key reads as undefined, which means "back to the default".
+  applyCaptureSetting(changes.reactCapture.newValue !== false);
 });
 
 // ── Resume after a navigation ────────────────────────────────────────────────

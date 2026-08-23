@@ -12,6 +12,7 @@ import { compactBody } from '../../core/schema/index.js';
 import { statusClass, withImportedScreenshot } from '../../core/flow/index.js';
 import { ACCEPT, firstImage, importScreenshot } from '../../features/screenshots/import.js';
 import { deleteFlow, renameFlow } from '../../features/flows/store.js';
+import { sendToWorker } from '../../shared/messages.js';
 import type { ConsoleEntry, NetworkCall, Step } from '../../shared/types.js';
 import { hydrateIcons } from '../icons.js';
 import { showToast } from '../toast.js';
@@ -87,6 +88,23 @@ async function copy(text: string, what: string): Promise<void> {
     // not something the user did wrong and not something to fail silently over.
     showToast({ message: `Chrome wouldn’t copy that. Select it and press Ctrl+C.`, tone: 'danger' });
   }
+}
+
+/**
+ * Hands an editor link to the worker, which is the only context that can open
+ * one — an extension page cannot navigate itself to a custom scheme.
+ *
+ * A silent failure here would look exactly like an editor that is not
+ * installed, so both the refusal and the missing-worker case say something.
+ */
+async function openInEditor(url: string): Promise<void> {
+  const response = await sendToWorker({ type: 'OPEN_EDITOR', url });
+
+  if (response?.ok) return;
+  showToast({
+    message: response?.error ?? 'Chrome wouldn’t open that link.',
+    tone: 'danger',
+  });
 }
 
 export function mountReview(app: App, onSaveCurrent: () => void): { paint: () => void } {
@@ -719,6 +737,17 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
         find(sourceRow, '[data-action="copy-source"]').addEventListener('click', () => {
           void copy(source, 'source path');
         });
+
+        // The button is removed rather than disabled: with no project root set
+        // there is nothing wrong to fix in the moment, and a permanently greyed
+        // control on every step reads as a broken feature.
+        const open = find(sourceRow, '[data-action="open-source"]');
+        const editorUrl = card.component.editorUrl;
+        if (editorUrl) {
+          open.addEventListener('click', () => void openInEditor(editorUrl));
+        } else {
+          open.remove();
+        }
       } else {
         sourceRow.remove();
       }
@@ -917,6 +946,7 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       activeIndex: app.state.activeIndex,
       recording: app.state.current?.recording ?? 'idle',
       now: Date.now(),
+      editor: app.state.editor,
     });
 
     if (view.header) {
