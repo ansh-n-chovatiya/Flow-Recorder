@@ -93,6 +93,35 @@ function git(cwd, ...gitArgs) {
   return execFileSync('git', gitArgs, { cwd, encoding: 'utf8' }).trim();
 }
 
+/**
+ * Whether a commit touched this path only to update its own provenance line.
+ *
+ * Reviewing a file means bumping its `@ sha`, and that bump is itself a commit
+ * against the path — which would show up as drift on the other side, whose bump
+ * would show up here, forever. Neither is a change to the code, so neither is
+ * worth reporting.
+ */
+function isProvenanceOnly(cwd, sha, path) {
+  let diff;
+  try {
+    diff = git(cwd, 'show', '--format=', '--unified=0', sha, '--', path);
+  } catch {
+    return false; // Can't tell — better a spurious report than a silent skip.
+  }
+
+  const changed = diff
+    .split('\n')
+    .filter((line) => /^[+-]/.test(line) && !/^(\+\+\+|---)/.test(line))
+    .map((line) => line.slice(1).trim());
+
+  if (changed.length === 0) return false;
+
+  return changed.every((line) => {
+    PROVENANCE.lastIndex = 0;
+    return line === '' || PROVENANCE.test(line.replace(/^\*+ ?/, ''));
+  });
+}
+
 const byRepo = new Map();
 for (const entry of ported) {
   if (!byRepo.has(entry.repo)) byRepo.set(entry.repo, []);
@@ -135,7 +164,10 @@ for (const [repo, entries] of byRepo) {
     }
 
     try {
-      commits = git(sibling, 'log', '--oneline', `${entry.sha}..HEAD`, '--', entry.path);
+      commits = git(sibling, 'log', '--format=%h %s', `${entry.sha}..HEAD`, '--', entry.path)
+        .split('\n')
+        .filter((line) => line && !isProvenanceOnly(sibling, line.split(' ')[0], entry.path))
+        .join('\n');
     } catch {
       commits = '';
     }
