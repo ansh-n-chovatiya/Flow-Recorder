@@ -3,8 +3,8 @@
  *
  * Ported from react-source-locator `src/injected/fiber.ts` @ 6eb7a30.
  *
- * Two deliberate divergences from upstream, both because this runs inside a
- * *passive recorder* rather than behind an explicit "pick this element" action:
+ * Deliberate divergences from upstream, all because this runs inside a *passive
+ * recorder* rather than behind an explicit "pick this element" action:
  *
  *   1. **Lazy components are never forced.** Upstream passes `force = true` on a
  *      pick, which calls `_init()` and can start a dynamic `import()`. Here that
@@ -13,6 +13,11 @@
  *      component is reported by name and nothing more.
  *   2. **No DOM-node collection.** Upstream needs every host node a component
  *      renders in order to draw hover highlights. Nothing here highlights.
+ *   3. **Shadow roots are crossed, in both directions.** `climb` hops from the
+ *      top of a shadow root to its host, and `interactionTarget` reads the
+ *      composed path rather than the retargeted `event.target`. Upstream picks
+ *      an element the user pointed at, so it never meets either problem; a
+ *      passive listener on `document` meets both. Worth back-porting.
  *
  * DOM-facing but free of `chrome.*` and module state, like `core/selector` and
  * `core/describe` — which is what lets it be tested in jsdom.
@@ -160,6 +165,38 @@ export function hasReactRoot(doc: Document): boolean {
   return false;
 }
 
+/**
+ * The next element up, crossing out of a shadow root when it has to.
+ *
+ * `parentElement` is null on the top node inside a shadow root, which would end
+ * the walk one hop short of the component that rendered the host. Web components
+ * wrapping React — and React rendering *into* a shadow root — are both real, and
+ * in both cases the answer the reader wants is on the other side of the boundary.
+ */
+function climb(node: Element): Element | null {
+  if (node.parentElement) return node.parentElement;
+
+  const root = node.getRootNode();
+  const host = (root as ShadowRoot | null)?.host;
+  return isElement(host) ? host : null;
+}
+
+/**
+ * The element an interaction actually happened on.
+ *
+ * `event.target` is retargeted to the shadow *host* for anything inside a shadow
+ * root, so it cannot see React mounted in there at all. `composedPath()[0]` is
+ * the node that was really hit. Falls back to `target` where `composedPath` is
+ * missing — an old browser, or a synthetic event dispatched without it.
+ */
+export function interactionTarget(event: Event): Element | null {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+  const first = path[0];
+  if (isElement(first)) return first;
+
+  return isElement(event.target) ? event.target : null;
+}
+
 /** Walks up from a DOM element to the nearest fiber backed by a component. */
 export function findNearestComponentFiber(el: Element): Fiber | null {
   let node: Element | null = el;
@@ -175,7 +212,7 @@ export function findNearestComponentFiber(el: Element): Fiber | null {
         walked++;
       }
     }
-    node = node.parentElement;
+    node = climb(node);
   }
 
   return null;

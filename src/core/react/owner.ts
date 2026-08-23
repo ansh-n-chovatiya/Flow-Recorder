@@ -16,7 +16,7 @@
  */
 
 import type { ComponentSource } from '../../shared/types.js';
-import { classifyComponent } from './classify.js';
+import { classifyComponent, isSharedPrimitivePath } from './classify.js';
 
 /**
  * The component id a step should be attributed to, or null.
@@ -58,4 +58,57 @@ export function pickOwner(
   }
 
   return notPlumbing ?? anyNamed;
+}
+
+/**
+ * The feature component the owner sits inside, or null.
+ *
+ * `pickOwner` answers "where did this click land", and on an app with a shared
+ * UI kit the honest answer is often `Button` — the click really did land in
+ * `src/components/ui/Button.tsx`. It is just not the answer anybody asked for:
+ * what makes the flow useful is that the button was the one in `CheckoutButton`.
+ *
+ * So this is additive rather than a correction. The owner keeps naming the
+ * component the evidence points at, and this names the nearest one further out
+ * that is the user's own code and does not live in their primitives folder.
+ * Both files reach the reader, and neither judgement has to be right for the
+ * other to be useful — which is the property that made changing `pickOwner`
+ * itself the wrong move: demoting `Button` in `App` → `Button` would have
+ * traded a precise answer for a vaguer one.
+ *
+ * Only when the owner is itself a shared primitive, which is the whole of the
+ * problem being solved. Reporting the nearest enclosing component in general
+ * would put `· in App` or `· in ProductPage` on nearly every step of nearly
+ * every flow — true each time, worth reading none of them. Silence is the right
+ * answer whenever the owner already names something specific.
+ */
+export function pickEnclosing(
+  chain: string[],
+  components: Record<string, ComponentSource>,
+  owner: string | null,
+): string | null {
+  if (!owner) return null;
+
+  const source = components[owner]?.source;
+  if (!source || !isSharedPrimitivePath(source)) return null;
+
+  const ownerAt = chain.lastIndexOf(owner);
+  if (ownerAt < 0) return null;
+
+  // Strictly outside the owner: the same component cannot enclose itself, and a
+  // second copy of it further out says nothing new.
+  for (let i = ownerAt - 1; i >= 0; i--) {
+    const id = chain[i];
+    if (id === owner) continue;
+
+    const component = components[id];
+    if (!component) continue;
+    if (component.status !== 'resolved' || component.dependency === true) continue;
+    if (!component.source || isSharedPrimitivePath(component.source)) continue;
+    if (classifyComponent(component.name, component.source) !== 'unknown') continue;
+
+    return id;
+  }
+
+  return null;
 }

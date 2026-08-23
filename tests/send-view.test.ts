@@ -10,7 +10,13 @@
 
 import { describe, expect, it } from 'vitest';
 import { pruneSteps, SEND_EVERYTHING } from '../src/features/mcp/send.js';
-import type { ConsoleEntry, ExportOptions, NetworkCall, Step } from '../src/shared/types.js';
+import type {
+  ConsoleEntry,
+  ExportOptions,
+  FlowReact,
+  NetworkCall,
+  Step,
+} from '../src/shared/types.js';
 import { deriveSendView, SEND_DEFAULTS } from '../src/ui/viewer/send-view.js';
 
 const NOW = 1_700_000_000_000;
@@ -53,11 +59,29 @@ const LOADED = [
   step({ screenshot: IMAGE, networkCalls: [call()], consoleLogs: [log()] }),
 ];
 
-const ALL: ExportOptions = { images: true, network: true, logs: true };
-const NONE: ExportOptions = { images: false, network: false, logs: false };
+const ALL: ExportOptions = { images: true, network: true, logs: true, react: true };
+const NONE: ExportOptions = { images: false, network: false, logs: false, react: false };
 
-function view(options: ExportOptions, steps = LOADED, busy = false) {
-  return deriveSendView({ steps, options, busy });
+/** The same flow, recorded on a React page that resolved to a real file. */
+const REACT_TABLE: FlowReact = {
+  detected: true,
+  components: {
+    a1b2c3d4: {
+      name: 'CheckoutButton',
+      status: 'resolved',
+      source: 'src/components/checkout/CheckoutButton.tsx',
+      line: 42,
+    },
+  },
+};
+
+const REACT_LOADED = LOADED.map((one) => ({
+  ...one,
+  element: { ...one.element, react: { chain: ['a1b2c3d4'] } },
+})) as Step[];
+
+function view(options: ExportOptions, steps = LOADED, busy = false, react?: FlowReact) {
+  return deriveSendView({ steps, options, react, busy });
 }
 
 describe('the default', () => {
@@ -68,7 +92,7 @@ describe('the default', () => {
    * back with every step and are what actually fills the context.
    */
   it('keeps screenshots and leaves the parts that cost context switched off', () => {
-    expect(SEND_DEFAULTS).toEqual({ images: true, network: false, logs: false });
+    expect(SEND_DEFAULTS).toEqual({ images: true, network: false, logs: false, react: true });
   });
 
   it('costs less context than sending everything, on the same flow', () => {
@@ -121,13 +145,30 @@ describe('the context estimate', () => {
 });
 
 describe('the rows', () => {
-  it('offers exactly the three parts a flow is made of', () => {
-    expect(view(ALL).includes.map((row) => row.id)).toEqual(['images', 'network', 'logs']);
+  it('offers exactly the four parts a flow is made of', () => {
+    expect(view(ALL).includes.map((row) => row.id)).toEqual([
+      'images',
+      'network',
+      'logs',
+      'react',
+    ]);
   });
 
-  /** Unlike the JSON export, the server keeps every image it is handed. */
-  it('never disables a row, because this destination stores all three', () => {
-    expect(view(ALL).includes.every((row) => row.ignored === null)).toBe(true);
+  /**
+   * Unlike the JSON export, the server keeps every part it is handed — so the
+   * only row this destination ever disables is one the flow has nothing for,
+   * which is React on a page that was not React.
+   */
+  it('never disables a row for a flow that has all four parts', () => {
+    expect(
+      view(ALL, REACT_LOADED, false, REACT_TABLE).includes.every((row) => row.ignored === null),
+    ).toBe(true);
+  });
+
+  it('disables React, and only React, on a flow that recorded none', () => {
+    const rows = view(ALL).includes;
+    expect(rows.find((row) => row.id === 'react')?.ignored).not.toBeNull();
+    expect(rows.filter((row) => row.id !== 'react').every((row) => row.ignored === null)).toBe(true);
   });
 
   it('reports each part at the size it costs, not the size of the flow', () => {

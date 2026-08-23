@@ -10,7 +10,12 @@
 
 import { flowHost, formatDelta, stepFailed, worstLevel, worstStatus } from '../../core/flow/index.js';
 import type { StatusClass } from '../../core/flow/index.js';
-import { formatSource, stepOwner, summarizeComponents } from '../../core/react/attribution.js';
+import {
+  formatSource,
+  stepEnclosing,
+  stepOwner,
+  summarizeComponents,
+} from '../../core/react/attribution.js';
 import { componentEditorUrl, type EditorLink } from '../../core/react/editor.js';
 import type {
   ComponentSource,
@@ -128,6 +133,13 @@ export interface StepCardView {
  */
 export interface StepComponentView {
   name: string;
+  /**
+   * The feature component this one was rendered inside, or `null`.
+   *
+   * Set only when the name above is a shared primitive — `Button` is where the
+   * click landed and `CheckoutButton` is what makes that mean something.
+   */
+  within: string | null;
   /** `src/components/Cart.tsx:34`, or `null` when it has nowhere to point. */
   source: string | null;
   /** The one sentence for anything that is not a resolved original file. */
@@ -235,6 +247,7 @@ function componentView(
 
   return {
     name: component.name,
+    within: stepEnclosing(step, components)?.component.name ?? null,
     source: formatSource(component),
     // A resolved component's path speaks for itself; everything else owes the
     // reader a reason, and `detail` is where the resolver wrote one.

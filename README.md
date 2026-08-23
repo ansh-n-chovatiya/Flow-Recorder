@@ -182,12 +182,23 @@ Where it stops, and what it says instead:
 - **No source map, no original file.** A site that ships none gets the position
   in the compiled bundle, which is at least something to search for.
 - **Navigations are not attributed.** There is no element to start the walk from.
+- **Shadow roots are covered**, in both directions — React inside a web
+  component, and a web component inside React. Iframes still are not.
 
 Every one of those states carries a sentence saying which it is, so a component
 with no path never reads as a component with no source file.
 
 Capture and lookup are separate switches in Settings, and setting a **project
 root** turns each recorded path into a link that opens the file in your editor.
+
+Whether a flow *carries* what was captured is a third choice, and it lives where
+the other recording data lives: **React components & source** is a checkbox in
+the export and send dialogs, beside Screenshots, Network calls and Console logs.
+It is on by default. Switching it off drops the component ids from the steps and
+the source table with them, and touches nothing else in the recording. Switching
+capture off in Settings goes further: the flow being recorded forgets the
+components it has already collected, rather than ending up attributed for its
+first ten steps and not its last ten.
 
 ## Exporting
 

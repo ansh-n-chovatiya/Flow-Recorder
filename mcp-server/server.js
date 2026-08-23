@@ -94,6 +94,18 @@ function stepComponent(flow, step) {
 }
 
 /**
+ * The feature component that one sits inside, if the flow says so.
+ *
+ * Written down by the extension beside the owner, and for the same reason: on an
+ * app with a shared UI kit the owner is `Button`, correctly, and this is the
+ * `CheckoutButton` that makes the step mean something.
+ */
+function stepEnclosing(flow, step) {
+  const within = step.element?.react?.within;
+  return within ? (flow.react?.components?.[within] ?? null) : null;
+}
+
+/**
  * Where a component was written, as one string.
  *
  * NOTE: this is text and only ever text. `source` came off a web page — it is
@@ -159,7 +171,10 @@ function generateMarkdown(flow, dir) {
     // The name only. Its path is in the table at the end, so a flow that clicks
     // one button forty times spends the tokens on that path once.
     const component = stepComponent(flow, step);
-    if (component) lines.push(`- **Component:** ${component.name}`);
+    if (component) {
+      const within = stepEnclosing(flow, step);
+      lines.push(`- **Component:** ${component.name}${within ? ` — in ${within.name}` : ''}`);
+    }
 
     if (step.value) lines.push(`- **Value:** ${step.value}`);
     if (step.notes) lines.push(`- **Note:** ${step.notes}`);
@@ -400,7 +415,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_flow_errors',
       description:
-        'Only the steps that failed in a flow: console errors, failed and 4xx/5xx network calls with their bodies, the element involved, and the screenshot path for each. Far smaller than get_flow — call this first when debugging something that broke. On a React app each failing step also names the component it happened in; get_flow has the table mapping those names to source files.',
+        'Only the steps that failed in a flow: console errors, failed and 4xx/5xx network calls with their bodies, the element involved, and the screenshot path for each. Far smaller than get_flow — call this first when debugging something that broke. On a React app each failing step also carries the component it happened in and that component\'s source file and line — open that file directly rather than searching the repo.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string', description: 'Flow ID from list_flows' } },
@@ -410,7 +425,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_flow',
       description:
-        'The full recording: a markdown walkthrough plus the step JSON. Every step carries an absolute screenshotPath — read those image files directly with your own file tools, one at a time, rather than calling get_flow_screenshots. On a React app it also carries the source file and line of the component behind each step: read those files instead of searching the repo for the component by name.',
+        'The full recording: a markdown walkthrough plus the step JSON. Every step carries an absolute screenshotPath — read those image files directly with your own file tools, one at a time, rather than calling get_flow_screenshots. On a React app it also carries the source file and line of the component behind each step, and the feature component that one is rendered inside: read those files instead of searching the repo for the component by name.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string', description: 'Flow ID from list_flows' } },
@@ -488,25 +503,35 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       const broken = flow.json.steps
         .map((step, i) => ({ step, number: i + 1 }))
         .filter(({ step }) => consoleErrors(step).length > 0 || failedCalls(step).length > 0)
-        .map(({ step, number }) => ({
-          step: number,
-          action: step.action,
-          url: step.url,
-          element: step.element?.cssSelector ?? null,
-          // The one line that turns "something broke on this click" into a file
-          // to open. Its path is in get_flow's table rather than repeated here.
-          component: stepComponent(flow.json, step)?.name ?? undefined,
-          screenshotPath: screenshotPath(flow.dir, step),
-          consoleErrors: consoleErrors(step).map((entry) => truncate(entry.args.join(' '))),
-          failedCalls: failedCalls(step).map((call) => ({
-            method: call.method,
-            url: call.url,
-            status: call.status,
-            durationMs: call.durationMs,
-            requestBody: truncate(call.requestBody),
-            responseBody: truncate(call.responseBody),
-          })),
-        }));
+        .map(({ step, number }) => {
+          // What turns "something broke on this click" into a file to open. The
+          // path is repeated here rather than left to get_flow's table: this
+          // tool exists to be the cheap call, and sending a debugger to make the
+          // expensive one just to learn *where* would undo that.
+          const component = stepComponent(flow.json, step);
+          const within = stepEnclosing(flow.json, step);
+
+          return {
+            step: number,
+            action: step.action,
+            url: step.url,
+            element: step.element?.cssSelector ?? null,
+            component: component?.name ?? undefined,
+            componentSource: component ? (componentSource(component) ?? undefined) : undefined,
+            componentWithin: within?.name ?? undefined,
+            componentWithinSource: within ? (componentSource(within) ?? undefined) : undefined,
+            screenshotPath: screenshotPath(flow.dir, step),
+            consoleErrors: consoleErrors(step).map((entry) => truncate(entry.args.join(' '))),
+            failedCalls: failedCalls(step).map((call) => ({
+              method: call.method,
+              url: call.url,
+              status: call.status,
+              durationMs: call.durationMs,
+              requestBody: truncate(call.requestBody),
+              responseBody: truncate(call.responseBody),
+            })),
+          };
+        });
 
       if (!broken.length) {
         return text(

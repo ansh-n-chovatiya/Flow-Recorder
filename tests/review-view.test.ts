@@ -295,6 +295,22 @@ describe('the React component on a step', () => {
       input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: react(components) } }),
     );
 
+  it('names the feature component behind a shared primitive', () => {
+    const [card] = view([chained(['checkout', 'button'])], {
+      checkout: {
+        name: 'CheckoutButton',
+        status: 'resolved',
+        source: 'src/components/checkout/CheckoutButton.tsx',
+        line: 42,
+      },
+      button: { name: 'Button', status: 'resolved', source: 'src/components/ui/Button.tsx', line: 8 },
+    }).steps;
+
+    // The card and the Markdown say the same thing, in the same words.
+    expect(card.component?.name).toBe('Button');
+    expect(card.component?.within).toBe('CheckoutButton');
+  });
+
   it('is null on every card when the flow carries no components', () => {
     const plain = deriveReviewView(input({ flow: { id: 'f', name: 'n', steps: [chained(['cart'])], createdAt: NOW, react: null } }));
     expect(plain.steps[0].component).toBeNull();
@@ -308,6 +324,8 @@ describe('the React component on a step', () => {
 
     expect(card.component).toEqual({
       name: 'AddToCartButton',
+      // Nothing to add: the owner already names something specific.
+      within: null,
       source: 'src/Cart.tsx:34',
       detail: null,
       dependency: false,

@@ -181,6 +181,43 @@ describe('exportToMarkdown · React components', () => {
     expect(md).toContain('| App | src/App.tsx:1 |');
   });
 
+  it('names the feature component behind a shared primitive, beside it', () => {
+    // Clicking Continue lands in `Button`, correctly and uselessly. What makes
+    // the step legible is the CheckoutButton that rendered it.
+    const md = exportToMarkdown([chained(['checkout', 'button'])], {
+      react: react({
+        checkout: {
+          name: 'CheckoutButton',
+          status: 'resolved',
+          source: 'src/components/checkout/CheckoutButton.tsx',
+          line: 42,
+        },
+        button: {
+          name: 'Button',
+          status: 'resolved',
+          source: 'src/components/ui/Button.tsx',
+          line: 8,
+        },
+      }),
+    });
+
+    expect(md).toContain('⚛ Button · in CheckoutButton');
+    // Both are in the table, so both files can be opened.
+    expect(md).toContain('| CheckoutButton | src/components/checkout/CheckoutButton.tsx:42 |');
+  });
+
+  it('adds nothing when the owner is already the feature component', () => {
+    const md = exportToMarkdown([chained(['app', 'cart'])], {
+      react: react({
+        app: { name: 'App', status: 'resolved', source: 'src/App.tsx', line: 1 },
+        cart: { name: 'AddToCartButton', status: 'resolved', source: 'src/Cart.tsx', line: 34 },
+      }),
+    });
+
+    expect(md).toContain('⚛ AddToCartButton');
+    expect(md).not.toContain('· in');
+  });
+
   it('gives a component with nowhere to point a row and a reason', () => {
     const md = exportToMarkdown([chained(['lazy'])], {
       react: react({

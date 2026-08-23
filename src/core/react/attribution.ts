@@ -13,7 +13,7 @@
  */
 
 import { urlPath } from '../flow/index.js';
-import { pickOwner } from './owner.js';
+import { pickEnclosing, pickOwner } from './owner.js';
 import { CAPPED_ID } from './table.js';
 import type { ComponentSource, FlowReact, Step } from '../../shared/types.js';
 
@@ -64,6 +64,22 @@ export function pruneComponents(
 }
 
 /**
+ * The step without its React reference, or the step itself when it had none.
+ *
+ * One function because three places need exactly this — the send prune, the JSON
+ * export and the purge in the worker — and each one is stripping data a user
+ * asked not to be kept. A copy, never a mutation: the step is shared with the
+ * stored recording, and deleting through it would strip the recording too.
+ */
+export function stripReactRef(step: Step): Step {
+  if (!step.element?.react) return step;
+
+  const element = { ...step.element };
+  delete element.react;
+  return { ...step, element };
+}
+
+/**
  * The flow's React block, or `undefined` when there is nothing to say.
  *
  * Absent rather than empty: a flow recorded on a page that is not React must
@@ -81,6 +97,30 @@ export function buildFlowReact(
   if (Object.keys(pruned).length === 0) return undefined;
 
   return { ...meta, components: pruned };
+}
+
+/**
+ * The feature component the step's owner sits inside, with its id, or null.
+ *
+ * Reads the stamp when there is one, for the same reason `stepOwner` does: a
+ * flow that has already been exported made this decision, and re-deriving it
+ * against a table that has since gained a resolved path would let two halves of
+ * one document disagree.
+ */
+export function stepEnclosing(
+  step: Step,
+  components: Record<string, ComponentSource>,
+): { id: string; component: ComponentSource } | null {
+  const react = step.element?.react;
+  if (!react?.chain.length) return null;
+
+  const owner = stepOwner(step, components);
+  if (!owner) return null;
+
+  const id = react.within ?? pickEnclosing(react.chain, components, owner.id);
+  const component = id ? components[id] : undefined;
+
+  return id && component ? { id, component } : null;
 }
 
 /** The component a step is attributed to, with its id, or null. */
@@ -116,7 +156,12 @@ export function attributeSteps(steps: Step[], components: Record<string, Compone
     const owner = pickOwner(react.chain, components);
     if (!owner) return step;
 
-    return { ...step, element: { ...element, react: { ...react, owner } } };
+    const within = pickEnclosing(react.chain, components, owner);
+
+    return {
+      ...step,
+      element: { ...element, react: { ...react, owner, ...(within ? { within } : {}) } },
+    };
   });
 }
 

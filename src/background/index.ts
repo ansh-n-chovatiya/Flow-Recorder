@@ -24,6 +24,7 @@ import {
 import { flowError, type FlowError } from '../shared/errors.js';
 import type { BoundingBox, DraftStep, Step } from '../shared/types.js';
 import type { CapturedComponent } from '../shared/messages.js';
+import { stripReactRef } from '../core/react/attribution.js';
 import { mergeComponents } from '../core/react/table.js';
 import { mergeScripts } from '../features/react/inventory.js';
 import { clearResolverCaches, resolvePending } from '../features/react/resolver.js';
@@ -242,6 +243,51 @@ function enqueueResolve(final: boolean): Promise<void> {
 }
 
 /**
+ * Throws away every React fact the live recording has collected.
+ *
+ * Both queues, in that order. The resolve queue owns `reactComponents` and
+ * `reactNeedles`; the capture queue owns `recordedSteps`. Purging on either one
+ * alone would leave the other free to write the data straight back — a resolve
+ * pass that was already in flight finishing after the clear, or the click the
+ * user made while reaching for the switch landing with its chain attached.
+ *
+ * The caches go too: they are keyed by component id, and a component whose
+ * needle has just been deleted must not be answerable from memory.
+ */
+async function purgeReact(): Promise<void> {
+  if (resolveTimer !== null) {
+    clearTimeout(resolveTimer);
+    resolveTimer = null;
+  }
+
+  const clear = async (): Promise<void> => {
+    clearResolverCaches();
+
+    const stored = await getLocal('recordedSteps');
+    const steps = stored.ok ? (stored.value.recordedSteps ?? []) : [];
+    const stripped = steps.map(stripReactRef);
+
+    const written = await setLocal({
+      recordedSteps: stripped,
+      reactComponents: {},
+      reactNeedles: {},
+      reactScripts: {},
+      reactMeta: null,
+    });
+    if (!written.ok) await reportError(written.error);
+  };
+
+  resolveQueue = resolveQueue.then(() => {
+    captureQueue = captureQueue.then(() =>
+      clear().catch((error: unknown) => console.warn('FlowSnap: React purge failed', error)),
+    );
+    return captureQueue;
+  });
+
+  return resolveQueue;
+}
+
+/**
  * Resolution runs *during* recording, on idle, rather than only at the end.
  *
  * The page is still open, so its bundles are certain to be fetchable and warm
@@ -444,6 +490,11 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
           sendResponse({ ok: written.ok });
         });
       });
+      return true;
+    }
+
+    case 'REACT_PURGE': {
+      void purgeReact().then(() => sendResponse({ ok: true }));
       return true;
     }
 

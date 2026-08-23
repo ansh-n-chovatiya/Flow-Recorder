@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { NetworkCall, Step } from '../src/shared/types.js';
+import type { FlowReact, NetworkCall, Step } from '../src/shared/types.js';
 import { deriveExportView, measure, type ExportInput } from '../src/ui/viewer/export-view.js';
 
 /** 300 base64 characters — 224 bytes decoded, once the header is discounted. */
@@ -32,7 +32,7 @@ function input(over: Partial<ExportInput> = {}): ExportInput {
   return {
     steps: [step({ screenshot: IMAGE, networkCalls: [call()] })],
     format: 'zip',
-    options: { images: true, network: true, logs: true },
+    options: { images: true, network: true, logs: true, react: true },
     filename: 'flowsnap-example-com-2026-08-15',
     busy: false,
     progress: null,
@@ -74,10 +74,10 @@ describe('the total', () => {
   it('falls when a part is unchecked', () => {
     const all = deriveExportView(input()).total;
     const noImages = deriveExportView(
-      input({ options: { images: false, network: true, logs: true } }),
+      input({ options: { images: false, network: true, logs: true, react: true } }),
     ).total;
     const nothing = deriveExportView(
-      input({ options: { images: false, network: false, logs: false } }),
+      input({ options: { images: false, network: false, logs: false, react: false } }),
     ).total;
 
     expect(noImages).toBeLessThan(all);
@@ -114,10 +114,10 @@ describe('include rows', () => {
     expect(images?.ignored).not.toBeNull();
 
     const checked = deriveExportView(
-      input({ format: 'json', options: { images: true, network: true, logs: true } }),
+      input({ format: 'json', options: { images: true, network: true, logs: true, react: true } }),
     ).total;
     const unchecked = deriveExportView(
-      input({ format: 'json', options: { images: false, network: true, logs: true } }),
+      input({ format: 'json', options: { images: false, network: true, logs: true, react: true } }),
     ).total;
     expect(checked).toBe(unchecked);
   });
@@ -137,7 +137,7 @@ describe('the redaction warning', () => {
     // is this one, not a settings page nobody opened.
     expect(deriveExportView(input()).warnBodies).toBe(true);
     expect(
-      deriveExportView(input({ options: { images: true, network: false, logs: true } })).warnBodies,
+      deriveExportView(input({ options: { images: true, network: false, logs: true, react: true } })).warnBodies,
     ).toBe(false);
     // Nothing to warn about when the flow captured no network at all.
     expect(deriveExportView(input({ steps: [step()] })).warnBodies).toBe(false);
@@ -171,5 +171,67 @@ describe('while it is running', () => {
 
   it('refuses to export an empty flow', () => {
     expect(deriveExportView(input({ steps: [] })).canExport).toBe(false);
+  });
+});
+
+/**
+ * React is a part of a flow like any other, and is priced like one.
+ *
+ * The component ids live inside the step objects rather than beside them, so
+ * without this they would be counted as step text and the checkbox would move
+ * a total that never changed — which is how a user learns to distrust the
+ * numbers, and the reason the ignored-format note exists two describes above.
+ */
+describe('the React row', () => {
+  const table: FlowReact = {
+    detected: true,
+    components: {
+      cart: {
+        name: 'Cart',
+        status: 'resolved',
+        source: 'src/components/Cart.tsx',
+        line: 34,
+      },
+    },
+  };
+
+  const attributed = [
+    step({ element: { tag: 'button', cssSelector: 'button', xpath: '/button', boundingBox: null, react: { chain: ['cart'] } } }),
+  ];
+
+  it('sits beside the other parts of a recording', () => {
+    const rows = deriveExportView(input()).includes.map((row) => row.id);
+    expect(rows).toEqual(['images', 'network', 'logs', 'react']);
+  });
+
+  it('costs what the ids and the table together weigh', () => {
+    const view = deriveExportView(input({ steps: attributed, react: table }));
+    const row = view.includes.find((one) => one.id === 'react');
+
+    expect(row?.bytes).toBeGreaterThan(0);
+    // The path is in the table, so the table is most of it.
+    expect(row?.bytes).toBeGreaterThan(JSON.stringify(table.components.cart).length);
+  });
+
+  it('moves the total when it is unchecked, in every format', () => {
+    for (const format of ['zip', 'markdown', 'json'] as const) {
+      const on = deriveExportView(input({ steps: attributed, react: table, format })).total;
+      const off = deriveExportView(
+        input({
+          steps: attributed,
+          react: table,
+          format,
+          options: { images: true, network: true, logs: true, react: false },
+        }),
+      ).total;
+
+      expect(off).toBeLessThan(on);
+    }
+  });
+
+  it('says so rather than offering a switch over nothing', () => {
+    // The flow in `input()` was not recorded on a React page.
+    expect(deriveExportView(input()).includes.find((row) => row.id === 'react')?.ignored)
+      .not.toBeNull();
   });
 });

@@ -628,7 +628,11 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     // ── Component ──────────────────────────────────────────────────────
     const react = find(node, '.step__react');
     if (card.component) {
-      find(react, '.step__react-name').textContent = card.component.name;
+      // `Button · in CheckoutButton` — the same wording the Markdown uses, so
+      // the card and the export never read as two different claims.
+      find(react, '.step__react-name').textContent = card.component.within
+        ? `${card.component.name} · in ${card.component.within}`
+        : card.component.name;
       const tag = find(react, '.step__react-tag');
       if (card.component.dependency) tag.textContent = 'dependency';
       else tag.remove();

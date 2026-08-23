@@ -55,6 +55,16 @@ export interface ElementReactRef {
    * halves of one document end up disagreeing about which button was clicked.
    */
   owner?: string;
+  /**
+   * The nearest component *outside* `owner` that is the app's own feature code.
+   *
+   * Present only when it adds something the owner does not. On an app with a
+   * shared UI kit the owner is often `Button`, correctly — the click did land
+   * there — and this is the `CheckoutButton` that rendered it, which is what
+   * makes the step legible. Stamped beside `owner`, by the same rule, at the
+   * same moment. See `core/react/owner.ts`.
+   */
+  within?: string;
 }
 
 /** Why a component's source is not a resolved original file. */
@@ -251,6 +261,24 @@ export interface ExportOptions {
   images: boolean;
   network: boolean;
   logs: boolean;
+  /**
+   * Whether the flow carries which React component each step happened in, and
+   * the file it was written in.
+   *
+   * On by default, like every other part of a recording: a flow that names the
+   * component behind a click is the difference between an assistant opening one
+   * file and searching a repository, and it is the cheapest text in the
+   * payload — ids on the steps and one table at the end, not a path per step.
+   *
+   * Off strips both halves — the per-step ids and the component table — and
+   * nothing else. `Settings → React` decides whether the data is *captured* at
+   * all; this decides whether what was captured leaves the machine, which is
+   * the same split screenshots have had since exports existed.
+   *
+   * Missing on an options object stored by a build that predates it, which is
+   * why every read spreads it over a default rather than trusting the shape.
+   */
+  react: boolean;
 }
 
 export type RecordingState = 'idle' | 'recording' | 'paused';

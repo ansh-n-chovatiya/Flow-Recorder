@@ -8,7 +8,7 @@
  */
 
 import { startUrl } from '../../core/flow/index.js';
-import { attributeSteps, pruneComponents } from '../../core/react/attribution.js';
+import { attributeSteps, pruneComponents, stripReactRef } from '../../core/react/attribution.js';
 import { getSync } from '../../chrome/storage.js';
 import { readCurrentReact } from '../flows/store.js';
 import { sendToWorker } from '../../shared/messages.js';
@@ -27,7 +27,12 @@ const TIMEOUT_MS = 10_000;
  * a default that quietly dropped screenshots would be a data loss disguised as
  * a feature.
  */
-export const SEND_EVERYTHING: ExportOptions = { images: true, network: true, logs: true };
+export const SEND_EVERYTHING: ExportOptions = {
+  images: true,
+  network: true,
+  logs: true,
+  react: true,
+};
 
 /**
  * Drop the parts of a flow the user chose not to hand over.
@@ -35,9 +40,14 @@ export const SEND_EVERYTHING: ExportOptions = { images: true, network: true, log
  * Applied here rather than asked of the server: the point of the choice is that
  * the unwanted data never leaves the machine, and a flag the server honours is
  * not the same promise. Pure — see tests/send-view.test.ts.
+ *
+ * React is stripped from the step rather than from the payload, and that is what
+ * makes the guarantee hold end to end: `buildPayload` prunes the component table
+ * to the ids the steps still reference, so a step with no `react` ref keeps its
+ * component out of the table without any second switch to forget.
  */
 export function pruneSteps(steps: Step[], include: ExportOptions): Step[] {
-  if (include.images && include.network && include.logs) return steps;
+  if (include.images && include.network && include.logs && include.react) return steps;
 
   return steps.map((step) => {
     const next = { ...step };
@@ -48,8 +58,9 @@ export function pruneSteps(steps: Step[], include: ExportOptions): Step[] {
     }
     if (!include.network) delete next.networkCalls;
     if (!include.logs) delete next.consoleLogs;
-
-    return next;
+    // `stripReactRef` copies rather than mutates, for the same reason `next`
+    // does: the element is shared with the stored recording.
+    return include.react ? next : stripReactRef(next);
   });
 }
 
@@ -123,14 +134,21 @@ export async function sendFlow(
   // `final` is safe to ask for even though this path also sends archived flows:
   // the worker downgrades it whenever a recording is still running, which is the
   // only case where writing pending components off as skipped would be a lie.
-  await sendToWorker({ type: 'RESOLVE_COMPONENTS', final: true });
+  //
+  // Skipped outright when React is not being sent: resolution reads the page's
+  // bundles, and doing that work to build a table this send is about to throw
+  // away would be the one cost the switch exists to avoid.
+  if (include.react) await sendToWorker({ type: 'RESOLVE_COMPONENTS', final: true });
 
   const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL });
   const url = settings.ok ? settings.value.mcpServerUrl : DEFAULT_MCP_URL;
 
   const sending = pruneSteps(steps, include);
   // Read after the resolve, so the table carries what that last pass found.
-  const react = archivedReact ?? (await readCurrentReact(sending));
+  // Not read at all when React is switched off for this send — `sending` has no
+  // refs left, so the table would prune to nothing, but not touching storage is
+  // the clearer promise.
+  const react = include.react ? (archivedReact ?? (await readCurrentReact(sending))) : null;
   const payload = buildPayload(id, name, sending, Date.now(), react);
   const first = payload.startUrl;
 

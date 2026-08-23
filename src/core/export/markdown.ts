@@ -9,7 +9,12 @@
 import { isStableSelector } from '../selector/index.js';
 import { compactBody } from '../schema/index.js';
 import { flowHost, urlPath } from '../flow/index.js';
-import { formatSource, referencedComponentIds, stepOwner } from '../react/attribution.js';
+import {
+  formatSource,
+  referencedComponentIds,
+  stepEnclosing,
+  stepOwner,
+} from '../react/attribution.js';
 import { CAPPED_ID } from '../react/table.js';
 import type { ComponentSource, ExportOptions, FlowReact, Step } from '../../shared/types.js';
 
@@ -74,7 +79,14 @@ function appendStep(
    * once — the same rule that keeps full CSS selectors out of here.
    */
   const owner = stepOwner(step, components);
-  if (owner) lines.push(`⚛ ${owner.component.name}`);
+  if (owner) {
+    // The enclosing feature component is named alongside it, because on an app
+    // with a shared UI kit `⚛ Button` on its own is true and useless.
+    const within = stepEnclosing(step, components);
+    lines.push(
+      within ? `⚛ ${owner.component.name} · in ${within.component.name}` : `⚛ ${owner.component.name}`,
+    );
+  }
 
   if (step.value) lines.push(`↳ value: "${step.value}"`);
 
@@ -158,11 +170,17 @@ function appendComponents(lines: string[], react: FlowReact, steps: Step[]): voi
   }
 }
 
-export interface MarkdownOptions extends Omit<Partial<ExportOptions>, 'images'> {
+export interface MarkdownOptions extends Omit<Partial<ExportOptions>, 'images' | 'react'> {
   title?: string;
   /** `true`/`undefined` inlines base64; `false` omits; a strategy is explicit. */
   images?: ImageStrategy | boolean;
-  /** The flow's component table, when it was recorded on a React page. */
+  /**
+   * The flow's component table, when it was recorded on a React page.
+   *
+   * Stands in for the `react` switch the other parts have, exactly as it does in
+   * `exportToJSON`: no table means no `⚛` line and no components section, since
+   * the per-step ids are unreadable without it. The caller decides; this renders.
+   */
   react?: FlowReact;
 }
 

@@ -6,6 +6,44 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [2.4.0] — 2026-08-23
+
+React attribution becomes recording data you can decline, like console logs and
+network calls — and gets more accurate about which component it names.
+
+### Added
+
+- **React components & source is now a checkbox in the export and send
+  dialogs**, beside Screenshots, Network calls and Console logs. On by default;
+  switching it off drops the component ids from the steps and the source table
+  with them, priced in the same size estimate as every other part. The switches
+  in Settings still decide whether the data is *captured* at all — this decides
+  whether what was captured leaves the machine, which is the split screenshots
+  have always had.
+- **A step whose component is a shared UI primitive now names the feature
+  component that rendered it.** Clicking Continue lands in
+  `src/components/ui/Button.tsx`, correctly and uselessly; the step reads
+  `⚛ Button · in CheckoutButton` and both files are in the table. Only when the
+  owner is a primitive: `· in App` on every step of every flow would be true and
+  worth reading none of the time.
+- `get_flow_errors` now carries each failing step's component **source file and
+  line**, not just its name. It is the call an assistant makes first when
+  something broke, and sending it to `get_flow` to find out *where* undid the
+  point of it being the cheap one.
+
+### Fixed
+
+- **Interactions inside a shadow root are attributed.** A document listener only
+  ever sees `event.target` retargeted to the shadow host, so React mounted inside
+  a web component was invisible; and the upward walk stopped at the boundary
+  rather than crossing to the component that rendered the host. Both directions
+  now work.
+- **Switching React capture off discards what the recording already collected.**
+  It stopped new attribution and left the component ids, the pending needles and
+  the resolved table from the first ten steps in place — a half-attributed flow,
+  which is the one outcome nobody asked for. Archived flows are untouched;
+  deleting from those is what Settings → Delete all is for.
+
 ## [2.3.0] — 2026-08-23
 
 A step no longer just says *a button was clicked*. It says which React component

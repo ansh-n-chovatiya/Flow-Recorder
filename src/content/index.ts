@@ -196,7 +196,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // ── The capture setting ──────────────────────────────────────────────────────
 
-function applyCaptureSetting(enabled: boolean): void {
+function applyCaptureSetting(enabled: boolean, initial = false): void {
   if (enabled === captureReact) return;
   captureReact = enabled;
   // Chains already collected for a step that has not claimed them are dropped:
@@ -204,12 +204,20 @@ function applyCaptureSetting(enabled: boolean): void {
   // drains into the next two steps.
   if (!enabled) reactChains.clear();
   syncAgent();
+
+  // And what the recording has already stored goes with them. Stopping new
+  // attribution alone would leave a flow that is half attributed, which is the
+  // one outcome nobody asked for: the switch says "do not record this", not
+  // "record it up to here". Skipped on the initial read — that is not somebody
+  // switching it off, it is the setting already having been off, and a page
+  // load must not clear a recording running in another tab.
+  if (!enabled && !initial) void sendToWorker({ type: 'REACT_PURGE' });
 }
 
 void chrome.storage.sync
   .get({ reactCapture: REACT_SETTING_DEFAULTS.reactCapture })
   .then((stored) => {
-    applyCaptureSetting(stored.reactCapture !== false);
+    applyCaptureSetting(stored.reactCapture !== false, true);
   })
   .catch(() => {
     // Sync storage is unavailable in some profiles. The default is on, which is

@@ -57,6 +57,7 @@ function paint(): void {
   const view = deriveSendView({
     steps: session.steps,
     options: session.options,
+    react: session.react,
     busy: session.busy,
   });
 
@@ -95,19 +96,29 @@ const NOTE: Record<keyof ExportOptions, string> = {
   images: 'Saved to disk; read on demand',
   network: 'Read with the steps',
   logs: 'Read with the steps',
+  // Kept to the length of the other three: it sits beside the longest label,
+  // and the value it describes is already in that label.
+  react: 'Read with the steps',
 };
 
 function buildInclude(row: IncludeRow): HTMLElement {
   const node = clone<HTMLLabelElement>('tpl-include');
-  node.dataset.ignored = 'false';
+
+  node.dataset.ignored = String(row.ignored !== null);
 
   const input = find<HTMLInputElement>(node, '.include__input');
   input.checked = row.checked;
-  input.disabled = session?.busy ?? false;
+  input.disabled = row.ignored !== null || (session?.busy ?? false);
 
   find(node, '.include__label').textContent = row.label;
-  find(node, '.include__note').textContent = NOTE[row.id];
-  find(node, '.include__size').textContent = formatBytes(row.bytes);
+  // The ignored reason wins when there is one: "no React was recorded" is the
+  // answer to the question the note would otherwise be answering.
+  const note = find(node, '.include__note');
+  note.textContent = row.ignored ?? NOTE[row.id];
+  // The note is one line and truncates; the title is what a narrow dialog owes
+  // whoever wants the rest of the sentence.
+  note.title = note.textContent;
+  find(node, '.include__size').textContent = row.ignored ? '—' : formatBytes(row.bytes);
 
   input.addEventListener('change', () => {
     if (!session) return;

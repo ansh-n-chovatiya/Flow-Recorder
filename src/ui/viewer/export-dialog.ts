@@ -2,7 +2,7 @@
  * One export dialog — structural decision B.
  *
  * It replaces three toolbar buttons that were the same export in three file
- * formats, three include checkboxes that sat on screen permanently although they
+ * formats, the include checkboxes that sat on screen permanently although they
  * only mattered here, and a bare filename prompt. The size estimates are the
  * reason it is a dialog rather than a shorter menu: choosing ZIP over Markdown
  * used to be a guess.
@@ -57,7 +57,12 @@ interface Session {
 let session: Session | null = null;
 
 /** The include choices persist; the format and filename are per-export. */
-const DEFAULT_OPTIONS: ExportOptions = { images: true, network: true, logs: true };
+const DEFAULT_OPTIONS: ExportOptions = {
+  images: true,
+  network: true,
+  logs: true,
+  react: true,
+};
 
 function paint(): void {
   if (!session) return;
@@ -66,6 +71,7 @@ function paint(): void {
     steps: session.steps,
     format: session.format,
     options: session.options,
+    react: session.react,
     filename: session.filename,
     busy: session.busy,
     progress: session.progress,
@@ -132,7 +138,10 @@ function buildInclude(row: IncludeRow): HTMLElement {
   input.disabled = row.ignored !== null;
 
   find(node, '.include__label').textContent = row.label;
-  find(node, '.include__note').textContent = row.ignored ?? '';
+  const note = find(node, '.include__note');
+  note.textContent = row.ignored ?? '';
+  // One line, truncated; the full reason a checkbox is disabled stays reachable.
+  note.title = note.textContent;
   find(node, '.include__size').textContent = row.ignored ? '—' : formatBytes(row.bytes);
 
   input.addEventListener('change', () => {

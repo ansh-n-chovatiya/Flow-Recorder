@@ -6,6 +6,7 @@ import {
   pruneComponents,
   referencedComponentIds,
   stepOwner,
+  stripReactRef,
   summarizeComponents,
 } from '../src/core/react/attribution.js';
 import { CAPPED_ID } from '../src/core/react/table.js';
@@ -155,5 +156,48 @@ describe('countComponents', () => {
     expect(summarizeComponents(table)).toBe('4 components · 2 resolved · 1 ambiguous');
     expect(summarizeComponents({ d: table.d })).toBe('1 component');
     expect(summarizeComponents({})).toBe('');
+  });
+});
+
+/**
+ * Taking the attribution back off.
+ *
+ * Three callers need exactly this — the send prune, the JSON export and the
+ * purge the worker runs when capture is switched off — and each of them is
+ * removing data a user asked not to be kept, which is a promise worth one
+ * implementation rather than three.
+ */
+describe('stripReactRef', () => {
+  const attributed = (): Step => ({
+    type: 'click',
+    url: 'https://shop.example.com/cart',
+    timestamp: 1,
+    action: 'Clicked "Buy"',
+    element: {
+      tag: 'button',
+      cssSelector: '#buy',
+      xpath: '/button',
+      boundingBox: null,
+      react: { chain: ['cart'], owner: 'cart' },
+    },
+  });
+
+  it('removes the reference and leaves the rest of the element alone', () => {
+    const stripped = stripReactRef(attributed());
+
+    expect(stripped.element?.react).toBeUndefined();
+    expect(stripped.element?.cssSelector).toBe('#buy');
+    expect(stripped.action).toBe('Clicked "Buy"');
+  });
+
+  it('copies rather than mutates, because the step is shared with the recording', () => {
+    const original = attributed();
+    stripReactRef(original);
+    expect(original.element?.react?.chain).toEqual(['cart']);
+  });
+
+  it('hands back the very same step when there was nothing to strip', () => {
+    const plain = { type: 'navigate', url: 'https://x.test', timestamp: 1, action: 'Went', title: 'x' } as Step;
+    expect(stripReactRef(plain)).toBe(plain);
   });
 });

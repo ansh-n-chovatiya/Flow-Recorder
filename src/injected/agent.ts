@@ -229,7 +229,7 @@ import {
   type ComponentFn,
   collectChain,
   hasReactRoot,
-  isElement,
+  interactionTarget,
 } from '../core/react/fiber.js';
 import { componentId, nameOnlyId } from '../core/react/id.js';
 import { buildNeedle } from '../core/react/needle.js';
@@ -419,8 +419,11 @@ function abandonReact(): void {
 function onReactInteraction(event: Event): void {
   if (!reactActive || reactGaveUp) return;
 
-  const target = event.target;
-  if (!isElement(target)) return;
+  // The composed target, not `event.target`: anything inside a shadow root is
+  // retargeted to its host by the time a document listener sees it, and React
+  // mounted in there would be invisible.
+  const target = interactionTarget(event);
+  if (!target) return;
 
   const result = chainFor(target);
 
@@ -455,8 +458,9 @@ function onReactInteraction(event: Event): void {
 /** Warms the chain so the click that follows pays nothing for it. */
 function onReactPointerDown(event: Event): void {
   if (!reactActive || reactGaveUp) return;
-  const target = event.target;
-  if (isElement(target)) chainFor(target);
+  // Warmed against the same element the click will ask for, or the cache misses.
+  const target = interactionTarget(event);
+  if (target) chainFor(target);
 }
 
 const REACT_EVENTS = ['click', 'input', 'change'] as const;

@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { buildPayload } from '../src/features/mcp/send.js';
+import { buildPayload, pruneSteps } from '../src/features/mcp/send.js';
 import { exportToJSON } from '../src/core/export/json.js';
 import { CAPPED_ID } from '../src/core/react/table.js';
 import type { ComponentSource, FlowReact, Step } from '../src/shared/types.js';
@@ -160,5 +160,82 @@ describe('the JSON export says the same thing as the payload', () => {
   it('omits the key entirely for a flow that is not React', () => {
     const json = JSON.parse(exportToJSON([step(null)])) as Record<string, unknown>;
     expect('react' in json).toBe(false);
+  });
+});
+
+/**
+ * The opt-out.
+ *
+ * React attribution is recording data like console logs and network calls, and
+ * it is switched off the same way — a checkbox beside theirs, applied here so
+ * that what the user declined never reaches the wire. These are the tests that
+ * say the switch is real rather than a flag someone downstream is trusted with.
+ */
+describe('switching React off', () => {
+  const OFF = { images: true, network: true, logs: true, react: false };
+  const ON = { images: true, network: true, logs: true, react: true };
+
+  it('takes the component ids off the steps', () => {
+    const [sent] = pruneSteps([step(['cart'])], OFF);
+    expect(sent.element?.react).toBeUndefined();
+  });
+
+  it('leaves the recording it was given untouched', () => {
+    // The step objects are shared with what is in storage: stripping through
+    // one would delete the attribution from the recording itself.
+    const original = step(['cart']);
+    pruneSteps([original], OFF);
+    expect(original.element?.react?.chain).toEqual(['cart']);
+  });
+
+  it('drops the table with them, because nothing references it any more', () => {
+    const sending = pruneSteps([step(['cart'])], OFF);
+    const payload = buildPayload(
+      'flow-1',
+      'Checkout',
+      sending,
+      NOW,
+      react({ cart: resolved('Cart', 'src/components/Cart.tsx') }),
+    );
+
+    expect(payload.react).toBeUndefined();
+    expect(JSON.stringify(payload)).not.toContain('src/components/Cart.tsx');
+  });
+
+  it('leaves console logs and network calls exactly where they were', () => {
+    const one = step(['cart'], {
+      consoleLogs: [{ level: 'error', args: ['boom'], timestamp: NOW }],
+      networkCalls: [
+        {
+          method: 'POST',
+          url: 'https://api.example.com/cart',
+          requestHeaders: {},
+          requestBody: null,
+          status: 500,
+          responseHeaders: {},
+          responseBody: null,
+          durationMs: 12,
+          timestamp: NOW,
+        },
+      ],
+    });
+
+    const [sent] = pruneSteps([one], OFF);
+
+    expect(sent.consoleLogs).toHaveLength(1);
+    expect(sent.networkCalls).toHaveLength(1);
+    expect(sent.screenshot).toBe(one.screenshot);
+  });
+
+  it('changes nothing at all when it is left on', () => {
+    expect(pruneSteps([step(['cart'])], ON)[0].element?.react?.chain).toEqual(['cart']);
+  });
+
+  it('keeps the ids out of the JSON export too, table or no table', () => {
+    // The exporters take the table's absence as the switch, so a step's ids go
+    // with it — they index a table the reader does not have.
+    const json = JSON.parse(exportToJSON([step(['cart'])], {}));
+    expect(json.steps[0].element.react).toBeUndefined();
+    expect(json.react).toBeUndefined();
   });
 });

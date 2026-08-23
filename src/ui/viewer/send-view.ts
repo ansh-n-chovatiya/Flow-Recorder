@@ -5,8 +5,8 @@
  * The export dialog already answers "which parts of this flow do you want?" —
  * sending answered it for you, with everything, and a thirty-step recording of
  * a page that talks to an API is mostly network bodies nobody asked to read.
- * So the same three switches, measured the way *this* destination charges for
- * them: an upload in bytes, and a context cost in tokens.
+ * So the same switches, measured the way *this* destination charges for them:
+ * an upload in bytes, and a context cost in tokens.
  *
  * Deliberately no format cards and no filename. The wire format is fixed by the
  * server and the id is assigned by it, so a choice there would be a decoration.
@@ -14,8 +14,14 @@
  * Pure — see tests/send-view.test.ts.
  */
 
-import type { ExportOptions, Step } from '../../shared/types.js';
-import { INCLUDE_LABEL, measure, type IncludeRow, type Parts } from './export-view.js';
+import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
+import {
+  INCLUDE_LABEL,
+  measure,
+  NO_REACT_NOTE,
+  type IncludeRow,
+  type Parts,
+} from './export-view.js';
 
 /**
  * What a send carries before anyone touches the switches.
@@ -31,11 +37,22 @@ import { INCLUDE_LABEL, measure, type IncludeRow, type Parts } from './export-vi
  *
  * Here rather than in the dialog so the default is a tested fact.
  */
-export const SEND_DEFAULTS: ExportOptions = { images: true, network: false, logs: false };
+export const SEND_DEFAULTS: ExportOptions = {
+  images: true,
+  network: false,
+  logs: false,
+  // On, with the screenshots rather than with the bodies. It is the one part
+  // that makes the flow *actionable* — the assistant opens the file instead of
+  // searching for the component by name — and it is ids plus one table, which
+  // is a rounding error next to a single response body.
+  react: true,
+};
 
 export interface SendInput {
   steps: Step[];
   options: ExportOptions;
+  /** The flow's component table, so the React row can price itself. */
+  react?: FlowReact;
   /** True while the POST is in flight. */
   busy: boolean;
 }
@@ -65,7 +82,8 @@ function uploadBytes(parts: Parts, options: ExportOptions): number {
     parts.base +
     (options.images ? parts.screenshotsInline : 0) +
     (options.network ? parts.network : 0) +
-    (options.logs ? parts.logs : 0)
+    (options.logs ? parts.logs : 0) +
+    (options.react ? parts.react : 0)
   );
 }
 
@@ -78,12 +96,19 @@ function uploadBytes(parts: Parts, options: ExportOptions): number {
  * is already free.
  */
 function contextBytes(parts: Parts, options: ExportOptions): number {
-  return parts.base + (options.network ? parts.network : 0) + (options.logs ? parts.logs : 0);
+  return (
+    parts.base +
+    (options.network ? parts.network : 0) +
+    (options.logs ? parts.logs : 0) +
+    // Counted, unlike screenshots: the component table is read back with the
+    // steps, so it is context the assistant pays for on every turn.
+    (options.react ? parts.react : 0)
+  );
 }
 
 export function deriveSendView(input: SendInput): SendView {
   const { steps, options, busy } = input;
-  const parts = measure(steps);
+  const parts = measure(steps, input.react);
 
   const includes: IncludeRow[] = [
     {
@@ -110,9 +135,19 @@ export function deriveSendView(input: SendInput): SendView {
       bytes: parts.logs,
       ignored: null,
     },
+    {
+      id: 'react',
+      label: INCLUDE_LABEL.react,
+      checked: options.react,
+      bytes: parts.react,
+      ignored: parts.react === 0 ? NO_REACT_NOTE : null,
+    },
   ];
 
-  const bare = !options.images && !options.network && !options.logs;
+  // A React switch left on over a flow that recorded none is still a bare send:
+  // the note describes what Claude will get, not which boxes are ticked.
+  const bare =
+    !options.images && !options.network && !options.logs && (!options.react || parts.react === 0);
 
   return {
     includes,

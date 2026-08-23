@@ -6,12 +6,12 @@
  */
 
 import { compactBody } from '../schema/index.js';
-import { attributeSteps, pruneComponents } from '../react/attribution.js';
+import { attributeSteps, pruneComponents, stripReactRef } from '../react/attribution.js';
 import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
 
 export const EXPORT_SCHEMA_VERSION = '1.0';
 
-export interface JsonExportOptions extends Partial<ExportOptions> {
+export interface JsonExportOptions extends Omit<Partial<ExportOptions>, 'react'> {
   /**
    * Per-step relative image path, for the ZIP export. When given, `screenshot`
    * becomes the filename rather than a placeholder string.
@@ -23,6 +23,12 @@ export interface JsonExportOptions extends Partial<ExportOptions> {
    * Pruned to the steps being written, for the same reason the payload is: a
    * flow with half its steps deleted must not still carry the source paths of
    * the code behind them.
+   *
+   * This stands in for the `react` switch the other parts have, because it is
+   * strictly stronger: the caller that turns React off simply does not hand the
+   * table over, and a step's component ids are dropped along with it below. A
+   * flag *and* a table would be two things to keep in agreement, and the ids
+   * are worthless without the table that says what they mean.
    */
   react?: FlowReact;
 }
@@ -58,6 +64,11 @@ export function exportToJSON(steps: Step[], options: JsonExportOptions = {}): st
         // Editor state, not flow data — never leaves the extension.
         delete out.screenshotOriginal;
         delete out.highlightBox;
+
+        // Component ids with no table to read them against are bytes that
+        // answer nothing, whether React was switched off for this export or the
+        // resolver never found anything worth keeping.
+        if (!carries) out.element = stripReactRef(step).element;
 
         if (network === false) {
           delete out.networkCalls;

@@ -11,8 +11,9 @@
  */
 
 import { defaultFilename, sanitizeFilename } from '../../core/flow/index.js';
+import { pruneComponents } from '../../core/react/attribution.js';
 import { EXTENSION, FORMAT_NAME, type ExportFormat } from '../../features/export/formats.js';
-import type { ExportOptions, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
 import type { IconName } from '../icons.js';
 
 export type { ExportFormat };
@@ -21,6 +22,8 @@ export interface ExportInput {
   steps: Step[];
   format: ExportFormat;
   options: ExportOptions;
+  /** The flow's component table, so the React row can price itself. */
+  react?: FlowReact;
   /** What the user has typed, before sanitising. */
   filename: string;
   /** True while the export is being built. */
@@ -92,6 +95,14 @@ export interface Parts {
   screenshotsInline: number;
   network: number;
   logs: number;
+  /**
+   * Component ids on the steps plus the table they index into.
+   *
+   * Counted apart from `base` even though the ids live inside the step objects,
+   * because a checkbox whose total never moves is one users learn to distrust —
+   * the same reason the ignored-format note exists.
+   */
+  react: number;
 }
 
 /**
@@ -103,18 +114,31 @@ export interface Parts {
  * ZIP deflates the text, so the figure shown is an upper bound on everything
  * except the images, which are already compressed and pass through as they are.
  */
-export function measure(steps: Step[]): Parts {
+export function measure(steps: Step[], react?: FlowReact): Parts {
   let base = 0;
   let screenshots = 0;
   let screenshotsInline = 0;
   let network = 0;
   let logs = 0;
+  // The table, pruned the way every exporter prunes it, so the figure is what
+  // this flow would actually write rather than what the recording holds.
+  let reactBytes = react
+    ? JSON.stringify({ ...react, components: pruneComponents(steps, react.components) }).length
+    : 0;
 
   for (const step of steps) {
     const { screenshot, screenshotOriginal, networkCalls, consoleLogs, ...rest } = step;
     void screenshotOriginal;
 
-    base += JSON.stringify(rest).length;
+    if (rest.element?.react) {
+      const refBytes = JSON.stringify(rest.element.react).length;
+      reactBytes += refBytes;
+      // Charged to React, not to the step text it is nested inside — otherwise
+      // switching React off would leave `base` overstating what is left.
+      base += JSON.stringify(rest).length - refBytes;
+    } else {
+      base += JSON.stringify(rest).length;
+    }
 
     if (screenshot) {
       screenshots += decodedBytes(screenshot);
@@ -124,7 +148,7 @@ export function measure(steps: Step[]): Parts {
     if (consoleLogs?.length) logs += JSON.stringify(consoleLogs).length;
   }
 
-  return { base, screenshots, screenshotsInline, network, logs };
+  return { base, screenshots, screenshotsInline, network, logs, react: reactBytes };
 }
 
 /**
@@ -137,15 +161,16 @@ export function measure(steps: Step[]): Parts {
 function bytesFor(parts: Parts, format: ExportFormat, options: ExportOptions): number {
   const network = options.network ? parts.network : 0;
   const logs = options.logs ? parts.logs : 0;
+  const react = options.react ? parts.react : 0;
 
   switch (format) {
     case 'zip':
       // Markdown and JSON both go in the archive, so the text is counted twice.
-      return parts.base * 2 + network + logs + (options.images ? parts.screenshots : 0);
+      return (parts.base + react) * 2 + network + logs + (options.images ? parts.screenshots : 0);
     case 'markdown':
-      return parts.base + network + logs + (options.images ? parts.screenshotsInline : 0);
+      return parts.base + react + network + logs + (options.images ? parts.screenshotsInline : 0);
     case 'json':
-      return parts.base + network + logs;
+      return parts.base + react + network + logs;
   }
 }
 
@@ -161,16 +186,25 @@ const FORMAT_ICON: Record<ExportFormat, IconName> = {
   json: 'braces',
 };
 
+/**
+ * Said when the flow has no components to offer, in both dialogs.
+ *
+ * Short on purpose: it shares a row with the longest label of the four, so a
+ * sentence here is one that gets truncated.
+ */
+export const NO_REACT_NOTE = 'None in this flow';
+
 /** Shared with the send dialog, so one part is never named two things. */
 export const INCLUDE_LABEL: Record<keyof ExportOptions, string> = {
   images: 'Screenshots',
   network: 'Network calls',
   logs: 'Console logs',
+  react: 'React components & source',
 };
 
 export function deriveExportView(input: ExportInput): ExportView {
   const { steps, format, options, busy, progress } = input;
-  const parts = measure(steps);
+  const parts = measure(steps, input.react);
 
   const formats: FormatCard[] = (['zip', 'markdown', 'json'] as const).map((id) => ({
     id,
@@ -204,6 +238,16 @@ export function deriveExportView(input: ExportInput): ExportView {
       checked: options.logs,
       bytes: parts.logs,
       ignored: null,
+    },
+    {
+      id: 'react',
+      label: INCLUDE_LABEL.react,
+      checked: options.react,
+      bytes: parts.react,
+      // Said here rather than by hiding the row: a switch that vanishes on some
+      // flows is one nobody can find when they want it, and "this page was not
+      // React" is a fact about the recording worth reading.
+      ignored: parts.react === 0 ? NO_REACT_NOTE : null,
     },
   ];
 

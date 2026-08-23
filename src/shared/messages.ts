@@ -86,6 +86,24 @@ export interface ResolveComponents {
   final: boolean;
 }
 
+/**
+ * Forget every React fact this recording has collected.
+ *
+ * Sent when capture is switched off. Stopping *new* attribution is only half of
+ * what that switch promises: a recording that has been running for ten steps
+ * already holds component ids on those steps, needles waiting to be searched
+ * and a table of resolved paths, and leaving them behind would mean the flow
+ * still ships the React data the user has just asked it not to keep.
+ *
+ * Handled in the worker rather than the content script because `recordedSteps`
+ * has exactly one writer, and this has to be one of its writes rather than a
+ * read-modify-write racing it. Archived flows are untouched: they are finished
+ * records, and deleting from them is what `Settings → Delete all` is for.
+ */
+export interface ReactPurge {
+  type: 'REACT_PURGE';
+}
+
 /** React facts about the page, recorded once when the agent first detects it. */
 export interface ReactMeta {
   type: 'REACT_META';
@@ -132,6 +150,7 @@ export type WorkerRequest =
   | Precapture
   | AnnotateScreenshot
   | ReactMeta
+  | ReactPurge
   | ReactScripts
   | ResolveComponents
   | GetSteps
@@ -162,6 +181,7 @@ export interface ResponseByType {
   PRECAPTURE: OkResponse;
   ANNOTATE_SCREENSHOT: AnnotateScreenshotResponse;
   REACT_META: OkResponse;
+  REACT_PURGE: OkResponse;
   REACT_SCRIPTS: OkResponse;
   RESOLVE_COMPONENTS: OkResponse;
   GET_STEPS: GetStepsResponse;

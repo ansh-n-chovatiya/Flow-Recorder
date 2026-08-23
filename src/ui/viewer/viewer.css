@@ -1317,13 +1317,26 @@
 }
 
 .include__label {
+  /* Never shrinks, so the note gives way instead of the thing being named. */
+  flex: none;
   font-size: var(--text-body);
 }
 
-/** Why a checkbox is doing nothing, said where the checkbox is. */
+/**
+ * Why a checkbox is doing nothing, said where the checkbox is.
+ *
+ * One line, always. These rows are read as a column — four labels, four sizes,
+ * scanned down rather than across — and a note that wraps makes its row taller
+ * than the three around it and drags its own size figure out of line with
+ * theirs. A long label ("React components & source") is enough to trigger it, so
+ * the note truncates instead and carries the full text in its `title`.
+ */
 .include__note {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: var(--text-meta);
   color: var(--fg-faint);
 }

@@ -24,10 +24,27 @@ export interface ExportRequest {
   options: ExportOptions;
   /** Without an extension; this adds the one the format requires. */
   filename: string;
-  /** The flow's component table, absent when the page was not React. */
+  /**
+   * The flow's component table, absent when the page was not React.
+   *
+   * Held back by `includedTable` when `options.react` is off, so the exporters
+   * see the same "no table" they see for a plain page — which is also what
+   * drops the component ids from the steps.
+   */
   react?: FlowReact;
   /** Called as each screenshot is packed, so a large ZIP is not a frozen tab. */
   onProgress?: (done: number, total: number) => void;
+}
+
+/**
+ * The component table this export is allowed to carry.
+ *
+ * One function rather than a check at each of the three call sites, because
+ * "Markdown honoured the switch and the JSON beside it in the same ZIP did not"
+ * is exactly the bug three call sites produce.
+ */
+function includedTable(request: ExportRequest): FlowReact | undefined {
+  return request.options.react ? request.react : undefined;
 }
 
 function download(filename: string, blob: Blob): void {
@@ -52,7 +69,8 @@ function breathe(): Promise<void> {
 }
 
 async function buildZip(request: ExportRequest): Promise<Blob> {
-  const { steps, options, title, onProgress, react } = request;
+  const { steps, options, title, onProgress } = request;
+  const react = includedTable(request);
 
   const encoder = new TextEncoder();
   const files: ZipEntry[] = [];
@@ -105,7 +123,8 @@ function hasImage(step: Step): boolean {
 }
 
 export async function exportFlow(request: ExportRequest): Promise<Result<string>> {
-  const { format, options, title, react } = request;
+  const { format, options, title } = request;
+  const react = includedTable(request);
   // Numbered on the way out, so a flow with deleted steps exports 1, 2, 3 rather
   // than the capture-time 1, 2, 4.
   const steps = renumber(request.steps);

@@ -6,6 +6,7 @@ import {
   getDisplayName,
   getFiber,
   hasReactRoot,
+  interactionTarget,
   unwrapSettledLazy,
   type Fiber,
 } from '../src/core/react/fiber.js';
@@ -160,5 +161,73 @@ describe('hasReactRoot', () => {
   it('is false on a page with no React anywhere', () => {
     document.body.innerHTML = '<div id="root"><p>plain</p></div>';
     expect(hasReactRoot(document)).toBe(false);
+  });
+});
+
+/**
+ * Shadow roots.
+ *
+ * Two things break at the boundary and both are fixed the same way. `parentElement`
+ * is null on the top node inside a shadow root, so an upward walk stops one hop
+ * short of the component that rendered the host; and a document-level listener
+ * only ever sees `event.target` retargeted *to* that host, so React mounted
+ * inside the root is invisible from the outside.
+ */
+describe('crossing a shadow boundary', () => {
+  it('walks out of a shadow root to the component that rendered the host', () => {
+    const host = document.createElement('my-widget');
+    document.body.append(host);
+    const root = host.attachShadow({ mode: 'open' });
+    const inner = document.createElement('button');
+    root.append(inner);
+
+    // React is outside: the host is what it rendered, and the button is the web
+    // component's own markup, which no fiber points at.
+    const f = fiber(function Toolbar() {});
+    attach(host, f);
+
+    expect(findNearestComponentFiber(inner)).toBe(f);
+  });
+
+  it('finds React that is mounted inside the shadow root', () => {
+    const host = document.createElement('my-widget');
+    document.body.append(host);
+    const root = host.attachShadow({ mode: 'open' });
+    const inner = document.createElement('button');
+    root.append(inner);
+
+    const f = fiber(function Toolbar() {});
+    attach(inner, f);
+
+    expect(findNearestComponentFiber(inner)).toBe(f);
+  });
+
+  it('takes the composed target, not the host the event was retargeted to', () => {
+    const host = document.createElement('my-widget');
+    document.body.append(host);
+    const root = host.attachShadow({ mode: 'open' });
+    const inner = document.createElement('button');
+    root.append(inner);
+
+    let seen: Element | null = null;
+    document.addEventListener('click', (event) => {
+      // What a document listener is handed, and why `event.target` is not enough.
+      expect(event.target).toBe(host);
+      seen = interactionTarget(event);
+    });
+    inner.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+
+    expect(seen).toBe(inner);
+  });
+
+  it('falls back to the target for an event with no composed path', () => {
+    const el = document.createElement('button');
+    // A synthetic event, as a test harness or an old browser might dispatch it.
+    const event = { target: el } as unknown as Event;
+    expect(interactionTarget(event)).toBe(el);
+  });
+
+  it('is null for an event on nothing that is an element', () => {
+    expect(interactionTarget({ target: null } as unknown as Event)).toBeNull();
   });
 });
