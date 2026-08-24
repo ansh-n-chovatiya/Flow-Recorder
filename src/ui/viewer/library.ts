@@ -167,6 +167,15 @@ export function mountLibrary(app: App, onSaveCurrent: () => void): { paint: () =
 
     await app.reload();
 
+    // No steps means this row was a ghost: a delete that failed halfway removed
+    // them and left the index entry behind, and what has just been swept up is
+    // the entry alone. There is nothing to put back, so nothing is offered —
+    // an undo that restores an unopenable row is a promise that breaks itself.
+    if (removed.value.steps.length === 0) {
+      showToast({ message: `Removed “${row.name}”.` });
+      return;
+    }
+
     // Undoable rather than merely confirmed: the flow's bytes are already back
     // in the quota, and putting them where they were is a write we can make.
     showToast({

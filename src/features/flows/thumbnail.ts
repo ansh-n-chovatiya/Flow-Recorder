@@ -18,6 +18,19 @@ const HEIGHT = 80;
 const QUALITY = 0.5;
 
 /**
+ * The picture a flow's thumbnail is made of: the first step that has one.
+ *
+ * Exported because the store has to answer "is this flow's thumbnail still of
+ * the right picture?" before deciding whether to redraw it, and it cannot
+ * answer that from the step count — annotating step 1, or importing an image
+ * over it, changes this without changing the count. Keeping the rule here means
+ * the question and the drawing cannot drift apart.
+ */
+export function thumbnailSource(steps: Step[]): string | null {
+  return steps.find((step) => Boolean(step.screenshot))?.screenshot ?? null;
+}
+
+/**
  * Redraw the first available screenshot at thumbnail size.
  *
  * Resolves to `null` rather than rejecting for every failure — a flow that
@@ -25,7 +38,7 @@ const QUALITY = 0.5;
  * to a placeholder tile.
  */
 export function makeThumbnail(steps: Step[]): Promise<string | null> {
-  const source = steps.find((step) => Boolean(step.screenshot))?.screenshot;
+  const source = thumbnailSource(steps);
   if (!source) return Promise.resolve(null);
 
   return new Promise((resolve) => {

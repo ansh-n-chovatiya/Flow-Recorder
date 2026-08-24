@@ -10,6 +10,7 @@
 import { MAX_COMPONENTS_PER_FLOW } from '../../shared/constants.js';
 import type { CapturedComponent } from '../../shared/messages.js';
 import type { ComponentNeedle, ComponentSource } from '../../shared/types.js';
+import { UNSETTLED_LAZY_NAME, isPlaceholderId } from './id.js';
 
 /** Id under which the table records that it stopped accepting new components. */
 export const CAPPED_ID = '__capped__';
@@ -44,10 +45,22 @@ function describeMissingNeedle(component: CapturedComponent): ComponentSource {
       detail: 'The component source is too short to search for without false matches.',
     };
   }
+  // Only a lazy component may be *called* a lazy component. Everything else
+  // React exposes no function for — a raw context object, a `Suspense`
+  // boundary — reached this sentence too and was explained to the reader as a
+  // chunk that had not arrived, which is a fabricated cause for a real gap.
+  if (component.name === UNSETTLED_LAZY_NAME) {
+    return {
+      name: component.name,
+      status: 'not-found',
+      detail: 'A lazy component that had not finished loading when it was interacted with.',
+    };
+  }
+
   return {
     name: component.name,
-    status: 'not-found',
-    detail: 'A lazy component that had not finished loading when it was interacted with.',
+    status: 'skipped',
+    detail: 'React exposed no function for this component, so there was nothing to search for.',
   };
 }
 
@@ -79,11 +92,16 @@ export function mergeComponents(
       break;
     }
 
-    if (component.debugSource?.source) {
+    if (component.debugSource?.source && !isPlaceholderId(component.id)) {
       // A development build recorded the JSX position itself. This is where the
       // element was *written* — a position in the parent's file — which is a
       // different fact from where the component is defined, but it is free and
       // it points at real code.
+      //
+      // Never under a placeholder id (`isPlaceholderId`). Those are shared by
+      // every unnamed component in the flow, and the first row wins here, so one
+      // `_debugSource` would be published as the location of all of them — a
+      // confidently wrong file, which is the one outcome worse than no file.
       const { source, line, column } = component.debugSource;
       table[component.id] = {
         name: component.name,

@@ -88,3 +88,43 @@ describe('compactBody', () => {
     expect(compactBody(undefined)).toBeUndefined();
   });
 });
+
+/**
+ * A body the capture cut short parses no better than a malformed one — the flag
+ * is the only thing that says which failure it is.
+ */
+describe('a body truncated at capture', () => {
+  // Long enough that the slice genuinely cuts it mid-object, as the capture cap
+  // does — a fixture shorter than the cut would parse cleanly and prove nothing.
+  const raw = JSON.stringify({ items: Array.from({ length: 4000 }, (_, i) => ({ id: i, qty: 2 })) });
+  const prefix = raw.slice(0, 51_200);
+
+  it('was mislabelled as non-JSON when nothing said it had been cut', () => {
+    const out = compactBody(prefix) as string;
+    expect(out).toContain('[non-JSON');
+  });
+
+  it('reads the shape off the repaired prefix once it is told', () => {
+    const out = compactBody(prefix, { truncated: true, bytes: raw.length }) as string;
+    expect(out).not.toContain('non-JSON');
+    expect(out).toContain('truncated at capture');
+    // The schema, recovered from a body that ends mid-object.
+    expect(out).toContain('items');
+  });
+
+  it('reports the size the server sent, not the slice that survived', () => {
+    const out = compactBody(prefix, { truncated: true, bytes: raw.length }) as string;
+    expect(out).toContain(`${(raw.length / 1024).toFixed(1)}KB`);
+    expect(out).not.toContain(`${(prefix.length / 1024).toFixed(1)}KB`);
+  });
+
+  it('says so plainly when even the repair cannot be read', () => {
+    const out = compactBody('{"a": "unterminated', { truncated: true, bytes: 90_000 }) as string;
+    expect(out).toContain('truncated at capture');
+    expect(out).not.toContain('non-JSON');
+  });
+
+  it('leaves a short, complete body exactly as it is', () => {
+    expect(compactBody('{"a":1}')).toBe('{"a":1}');
+  });
+});

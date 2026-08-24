@@ -55,7 +55,15 @@ function download(filename: string, blob: Blob): void {
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(objectUrl);
+  /*
+   * Revoked on the next task, not on this one.
+   *
+   * The click only *starts* the download; for a large archive the browser is
+   * still reading the blob when the synchronous revoke pulled it out from under
+   * it, and the file arrived aborted or zero-byte — while `exportFlow` returned
+   * `ok()` and the dialog toasted "Saved …".
+   */
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 /**
@@ -112,7 +120,7 @@ async function buildZip(request: ExportRequest): Promise<Blob> {
 
   files.push({
     name: 'flow.json',
-    data: encoder.encode(exportToJSON(steps, { ...options, imageNames, react })),
+    data: encoder.encode(exportToJSON(steps, { ...options, imageNames, react, title })),
   });
 
   return createZip(files);
@@ -147,7 +155,7 @@ export async function exportFlow(request: ExportRequest): Promise<Result<string>
     } else {
       download(
         filename,
-        new Blob([exportToJSON(steps, { ...options, react })], {
+        new Blob([exportToJSON(steps, { ...options, react, title })], {
           type: 'application/json',
         }),
       );

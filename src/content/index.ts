@@ -14,6 +14,7 @@ import {
   getElementText,
   mayNavigate,
 } from '../core/describe/index.js';
+import { redactUrl } from '../core/redact/index.js';
 import { generateSelector, generateXPath } from '../core/selector/index.js';
 import {
   AGENT_MESSAGE_SOURCE,
@@ -25,6 +26,7 @@ import {
   REACT_BUFFER_TTL_MS,
   REACT_CHAIN_TIMEOUT_MS,
   REACT_SETTING_DEFAULTS,
+  SPA_SETTLE_MS,
 } from '../shared/constants.js';
 import { createChainBuffer } from '../core/react/chains.js';
 import {
@@ -120,6 +122,14 @@ window.addEventListener('message', (event: MessageEvent<AgentMessage>) => {
       responseBody: data.responseBody,
       durationMs: data.durationMs,
       timestamp: data.timestamp,
+      // Built field by field, so anything not named here is dropped — which is
+      // what happened to the truncation flags until they were listed.
+      ...(data.requestBodyTruncated
+        ? { requestBodyTruncated: true, requestBodyBytes: data.requestBodyBytes }
+        : {}),
+      ...(data.responseBodyTruncated
+        ? { responseBodyTruncated: true, responseBodyBytes: data.responseBodyBytes }
+        : {}),
     });
   }
 });
@@ -154,6 +164,12 @@ chrome.runtime.onMessage.addListener((message: ContentRequest, _sender, sendResp
     case 'CLEAR_STEPS':
       clearBuffers();
       break;
+
+    case 'GET_SCROLL':
+      // Answered whether or not this tab is recording: the worker only asks the
+      // tab it is about to photograph, and refusing would cost the correction.
+      sendResponse({ x: window.scrollX, y: window.scrollY });
+      return true;
   }
 
   return;
@@ -188,9 +204,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
     const wasRecording = isRecording && !isPaused;
     applyState(active, paused);
 
+    // A finished recording releases the tab to log itself again in the next one.
+    if (!active) loggedNavigation = false;
+
     // Entering a live recording in a tab that was idle: log the page, so the
-    // flow shows where the user went rather than jumping between contexts.
-    if (active && !paused && !wasRecording) captureNavigationStep();
+    // flow shows where the user went rather than jumping between contexts. Only
+    // the tab on screen — this listener runs in every open tab at once, and the
+    // rest of them are not somewhere the user just went. They log on arrival.
+    if (active && !paused && !wasRecording && isOnScreen() && !loggedNavigation) {
+      captureNavigationStep();
+    }
   });
 });
 
@@ -242,18 +265,112 @@ chrome.storage.onChanged.addListener((changes, area) => {
 void chrome.storage.local.get(['recordingActive', 'recordingPaused']).then((state) => {
   if (!state.recordingActive) return;
   applyState(true, Boolean(state.recordingPaused));
-  if (!isPaused) captureNavigationStep();
+  // Gated on visibility for the same reason as the storage listener below: a
+  // page that loads in a background tab — a middle-click, a `target=_blank`, a
+  // prerender Chrome started on its own — has not been navigated to yet. It
+  // logs itself when the user actually looks at it.
+  if (!isPaused && isOnScreen()) captureNavigationStep();
 });
 
+/**
+ * Whether the user is actually looking at this tab.
+ *
+ * Every tab in the browser runs this content script, and extension storage is
+ * shared by all of them — so anything that reacts to a recording starting fires
+ * in all of them at once. Without this check, pressing Start wrote one
+ * "Navigated to …" step per open tab, in the same millisecond, each carrying a
+ * screenshot of whichever tab was on screen (`captureVisibleTab` can only
+ * photograph the visible one). The recording opened with a burst of navigations
+ * the user never made, to pages they had open hours ago.
+ *
+ * `visibilityState` is also 'hidden' while a page is prerendering, which is what
+ * keeps Chrome's own speculative loads — google.com/search/warmup.html and
+ * friends — out of the flow.
+ */
+function isOnScreen(): boolean {
+  return document.visibilityState === 'visible';
+}
+
+/**
+ * Whether this document has already contributed its navigation step to the
+ * recording that is currently live.
+ *
+ * Scoped to the document, so an ordinary navigation within the tab starts over
+ * with a fresh script and logs the new page. Its job is to stop one tab from
+ * logging itself twice — once on becoming visible and once from a state change
+ * that arrives while it is already on screen.
+ */
+let loggedNavigation = false;
+
 function captureNavigationStep(): void {
+  loggedNavigation = true;
+  lastUrl = window.location.href;
   requestScreenshotAndSave({
     type: 'navigate',
-    url: window.location.href,
+    url: redactUrl(window.location.href),
     title: document.title,
     timestamp: Date.now(),
     action: `Navigated to ${document.title || window.location.href}`,
   });
 }
+
+/**
+ * The URL this document has already been recorded at.
+ *
+ * A single-page app moves between routes by `pushState`, which loads no
+ * document, starts no content script and fires no `popstate` — so a React flow,
+ * which is most of what FlowSnap records, came out as a run of clicks with
+ * nothing to say the page had changed underneath them. This is what notices.
+ */
+let lastUrl = window.location.href;
+
+/**
+ * Record a route change the app made for itself.
+ *
+ * Deduplicated by URL, because a router can announce the same route more than
+ * once, and delayed by a beat, because the URL changes before the framework has
+ * rendered what the URL now means — capturing immediately photographs the route
+ * the user has just left.
+ */
+function captureRouteChange(): void {
+  if (!isRecording || isPaused || !isOnScreen()) return;
+  if (window.location.href === lastUrl) return;
+  lastUrl = window.location.href;
+
+  setTimeout(() => {
+    if (!isRecording || isPaused || !isOnScreen()) return;
+    captureNavigationStep();
+  }, SPA_SETTLE_MS);
+}
+
+/**
+ * `navigation` is the only event that fires for a `pushState`, and Chrome has
+ * had it since 102 — well under the manifest's floor of 116. `popstate` and
+ * `hashchange` are the fallback for anything that does not, and cover Back,
+ * Forward and hash routers on their own.
+ */
+const navigationApi = (window as { navigation?: EventTarget }).navigation;
+if (navigationApi) {
+  navigationApi.addEventListener('navigatesuccess', captureRouteChange);
+} else {
+  window.addEventListener('popstate', captureRouteChange);
+  window.addEventListener('hashchange', captureRouteChange);
+}
+
+/**
+ * A tab the user switches to mid-recording logs itself the moment it comes on
+ * screen.
+ *
+ * This is what actually makes a recording follow the user across tabs: the tab
+ * was told to record when Start was pressed, but stayed silent because nobody
+ * was looking at it. Arriving is the event worth recording, and it lands in the
+ * flow in the order it happened, with a screenshot of the right page.
+ */
+document.addEventListener('visibilitychange', () => {
+  if (!isRecording || isPaused) return;
+  if (!isOnScreen() || loggedNavigation) return;
+  captureNavigationStep();
+});
 
 // ── Capture ──────────────────────────────────────────────────────────────────
 
@@ -298,7 +415,7 @@ document.addEventListener(
     requestScreenshotAndSave(
       {
         type: 'click',
-        url: window.location.href,
+        url: redactUrl(window.location.href),
         timestamp: Date.now(),
         element: {
           tag: el.tagName.toLowerCase(),
@@ -360,7 +477,7 @@ document.addEventListener(
         requestScreenshotAndSave(
           {
             type: 'input',
-            url: window.location.href,
+            url: redactUrl(window.location.href),
             timestamp: Date.now(),
             element: {
               tag: el.tagName.toLowerCase(),
@@ -399,7 +516,7 @@ document.addEventListener(
     requestScreenshotAndSave(
       {
         type: 'input',
-        url: window.location.href,
+        url: redactUrl(window.location.href),
         timestamp: Date.now(),
         element: {
           tag: 'select',
@@ -451,6 +568,10 @@ function requestScreenshotAndSave(step: DraftStep, eventTime?: number): void {
         step: enriched,
         elementBox: enriched.element?.boundingBox ?? null,
         dpr: window.devicePixelRatio || 1,
+        // Read here rather than at capture time, because this is the moment the
+        // box belongs to. The worker asks the page again just before it takes
+        // the picture and highlights the difference away.
+        scroll: { x: window.scrollX, y: window.scrollY },
         components,
         componentsPageUrl: components ? window.location.href : undefined,
       }),

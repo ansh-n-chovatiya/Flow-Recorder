@@ -7,6 +7,7 @@
 
 import { compactBody } from '../schema/index.js';
 import { attributeSteps, pruneComponents, stripReactRef } from '../react/attribution.js';
+import { CAPPED_ID } from '../react/table.js';
 import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
 
 export const EXPORT_SCHEMA_VERSION = '1.0';
@@ -31,13 +32,29 @@ export interface JsonExportOptions extends Omit<Partial<ExportOptions>, 'react'>
    * are worthless without the table that says what they mean.
    */
   react?: FlowReact;
+  /**
+   * The flow's name — the same string that titles the Markdown.
+   *
+   * Written down because a `flow.json` that does not name itself is one of three
+   * indistinguishable files once three exports are unzipped side by side.
+   */
+  title?: string;
 }
 
 /** Serialise recorded steps to the on-disk flow format. */
 export function exportToJSON(steps: Step[], options: JsonExportOptions = {}): string {
-  const { imageNames, images, network, logs, react } = options;
+  const { imageNames, images, network, logs, react, title } = options;
   const components = react ? pruneComponents(steps, react.components) : {};
-  const carries = react !== undefined && Object.keys(components).length > 0;
+  /*
+   * The cap marker is not a component.
+   *
+   * `pruneComponents` keeps `__capped__` whatever happens, so a flow that hit the
+   * cap and then had the steps behind its components deleted comes back holding
+   * nothing else. Counting it as an entry wrote `react: { components: {
+   * __capped__ } }` alongside every surviving step's `element.react.chain` — the
+   * ids-with-no-table this file's comment below says it prevents.
+   */
+  const carries = react !== undefined && Object.keys(components).some((id) => id !== CAPPED_ID);
   // Stamped here rather than left for the reader to derive: a flow.json is read
   // by whatever opens it, and the choice of component must not depend on that.
   const list = carries ? attributeSteps(steps, components) : steps;
@@ -45,6 +62,7 @@ export function exportToJSON(steps: Step[], options: JsonExportOptions = {}): st
   return JSON.stringify(
     {
       version: EXPORT_SCHEMA_VERSION,
+      ...(title ? { name: title } : {}),
       exportedAt: new Date().toISOString(),
       stepCount: steps.length,
       // Absent rather than empty, so a flow from a page that is not React reads
@@ -75,8 +93,20 @@ export function exportToJSON(steps: Step[], options: JsonExportOptions = {}): st
         } else if (step.networkCalls) {
           out.networkCalls = step.networkCalls.map((call) => ({
             ...call,
-            requestBody: call.requestBody ? compactBody(call.requestBody) : call.requestBody,
-            responseBody: call.responseBody ? compactBody(call.responseBody) : call.responseBody,
+            // The flags travel with the call, so a body the capture cut short is
+            // read as truncated JSON rather than mislabelled as non-JSON.
+            requestBody: call.requestBody
+              ? compactBody(call.requestBody, {
+                  truncated: call.requestBodyTruncated,
+                  bytes: call.requestBodyBytes,
+                })
+              : call.requestBody,
+            responseBody: call.responseBody
+              ? compactBody(call.responseBody, {
+                  truncated: call.responseBodyTruncated,
+                  bytes: call.responseBodyBytes,
+                })
+              : call.responseBody,
           }));
         }
 

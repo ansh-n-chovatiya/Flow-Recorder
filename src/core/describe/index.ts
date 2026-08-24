@@ -103,11 +103,53 @@ export function iconName(el: Element): string {
   return ICON_NAMES[key] ?? key.replace(/-/g, ' ');
 }
 
+/**
+ * Inputs whose `value` is a caption the user actually read, rather than data
+ * they entered.
+ *
+ * Everything not listed here is refused, because a field's *contents* are not
+ * its name and using them as one defeated the masking applied everywhere else:
+ * `input.value` is starred out when recorded as a typed value, but the same
+ * string used as the element's label went in verbatim — `Typed "•••••••" into
+ * S3cret!`. An autofilled card number produced `Clicked "4111 1111 1111 1111"`,
+ * which is then written to storage, into the Markdown export, into the ZIP, and
+ * POSTed to the MCP server.
+ */
+const BUTTON_INPUT = /^(submit|button|reset)$/i;
+
+/** A form control, whose `value` is user data rather than a name. */
+function isControl(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select';
+}
+
+/**
+ * The element's `value`, when it is safe to read it as a name.
+ *
+ * A `<select>`'s value is the option the user picked, which genuinely names the
+ * control. A text field's is whatever they typed, which does not — and a
+ * checkbox's is the string `"on"`, which is where `Toggled "on" → on` came from.
+ */
+function nameableValue(el: Element): string {
+  const node = el as HTMLElement & { value?: string; type?: string };
+  if (!isControl(el)) return node.value?.trim() ?? '';
+  if (el.tagName.toLowerCase() === 'select') return node.value?.trim() ?? '';
+
+  const type = (node.type ?? 'text').toLowerCase();
+  // On a button-shaped input the `value` *is* the rendered label — it is what
+  // the user read before clicking, and the only name the element has.
+  if (BUTTON_INPUT.test(type)) return node.value?.trim() ?? '';
+  // Everything else — text, search, number, password — holds the user's own
+  // data, and a name is not what it is. The typed value reaches the flow through
+  // the `input` step, which is the field meant to carry it, masked when it is a
+  // password. `checkbox` and `radio` default to the literal string "on", which
+  // is where `Toggled "on" → on` came from.
+  return '';
+}
+
 function textOf(el: Element): string {
-  // `value` exists on inputs and a handful of other elements; typing it here
-  // beats narrowing at four call sites.
   const node = el as HTMLElement & { value?: string };
-  return node.innerText?.trim() || node.value?.trim() || '';
+  return node.innerText?.trim() || nameableValue(el) || '';
 }
 
 /** The name a screen reader would announce, by roughly the same precedence. */
@@ -115,10 +157,15 @@ export function accessibleName(el: Element): string {
   const aria = el.getAttribute('aria-label');
   if (aria?.trim()) return aria.trim().slice(0, MAX_NAME_LEN);
 
+  // `aria-labelledby` takes a *list* of ids; treating it as one silently missed
+  // the common multi-id form and fell through to a worse name.
   const labelledby = el.getAttribute('aria-labelledby');
   if (labelledby) {
-    const ref = el.ownerDocument.getElementById(labelledby);
-    const refText = ref?.innerText?.trim();
+    const refText = labelledby
+      .split(/\s+/)
+      .map((id) => el.ownerDocument.getElementById(id)?.innerText?.trim())
+      .filter(Boolean)
+      .join(' ');
     if (refText) return refText.slice(0, MAX_NAME_LEN);
   }
 
@@ -147,7 +194,7 @@ export function getElementText(el: Element): string {
   const node = el as HTMLElement & { value?: string };
   const text =
     node.innerText?.trim() ||
-    node.value?.trim() ||
+    nameableValue(el) ||
     el.getAttribute('aria-label') ||
     el.getAttribute('title') ||
     el.getAttribute('alt') ||
@@ -167,6 +214,18 @@ export function getElementLabel(el: Element): string {
   const ariaLabel = el.getAttribute('aria-label');
   if (ariaLabel) return ariaLabel;
 
+  // Consulted before the text fallback, which for a floating-label form was the
+  // only thing standing between the field's own contents and the step text.
+  const labelledby = el.getAttribute('aria-labelledby');
+  if (labelledby) {
+    const refText = labelledby
+      .split(/\s+/)
+      .map((id) => el.ownerDocument.getElementById(id)?.innerText?.trim())
+      .filter(Boolean)
+      .join(' ');
+    if (refText) return refText;
+  }
+
   if (el.id) {
     const forLabel = el.ownerDocument.querySelector<HTMLElement>(
       `label[for="${CSS.escape(el.id)}"]`,
@@ -178,21 +237,46 @@ export function getElementLabel(el: Element): string {
   return getElementText(el) || el.tagName.toLowerCase();
 }
 
-function toggleState(el: Element): string | null {
+/**
+ * The state a toggle was in *before* the click, for both kinds of toggle.
+ *
+ * The two kinds read at opposite ends of the same gesture, which is why this
+ * reports the prior state rather than the resulting one. Everything here runs
+ * from a document-level capture-phase `click` listener: `aria-checked` is still
+ * whatever the app rendered last, because the app's own handler has not run
+ * yet, while a native checkbox has already been flipped by the browser's
+ * pre-click activation. Reading each one literally made ARIA describe the past
+ * and native the present under the same `→ on` wording, so a `role="switch"`
+ * step read `Toggled "Email notifications" → off` beside a screenshot, taken
+ * 150ms later, of a switch that is plainly on.
+ *
+ * Prior state is the one fact both can supply exactly. The resulting state
+ * cannot be: for ARIA it would have to be guessed by inverting, and a toggle
+ * whose request fails does not move.
+ */
+function priorToggleState(el: Element): string | null {
   const checked = el.getAttribute('aria-checked');
   if (checked === 'true') return 'on';
   if (checked === 'false') return 'off';
   const input = el as HTMLInputElement;
   if (el.tagName.toLowerCase() === 'input' && input.type === 'checkbox') {
-    return input.checked ? 'on' : 'off';
+    // Already flipped by the time this runs, so the state before the click is
+    // the opposite of what the element now reports.
+    return input.checked ? 'off' : 'on';
   }
   return null;
 }
 
 /**
- * Whether clicking this is likely to destroy the current page — a link, a submit
- * button, anything inside a form. Those are the interactions whose screenshot
- * has to be taken before the click rather than after it.
+ * Whether clicking this is likely to destroy the current page — a link or a
+ * submit button. Those are the interactions whose screenshot has to be taken
+ * before the click rather than after it.
+ *
+ * Deliberately narrow, because a false positive costs a step its picture. A
+ * pre-capture is the frame from *before* the gesture, and the click that
+ * follows claims it in place of the settled capture — so every element wrongly
+ * named here is described by a photograph of the page it was about to change:
+ * `Clicked "Advanced"` beside a panel still collapsed.
  */
 export function mayNavigate(rawEl: Element): boolean {
   const el = resolveTarget(rawEl);
@@ -202,8 +286,13 @@ export function mayNavigate(rawEl: Element): boolean {
   if (el.getAttribute('role') === 'link') return true;
 
   if (tag === 'button') {
-    const type = (el as HTMLButtonElement).type;
-    return type === 'submit' || el.closest('form') !== null;
+    // `type` alone, and no `closest('form')`. A `<button>` with no type
+    // attribute already reports `submit`, in a form or out of one, so the form
+    // clause added nothing except `type="button"` and `type="reset"` — the two
+    // that exist precisely because they do *not* submit. An accordion header or
+    // a "+ Add row" inside a form was taking the pre-click frame for a click
+    // that never left the page.
+    return (el as HTMLButtonElement).type === 'submit';
   }
 
   if (tag === 'input') {
@@ -231,8 +320,8 @@ export function describeTarget(rawEl: Element): DescribedTarget {
   const quoted = name ? ` "${name}"` : '';
 
   if (role === 'switch' || role === 'checkbox' || (tag === 'input' && input.type === 'checkbox')) {
-    const state = toggleState(el);
-    return { el, action: `Toggled${quoted || ' control'}${state ? ` → ${state}` : ''}` };
+    const before = priorToggleState(el);
+    return { el, action: `Toggled${quoted || ' control'}${before ? ` (was ${before})` : ''}` };
   }
 
   if (tag === 'a' || role === 'link') return { el, action: `Clicked link${quoted}` };

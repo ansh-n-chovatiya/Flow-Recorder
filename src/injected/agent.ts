@@ -8,6 +8,7 @@
  */
 
 import { AGENT_MESSAGE_SOURCE, BODY_CAP } from '../shared/constants.js';
+import { redactUrl } from '../core/redact/index.js';
 
 const SENSITIVE_HEADERS = /^(authorization|cookie|set-cookie|x-api-key)$/i;
 
@@ -23,20 +24,76 @@ function redactHeaders(headers: Record<string, string>): Record<string, string> 
   return out;
 }
 
-function capBody(body: string | null): string | null {
-  if (typeof body !== 'string') return body;
-  return body.length > BODY_CAP
-    ? `${body.slice(0, BODY_CAP)}[truncated — ${body.length}b total]`
-    : body;
+/**
+ * A captured body, plus whether the cap bit — which is deliberately not part of
+ * the body itself.
+ *
+ * The marker used to be appended inside the string. That made a truncated JSON
+ * body unparseable, and everything downstream reads a body by parsing it: at
+ * export `compactBody` saw a leading `{`, `JSON.parse` threw on the marker, and
+ * a 300KB JSON response was written out as `[non-JSON · 50.0KB · truncated]`
+ * with 300 characters of it — mislabelled, its size understated sixfold, and
+ * never handed to the schema inference that exists for exactly that body.
+ */
+interface CappedBody {
+  body: string | null;
+  /** Only present when the cap bit; see `NetworkCall` in shared/types.ts. */
+  truncated?: boolean;
+  /** Length of the whole body, in characters, before the cut. */
+  bytes?: number;
 }
+
+/** A body we are describing rather than quoting — never truncated, never cut. */
+function stated(body: string | null): CappedBody {
+  return { body };
+}
+
+function capBody(body: string | null): CappedBody {
+  if (typeof body !== 'string') return stated(body);
+  return body.length > BODY_CAP
+    ? { body: body.slice(0, BODY_CAP), truncated: true, bytes: body.length }
+    : { body };
+}
+
+/** The out-of-band truncation fields for one body, under the given prefix. */
+function truncation(prefix: 'request' | 'response', capped: CappedBody): Record<string, unknown> {
+  if (!capped.truncated) return {};
+  return { [`${prefix}BodyTruncated`]: true, [`${prefix}BodyBytes`]: capped.bytes };
+}
+
+/**
+ * One console argument, as a string a reader can act on.
+ *
+ * `JSON.stringify(new Error('boom'))` is `"{}"` — `message` and `stack` are not
+ * enumerable — so `console.error(err)`, the single most common way a page
+ * reports a failure, was recorded as an empty object and the one line that
+ * explained the bug was gone by the time anyone read the flow.
+ */
+function serializeArg(arg: unknown): string {
+  if (arg instanceof Error) {
+    const frame = arg.stack?.split('\n')[1]?.trim();
+    return `${arg.name}: ${arg.message}${frame ? ` (${frame})` : ''}`;
+  }
+  try {
+    return typeof arg === 'object' && arg !== null ? JSON.stringify(arg) : String(arg);
+  } catch {
+    return String(arg);
+  }
+}
+
+/**
+ * Per-argument ceiling. A page that logs its whole store on every action was
+ * attaching hundreds of kilobytes to each step, and every capture rewrites the
+ * entire step array — so the cost is paid again on every step that follows.
+ */
+const LOG_ARG_CAP = 4096;
 
 function serializeArgs(args: unknown[]): string[] {
   return args.map((arg) => {
-    try {
-      return typeof arg === 'object' && arg !== null ? JSON.stringify(arg) : String(arg);
-    } catch {
-      return String(arg);
-    }
+    const text = serializeArg(arg);
+    return text.length > LOG_ARG_CAP
+      ? `${text.slice(0, LOG_ARG_CAP)}… [${text.length} chars total]`
+      : text;
   });
 }
 
@@ -70,19 +127,71 @@ window.fetch = async function patchedFetch(
   init?: RequestInit,
 ): Promise<Response> {
   const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
-  const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
-
-  const headers = init?.headers
-    ? redactHeaders(
-        init.headers instanceof Headers
-          ? Object.fromEntries(init.headers.entries())
-          : Object.fromEntries(Object.entries(init.headers)),
-      )
-    : {};
-
-  const requestBody = capBody(
-    init?.body != null ? (typeof init.body === 'string' ? init.body : '[non-string body]') : null,
+  const url = redactUrl(
+    typeof input === 'string' ? input : input instanceof Request ? input.url : String(input),
   );
+
+  // Normalised through `Headers` rather than read as a plain object. The array
+  // form — `[['Authorization', 'Bearer …']]`, which generated API clients emit —
+  // came back from `Object.entries` as `{ '0': [...] }`, so the key never
+  // matched `SENSITIVE_HEADERS` and the name *and* its secret were both stored
+  // verbatim. A polyfilled or cross-realm `Headers` failed `instanceof` the same
+  // way.
+  const source = init?.headers ?? (input instanceof Request ? input.headers : undefined);
+  let headers: Record<string, string> = {};
+  if (source) {
+    try {
+      headers = redactHeaders(Object.fromEntries(new Headers(source).entries()));
+    } catch {
+      // An exotic shape `Headers` will not take. Recording no headers is the
+      // safe failure: recording them unredacted is not.
+      headers = {};
+    }
+  }
+
+  /*
+   * The request body, from wherever `fetch` itself would take it.
+   *
+   * `init.body` wins when it is there, exactly as the platform resolves it.
+   * Otherwise a fully-formed `Request` carries it — `fetch(new Request(url,
+   * { method: 'POST', body }))` is the standard interceptor pattern — and that
+   * body is a stream, so reading it means cloning.
+   *
+   * The clone is taken *now*, synchronously, because `originalFetch` consumes
+   * the request and a clone taken afterwards throws "body already used". The
+   * clone is *read* later, and nothing waits on the read: that is the whole
+   * point of the shape below. `await`ing a body read before handing the page
+   * its response is the bug this file already carries a comment about for
+   * responses, and a streamed upload would hang a page the same way.
+   *
+   * The price is that a request body which never ends is a network entry that
+   * is never emitted. That is the same trade made for responses, in the same
+   * direction: the recording loses a line, the page keeps working.
+   */
+  let requestBody: CappedBody = stated(null);
+  let pendingRequestBody: Promise<CappedBody> | null = null;
+
+  if (init?.body != null) {
+    requestBody = capBody(typeof init.body === 'string' ? init.body : '[non-string body]');
+  } else if (input instanceof Request && input.body !== null) {
+    try {
+      const clone = input.clone();
+      pendingRequestBody = clone.text().then(
+        (text) => capBody(text),
+        () => stated('[unreadable request body]'),
+      );
+    } catch {
+      // Already used, or a Request implementation that will not clone. Saying
+      // so is still better than recording the POST as having sent nothing.
+      requestBody = stated('[Request body]');
+    }
+  }
+
+  /** Runs `send` once the request body is known, never blocking the caller. */
+  const withRequestBody = (send: (body: CappedBody) => void): void => {
+    if (pendingRequestBody) void pendingRequestBody.then(send);
+    else send(requestBody);
+  };
 
   const startedAt = Date.now();
 
@@ -90,27 +199,24 @@ window.fetch = async function patchedFetch(
   try {
     response = await originalFetch(input, init);
   } catch (err) {
-    emit({
-      kind: 'network',
-      method,
-      url,
-      requestHeaders: headers,
-      requestBody,
-      status: null,
-      responseHeaders: {},
-      responseBody: `[network error: ${(err as Error).message}]`,
-      durationMs: Date.now() - startedAt,
-      timestamp: startedAt,
+    // Emitted from the body read's continuation rather than awaited here — the
+    // page's `fetch` rejection must not queue behind our bookkeeping.
+    withRequestBody((body) => {
+      emit({
+        kind: 'network',
+        method,
+        url,
+        requestHeaders: headers,
+        requestBody: body.body,
+        ...truncation('request', body),
+        status: null,
+        responseHeaders: {},
+        responseBody: `[network error: ${(err as Error).message}]`,
+        durationMs: Date.now() - startedAt,
+        timestamp: startedAt,
+      });
     });
     throw err;
-  }
-
-  // Clone so the page's own read of the body stream is untouched.
-  let responseBody = '[unreadable]';
-  try {
-    responseBody = capBody(await response.clone().text()) ?? '';
-  } catch {
-    // Streaming or already-consumed response — the page still gets its data.
   }
 
   const responseHeaders: Record<string, string> = {};
@@ -118,18 +224,56 @@ window.fetch = async function patchedFetch(
     responseHeaders[key] = SENSITIVE_HEADERS.test(key) ? '[redacted]' : value;
   });
 
-  emit({
-    kind: 'network',
-    method,
-    url,
-    requestHeaders: headers,
-    requestBody,
-    status: response.status,
-    responseHeaders,
-    responseBody,
-    durationMs: Date.now() - startedAt,
-    timestamp: startedAt,
-  });
+  const report = (responseBody: CappedBody): void => {
+    withRequestBody((body) => {
+      emit({
+        kind: 'network',
+        method,
+        url,
+        requestHeaders: headers,
+        requestBody: body.body,
+        ...truncation('request', body),
+        status: response.status,
+        responseHeaders,
+        responseBody: responseBody.body,
+        ...truncation('response', responseBody),
+        durationMs: Date.now() - startedAt,
+        timestamp: startedAt,
+      });
+    });
+  };
+
+  /*
+   * The body is read *after* the response is handed back, never before.
+   *
+   * `await response.clone().text()` sat between the page's request and its
+   * `fetch` resolving, so the page could not proceed until the entire body had
+   * arrived — and for a stream that stays open, it never resolved at all. This
+   * agent is injected into every page at `document_start` whether or not a
+   * recording is running, so an SSE endpoint, a token stream or a long poll was
+   * broken on every site the user visited with the extension installed.
+   *
+   * The cost of reading late is that a body which arrives after the next step
+   * has been built is attached to that step instead. A slightly late network
+   * entry is a far smaller wrong than a page that does not work.
+   */
+  const contentType = response.headers.get('content-type') ?? '';
+  const declared = Number(response.headers.get('content-length') ?? '');
+  if (/text\/event-stream/i.test(contentType)) {
+    // Cloning tees the stream: every chunk the page reads would also be buffered
+    // here, for a body that by definition never ends.
+    report(stated('[streaming response — not captured]'));
+  } else if (Number.isFinite(declared) && declared > BODY_CAP * 4) {
+    report(stated(`[body not captured — ${declared}b, over the capture limit]`));
+  } else {
+    void response
+      .clone()
+      .text()
+      .then(
+        (text) => report(capBody(text)),
+        () => report(stated('[unreadable]')),
+      );
+  }
 
   return response;
 };
@@ -143,14 +287,14 @@ function PatchedXHR(this: unknown): XMLHttpRequest {
 
   let method = 'GET';
   let url = '';
-  let requestBody: string | null = null;
+  let requestBody: CappedBody = stated(null);
   let startedAt = 0;
   const requestHeaders: Record<string, string> = {};
 
   const originalOpen = xhr.open.bind(xhr);
   xhr.open = function open(m: string, u: string | URL, ...rest: unknown[]) {
     method = m || 'GET';
-    url = String(u ?? '');
+    url = redactUrl(String(u ?? ''));
     return (originalOpen as (...args: unknown[]) => void)(m, u, ...rest);
   };
 
@@ -160,39 +304,67 @@ function PatchedXHR(this: unknown): XMLHttpRequest {
     return originalSetHeader(key, value);
   };
 
+  /*
+   * Registered once, on the instance, rather than once per `send`.
+   *
+   * An XHR object may be reused — `open`/`send` again on the same instance is
+   * how most long-poll and retry loops are written — and adding a listener
+   * inside `send` meant the second send reported the response three times and
+   * the third six, each copy carrying the *latest* method and url. The listener
+   * count and the recorded payload both grew quadratically.
+   */
+  xhr.addEventListener('loadend', () => {
+    try {
+      const responseHeaders: Record<string, string> = {};
+      for (const line of (xhr.getAllResponseHeaders() || '').split('\r\n')) {
+        const idx = line.indexOf(': ');
+        if (idx < 0) continue;
+        const key = line.slice(0, idx);
+        responseHeaders[key] = SENSITIVE_HEADERS.test(key) ? '[redacted]' : line.slice(idx + 2);
+      }
+
+      // In its own guard, and never inside the `emit` argument list. Reading
+      // `responseText` throws `InvalidStateError` for any `responseType` other
+      // than '' or 'text' — `xhr.responseType = 'json'` is the ordinary modern
+      // idiom — and the throw took the whole entry with it, so the step recorded
+      // no method, no url, no status: the flow simply claimed the click made no
+      // request at all.
+      let responseBody: CappedBody;
+      try {
+        responseBody =
+          xhr.responseType === '' || xhr.responseType === 'text'
+            ? capBody(xhr.responseText || '')
+            : stated(`[${xhr.responseType} response — not captured as text]`);
+      } catch {
+        responseBody = stated('[unreadable]');
+      }
+
+      emit({
+        kind: 'network',
+        method,
+        url,
+        requestHeaders,
+        requestBody: requestBody.body,
+        ...truncation('request', requestBody),
+        status: xhr.status,
+        responseHeaders,
+        responseBody: responseBody.body,
+        ...truncation('response', responseBody),
+        durationMs: Date.now() - startedAt,
+        timestamp: startedAt,
+      });
+    } catch {
+      // Anything else the instrumentation cannot read; the page is unaffected.
+    }
+  });
+
   const originalSend = xhr.send.bind(xhr);
   xhr.send = function send(body?: Document | XMLHttpRequestBodyInit | null) {
     startedAt = Date.now();
-    if (body != null) {
-      requestBody = capBody(typeof body === 'string' ? body : '[non-string body]');
-    }
-
-    xhr.addEventListener('loadend', () => {
-      try {
-        const responseHeaders: Record<string, string> = {};
-        for (const line of (xhr.getAllResponseHeaders() || '').split('\r\n')) {
-          const idx = line.indexOf(': ');
-          if (idx < 0) continue;
-          const key = line.slice(0, idx);
-          responseHeaders[key] = SENSITIVE_HEADERS.test(key) ? '[redacted]' : line.slice(idx + 2);
-        }
-
-        emit({
-          kind: 'network',
-          method,
-          url,
-          requestHeaders,
-          requestBody,
-          status: xhr.status,
-          responseHeaders,
-          responseBody: capBody(xhr.responseText || ''),
-          durationMs: Date.now() - startedAt,
-          timestamp: startedAt,
-        });
-      } catch {
-        // A cross-origin response makes responseText throw; the page is fine.
-      }
-    });
+    requestBody =
+      body != null
+        ? capBody(typeof body === 'string' ? body : '[non-string body]')
+        : stated(null);
 
     return originalSend(body);
   };

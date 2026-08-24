@@ -8,7 +8,7 @@
 
 import { annotateScreenshot } from './annotator.js';
 import { getLocal, getSync, setLocal } from '../chrome/storage.js';
-import { captureVisibleTab } from '../chrome/tabs.js';
+import { captureVisibleTab, sendToTab } from '../chrome/tabs.js';
 import type { OpenEditorResponse, WorkerRequest } from '../shared/messages.js';
 import { isEditorScheme } from '../core/react/editor.js';
 import {
@@ -74,10 +74,18 @@ async function captureAndSave(
   sender: chrome.runtime.MessageSender,
   components?: CapturedComponent[],
   componentsPageUrl?: string,
+  /** Where the page was scrolled when `elementBox` was measured. */
+  measuredScroll?: { x: number; y: number },
 ): Promise<void> {
   // A pre-capture is already the right frame — waiting would only let the page
   // navigate further away from the moment being described.
-  const preShot = claimPrecapture(sender.tab?.id);
+  //
+  // Clicks only. The frame is taken on pointerdown for the click that follows,
+  // and a pointerdown that never becomes one — a drag, a press released off the
+  // element — leaves it in the map for its full TTL. Any step at all could
+  // claim it, so a navigation or a debounced keystroke seconds later was filed
+  // with a photograph of a moment it had nothing to do with.
+  const preShot = step.type === 'click' ? claimPrecapture(sender.tab?.id) : null;
   if (!preShot) await delay(SETTLE_DELAY_MS);
 
   const stored = await getLocal([
@@ -116,7 +124,14 @@ async function captureAndSave(
   }
 
   let dataUrl: string | null = preShot;
-  if (!dataUrl) {
+  // `captureVisibleTab` photographs the window's *visible* tab, whichever tab
+  // asked. A step from a tab that is not on screen — a debounced input that
+  // fires after the user switches away, a background tab acting on its own —
+  // would be filed with a picture of a different page, which is worse than no
+  // picture: it reads as evidence. The step keeps its selectors, timing and
+  // network either way.
+  const senderVisible = sender.tab?.active !== false;
+  if (!dataUrl && senderVisible) {
     const captured = await captureVisibleTab(sender.tab?.windowId);
     if (captured.ok) {
       dataUrl = captured.value;
@@ -127,11 +142,35 @@ async function captureAndSave(
     }
   }
 
+  /*
+   * How far the page moved between measuring the box and taking the picture.
+   *
+   * Asked of the page only when there is a box to correct and a frame that
+   * postdates it. A pre-capture is the opposite case — that frame was taken
+   * *before* the measurement, so the box is already in its coordinate space and
+   * a delta would move the highlight off the element rather than onto it.
+   */
+  let scrollDelta: { x: number; y: number } | undefined;
+  if (dataUrl && !preShot && elementBox && measuredScroll && sender.tab?.id != null) {
+    const now = await sendToTab<{ x: number; y: number }>(sender.tab.id, { type: 'GET_SCROLL' });
+    if (now.ok && Number.isFinite(now.value?.x) && Number.isFinite(now.value?.y)) {
+      scrollDelta = { x: now.value.x - measuredScroll.x, y: now.value.y - measuredScroll.y };
+    }
+  }
+
+  // The stored box moves with the drawn one, so it stays in the capture's
+  // coordinate space — which is what `core/flow/index.ts` documents it as, and
+  // what the viewer re-draws from when it re-annotates a step.
+  const capturedBox =
+    elementBox && scrollDelta
+      ? { ...elementBox, x: elementBox.x - scrollDelta.x, y: elementBox.y - scrollDelta.y }
+      : elementBox;
+
   let screenshot: string | null = null;
   let screenshotOriginal: string | null = null;
 
   if (dataUrl) {
-    screenshot = await annotateScreenshot(dataUrl, elementBox, dpr);
+    screenshot = await annotateScreenshot(dataUrl, elementBox, dpr, scrollDelta);
     // Only when annotating changed the image — otherwise the two are identical
     // and every capture rewrites both. Readers resolve null as `?? screenshot`.
     // Compared, not inferred from `elementBox`: the annotator also returns the
@@ -142,7 +181,7 @@ async function captureAndSave(
   recordedSteps.push({
     ...step,
     screenshotOriginal,
-    highlightBox: elementBox,
+    highlightBox: capturedBox,
     dpr: dpr || 1,
     screenshot,
     stepNumber: recordedSteps.length + 1,
@@ -171,6 +210,35 @@ async function captureAndSave(
   updateBadge(recordedSteps.length);
 
   if (merged?.changed) scheduleResolve();
+}
+
+/**
+ * End the recording once every capture already in flight has been written.
+ *
+ * A step is not saved when the user clicks — it is saved a few hundred
+ * milliseconds later, after the paint wait, the settle delay and Chrome's
+ * screenshot rate limit. `captureAndSave` drops any step that finds the
+ * recording already over, so flipping the flag the moment Stop is pressed threw
+ * away the last thing the user did, which on a bug report is the whole point of
+ * the recording. Draining first also means the MCP auto-export — which fires on
+ * this very storage change — sees the complete flow.
+ */
+async function finishRecording(): Promise<void> {
+  // The queue can grow while it is being awaited: a step sent just before Stop
+  // may still be arriving. Settle, re-check, and only stop when nothing was
+  // added while waiting.
+  let drained: Promise<void>;
+  do {
+    drained = captureQueue;
+    await drained;
+  } while (drained !== captureQueue);
+
+  const written = await setLocal({
+    recordingActive: false,
+    recordingPaused: false,
+    recordingStartedAt: null,
+  });
+  if (!written.ok) await reportError(written.error);
 }
 
 // ── React source resolution ──────────────────────────────────────────────────
@@ -428,7 +496,10 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
   switch (message.type) {
     case 'PRECAPTURE': {
       const tabId = sender.tab?.id;
-      if (tabId == null) {
+      // Same reason as the capture in `captureAndSave`: the API photographs the
+      // window's visible tab, so a frame requested by any other tab is a
+      // picture of the wrong page waiting to be claimed as evidence.
+      if (tabId == null || sender.tab?.active === false) {
         sendResponse({ ok: false });
         return true;
       }
@@ -442,11 +513,11 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
     }
 
     case 'CAPTURE_AND_SAVE_STEP': {
-      const { step, elementBox, dpr, components, componentsPageUrl } = message;
+      const { step, elementBox, dpr, components, componentsPageUrl, scroll } = message;
       // Enqueue so captures run one at a time. A rejected step is swallowed so
       // one failure cannot break the chain for later steps.
       captureQueue = captureQueue.then(() =>
-        captureAndSave(step, elementBox, dpr, sender, components, componentsPageUrl).catch((error: unknown) =>
+        captureAndSave(step, elementBox, dpr, sender, components, componentsPageUrl, scroll).catch((error: unknown) =>
           console.error('FlowSnap: captureAndSave rejected', error),
         ),
       );
@@ -519,6 +590,13 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
       void getLocal('recordedSteps').then((stored) => {
         sendResponse({ steps: stored.ok ? ((stored.value.recordedSteps ?? [])) : [] });
       });
+      return true;
+    }
+
+    case 'FINISH_RECORDING': {
+      void finishRecording()
+        .catch((error: unknown) => console.error('FlowSnap: finishRecording rejected', error))
+        .then(() => sendResponse({ ok: true }));
       return true;
     }
 

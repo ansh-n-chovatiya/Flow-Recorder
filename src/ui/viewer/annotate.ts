@@ -491,9 +491,19 @@ export interface OpenAnnotateOptions {
 }
 
 export function openAnnotate({ step, number, onSave }: OpenAnnotateOptions): void {
-  // The un-annotated original where we kept one, so re-editing does not stack
-  // markup on top of markup — including the capture-time highlight box.
-  const source = step.screenshotOriginal ?? step.screenshot;
+  /*
+   * The image as it stands, not the pristine capture.
+   *
+   * Re-opening on `screenshotOriginal` avoided stacking markup, but it also
+   * discarded it: a step redacted in one session came back un-redacted in the
+   * next, and saving an arrow on top of it wrote the readable image back — so a
+   * hidden email address reappeared and was exported and sent on. Annotations
+   * are flattened into the JPEG rather than kept as operations, so there is no
+   * third option that both re-renders cleanly and preserves the redaction.
+   * Markup that stacks is a cosmetic cost; a redaction that silently comes undone
+   * is not. `screenshotOriginal` stays untouched as the pristine capture.
+   */
+  const source = step.screenshot ?? step.screenshotOriginal;
   if (!source) {
     showToast({ message: 'This step has no screenshot to annotate.' });
     return;

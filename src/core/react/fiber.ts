@@ -24,6 +24,7 @@
  */
 
 import { MAX_COMPONENT_CHAIN, MAX_FIBER_WALK } from '../../shared/constants.js';
+import { ANONYMOUS_NAME, UNSETTLED_LAZY_NAME } from './id.js';
 
 export interface DebugSource {
   fileName?: string;
@@ -107,19 +108,19 @@ export function getComponentFn(fiber: Fiber): ComponentFn | null {
 
 export function getDisplayName(fiber: Fiber): string {
   const type = fiber.type as WrapperType | ComponentFn | null;
-  if (!type) return 'Anonymous';
+  if (!type) return ANONYMOUS_NAME;
 
-  if (typeof type === 'function') return type.displayName || type.name || 'Anonymous';
+  if (typeof type === 'function') return type.displayName || type.name || ANONYMOUS_NAME;
 
   if (type._payload) {
     const inner = unwrapSettledLazy(type);
-    return inner ? inner.displayName || inner.name || 'Anonymous' : 'Lazy(loading…)';
+    return inner ? inner.displayName || inner.name || ANONYMOUS_NAME : UNSETTLED_LAZY_NAME;
   }
 
   if (type.displayName) return type.displayName;
   if (type.render) return type.render.displayName || type.render.name || 'ForwardRef';
   if (type.type) return type.type.displayName || type.type.name || 'Memo';
-  return 'Anonymous';
+  return ANONYMOUS_NAME;
 }
 
 /**
@@ -239,6 +240,18 @@ export interface ChainResult {
  * is kept is the nearest — which is the part that identifies where a click
  * landed. The far end of a deep tree is `App` wrapped in nine providers, and is
  * worth nothing to whoever reads the flow.
+ *
+ * Only fibers that describe *something* are kept. The host fibers between two
+ * components — every `<div>`, `<span>` and `<button>` React rendered, and the
+ * `Fragment`s and `Suspense` boundaries around them — have no component function
+ * and no name of their own, so `getDisplayName` calls them all `Anonymous`.
+ * Emitting them was this feature's worst bug: they all hash to the one id
+ * `nameOnlyId('Anonymous')`, whose single table row is minted from whichever of
+ * them was seen first, so a `<div>` in `App.tsx` answered for a click inside
+ * `CheckoutForm` and the flow named a file the click never went near. They also
+ * spent `MAX_COMPONENT_CHAIN` slots that real components needed — roughly half
+ * of them — and each one that reached `table.ts` was explained to the reader as
+ * a lazy component that had not finished loading.
  */
 export function collectChain(el: Element, limit = MAX_COMPONENT_CHAIN): ChainResult {
   const nearest = findNearestComponentFiber(el);
@@ -252,18 +265,28 @@ export function collectChain(el: Element, limit = MAX_COMPONENT_CHAIN): ChainRes
   while (f && walked < MAX_FIBER_WALK) {
     const fn = getComponentFn(f);
     // A lazy fiber and the fiber it resolved to share one function; keep one.
-    if (fn === null || entries.length === 0 || entries[entries.length - 1].fn !== fn) {
-      if (entries.length >= limit) {
-        truncated = true;
-        break;
+    const duplicate = fn !== null && entries.length > 0 && entries[entries.length - 1].fn === fn;
+
+    if (!duplicate) {
+      const name = getDisplayName(f);
+      // No function *and* no name is a host fiber, and it names nothing the
+      // reader can act on. A fiber with one or the other still does: an
+      // unsettled lazy component is `Lazy(loading…)`, and a raw context object
+      // is `CartContext.Provider`.
+      if (fn !== null || name !== ANONYMOUS_NAME) {
+        if (entries.length >= limit) {
+          truncated = true;
+          break;
+        }
+        entries.push({
+          name,
+          fn,
+          debugSource: getDebugSource(f),
+          development: isDevelopmentFiber(f),
+        });
       }
-      entries.push({
-        name: getDisplayName(f),
-        fn,
-        debugSource: getDebugSource(f),
-        development: isDevelopmentFiber(f),
-      });
     }
+
     f = f.return;
     walked++;
   }

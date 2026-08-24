@@ -118,15 +118,37 @@ export interface FlowReact {
   components: Record<string, ComponentSource>;
 }
 
+/**
+ * One request the page made, as the agent saw it.
+ *
+ * Bodies are captured up to `BODY_CAP` and the fact that the cap bit is carried
+ * *beside* the body, never inside it. The marker used to be appended to the
+ * string — `…[truncated — 307200b total]` — which made a truncated JSON body
+ * unparseable, so `compactBody` saw a leading `{`, threw on `JSON.parse`, and
+ * exported a 300KB JSON API response as `[non-JSON · 50.0KB · truncated]` plus
+ * 300 characters. The schema inference that exists precisely for large bodies
+ * never ran on a single large body.
+ *
+ * Every truncation field is optional: a flow recorded before they existed has
+ * none, which reads as "not truncated" — the same thing it meant then.
+ */
 export interface NetworkCall {
   method: string;
   url: string;
   requestHeaders: Record<string, string>;
   requestBody: string | null;
+  /** The request body was cut at the capture cap. */
+  requestBodyTruncated?: boolean;
+  /** Length of the whole request body, in characters, before the cut. */
+  requestBodyBytes?: number;
   /** `null` when the request failed before a response. */
   status: number | null;
   responseHeaders: Record<string, string>;
   responseBody: string | null;
+  /** The response body was cut at the capture cap. */
+  responseBodyTruncated?: boolean;
+  /** Length of the whole response body, in characters, before the cut. */
+  responseBodyBytes?: number;
   durationMs: number;
   timestamp: number;
 }
@@ -254,6 +276,16 @@ export interface FlowPayload {
    * know, which is exactly what the version field exists to allow.
    */
   react?: FlowReact;
+  /**
+   * Which sections the sender deliberately left out.
+   *
+   * Absence of data and absence of failures look identical on the receiving
+   * side: a flow sent without its network calls has nothing for the server to
+   * count, so it reported "no step failed" for a recording made to capture a
+   * 500. This is what lets the server say "you did not send that" instead of
+   * answering a debugging question with a confident wrong answer.
+   */
+  omitted?: string[];
 }
 
 /** Which parts of a flow an export includes. */

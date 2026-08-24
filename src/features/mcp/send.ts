@@ -7,7 +7,7 @@
  * step is always a paste, and pretending otherwise was the old toast's mistake.
  */
 
-import { startUrl } from '../../core/flow/index.js';
+import { renumber, startUrl } from '../../core/flow/index.js';
 import { attributeSteps, pruneComponents, stripReactRef } from '../../core/react/attribution.js';
 import { getSync } from '../../chrome/storage.js';
 import { readCurrentReact } from '../flows/store.js';
@@ -91,9 +91,11 @@ export function buildPayload(
   steps: Step[],
   at: number,
   react?: FlowReact | null,
+  include: ExportOptions = SEND_EVERYTHING,
 ): FlowPayload {
   const components = react ? pruneComponents(steps, react.components) : {};
   const carries = react !== null && react !== undefined && Object.keys(components).length > 0;
+  const omitted = (['images', 'network', 'logs', 'react'] as const).filter((key) => !include[key]);
 
   return {
     schemaVersion: FLOW_SCHEMA_VERSION,
@@ -101,6 +103,7 @@ export function buildPayload(
     name,
     timestamp: at,
     startUrl: startUrl(steps),
+    ...(omitted.length ? { omitted } : {}),
     // The owner is stamped here so the server does not have to know the rules
     // that pick it — see `attributeSteps`.
     steps: carries ? attributeSteps(steps, components) : steps,
@@ -124,6 +127,9 @@ export async function sendFlow(
   /** An archived flow's frozen table. Omitted for the live recording, whose
    *  table is read back here so it includes whatever the resolve below found. */
   archivedReact?: FlowReact | null,
+  /** When the flow was *recorded*. Defaults to now, which is only right for the
+   *  live recording — an archived flow has its own, older, `createdAt`. */
+  recordedAt?: number,
 ): Promise<Result<SendResult>> {
   if (steps.length === 0) return err(flowError('MCP_UNREACHABLE', 'nothing to send'));
 
@@ -143,13 +149,22 @@ export async function sendFlow(
   const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL });
   const url = settings.ok ? settings.value.mcpServerUrl : DEFAULT_MCP_URL;
 
-  const sending = pruneSteps(steps, include);
+  // Renumbered first, so `stepNumber` agrees with the position the server files
+  // the step at. A flow with a step deleted in the review tab was sent carrying
+  // its original numbers, so the JSON said "step 5" where the markdown said
+  // "Step 4" and `get_flow_screenshots({steps:[5]})` answered that step 5 does
+  // not exist. Every other export path already renumbers; this one did not.
+  const sending = pruneSteps(renumber(steps), include);
   // Read after the resolve, so the table carries what that last pass found.
   // Not read at all when React is switched off for this send — `sending` has no
   // refs left, so the table would prune to nothing, but not touching storage is
   // the clearer promise.
   const react = include.react ? (archivedReact ?? (await readCurrentReact(sending))) : null;
-  const payload = buildPayload(id, name, sending, Date.now(), react);
+  // The recording's own time, not the moment Send was pressed. The server
+  // prints this as "Recorded" and orders `list_flows` by it, so stamping now
+  // dated a week-old flow to this afternoon and pushed it above the recording
+  // the user actually just made.
+  const payload = buildPayload(id, name, sending, recordedAt ?? Date.now(), react, include);
   const first = payload.startUrl;
 
   const abort = new AbortController();

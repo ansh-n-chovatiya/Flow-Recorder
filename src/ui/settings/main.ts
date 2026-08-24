@@ -7,7 +7,15 @@
  * Record.
  */
 
-import { bytesInUse, getLocal, getSync, removeLocal, setLocal, setSync } from '../../chrome/storage.js';
+import {
+  bytesInUse,
+  getAllLocal,
+  getLocal,
+  getSync,
+  removeLocal,
+  setLocal,
+  setSync,
+} from '../../chrome/storage.js';
 import { checkMcp } from '../../features/mcp/health.js';
 import { EDITORS } from '../../core/react/editor.js';
 import { DEFAULT_MCP_URL, REACT_SETTING_DEFAULTS } from '../../shared/constants.js';
@@ -242,7 +250,10 @@ let savedFlows: FlowMeta[] = [];
 async function refreshStorage(): Promise<void> {
   const used = await bytesInUse();
 
-  dom.storageUsed.textContent = formatBytes(used);
+  // `null` is Chrome refusing to measure, not an empty store. Printing "0 B"
+  // for it would tell somebody with a full library that they have room to
+  // spare, which is the one thing this figure exists to answer.
+  dom.storageUsed.textContent = used === null ? 'Unknown' : formatBytes(used);
 
   const stored = await getLocal(['savedFlowsMeta', 'recordedSteps']);
   savedFlows = stored.ok && Array.isArray(stored.value.savedFlowsMeta)
@@ -257,16 +268,30 @@ async function refreshStorage(): Promise<void> {
 
   // Per-step is what lets someone predict the cost of the next recording.
   dom.storageDetail.textContent =
-    steps > 0 ? `About ${formatBytes(Math.round(used / steps))} per step, mostly screenshots.` : '';
+    used !== null && steps > 0
+      ? `About ${formatBytes(Math.round(used / steps))} per step, mostly screenshots.`
+      : '';
 
-  dom.deleteFlows.disabled = savedFlows.length === 0;
+  /*
+   * Enabled even with an empty index, because the index is not the whole story.
+   *
+   * The sweep on the other side of this button removes orphaned `savedFlow_*`
+   * keys as well as the ones the index names — and orphans are exactly what an
+   * empty index cannot see. Disabling on `savedFlows.length === 0` left the only
+   * control that can reclaim that space switched off precisely when it was the
+   * one thing left to do. Gated on there being *something* stored instead: the
+   * byte count is already read for the line above, so this costs nothing.
+   */
+  dom.deleteFlows.disabled = savedFlows.length === 0 && !used;
 }
 
 dom.deleteFlows.addEventListener('click', () => {
   dom.deleteBody.textContent =
-    savedFlows.length === 1
-      ? 'The one saved flow, and its screenshots, will be deleted. This cannot be undone.'
-      : `All ${savedFlows.length} saved flows, and their screenshots, will be deleted. This cannot be undone.`;
+    savedFlows.length === 0
+      ? 'The library is already empty. Any flow data left behind by a failed save will be deleted. This cannot be undone.'
+      : savedFlows.length === 1
+        ? 'The one saved flow, and its screenshots, will be deleted. This cannot be undone.'
+        : `All ${savedFlows.length} saved flows, and their screenshots, will be deleted. This cannot be undone.`;
   dom.deleteDialog.showModal();
 });
 
@@ -274,9 +299,34 @@ dom.deleteDialog.addEventListener('close', () => {
   if (dom.deleteDialog.returnValue !== 'delete') return;
 
   void (async () => {
-    const removed = await removeLocal(
-      savedFlows.flatMap((flow) => [savedFlowKey(flow.id), savedFlowReactKey(flow.id)]),
-    );
+    const listed: string[] = savedFlows.flatMap((flow) => [
+      savedFlowKey(flow.id),
+      savedFlowReactKey(flow.id),
+    ]);
+
+    /*
+     * Sweep for orphans as well as for what the index names.
+     *
+     * Deriving the removal list from `savedFlowsMeta` alone is what made this
+     * button unable to do what it says. A save writes the steps first and the
+     * index second, so an index write that failed leaves a `savedFlow_<id>` key
+     * the index never carried — and since ids are `flow_<ms>` and never recur,
+     * nothing will ever overwrite it either. Megabytes, in a 10 MB store, that
+     * no screen lists and no button could free.
+     *
+     * The read costs the whole area, so it happens here, on a button the user
+     * pressed and confirmed, rather than on every refresh of this page.
+     */
+    const all = await getAllLocal();
+    const orphans = all.ok
+      ? Object.keys(all.value).filter(
+          (key) =>
+            (key.startsWith('savedFlow_') || key.startsWith('savedFlowReact_')) &&
+            !listed.includes(key),
+        )
+      : [];
+
+    const removed = await removeLocal([...listed, ...orphans]);
     if (!removed.ok) {
       showToast({ message: removed.error.message, tone: 'danger' });
       return;

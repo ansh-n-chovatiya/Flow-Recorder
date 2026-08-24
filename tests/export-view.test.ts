@@ -235,3 +235,24 @@ describe('the React row', () => {
       .not.toBeNull();
   });
 });
+
+/**
+ * The progress caption is written in two places: derived here, and typed out by
+ * hand in `export-dialog.ts`'s `paintProgress`, which exists to avoid paying for
+ * this whole derivation once per packed screenshot. If the wording here moves,
+ * that one has to move with it.
+ */
+describe('the progress caption', () => {
+  it('matches the string the dialog paints directly', () => {
+    const view = deriveExportView({
+      steps: [{ type: 'click', url: 'https://x/', timestamp: 1 } as never],
+      options: { images: true, network: false, logs: false, react: false },
+      react: undefined,
+      busy: true,
+      filename: 'flow',
+      progress: { done: 12, total: 200 },
+    } as never);
+
+    expect(view.caption).toBe('Packaging screenshot 12 of 200');
+  });
+});

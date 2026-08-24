@@ -46,15 +46,54 @@ export function componentId(name: string, fnSource: string): string {
 }
 
 /**
+ * The names the fiber walker invents when a fiber names nothing of its own.
+ *
+ * Kept here, next to the hashing, because they are the two strings that must
+ * never be treated as an identity: `getDisplayName` hands the same one back for
+ * every unnamed fiber on the page, so hashing it produces one id shared by
+ * components that have nothing to do with each other. `fiber.ts` imports these
+ * rather than repeating the literals, so the two cannot drift apart.
+ */
+export const ANONYMOUS_NAME = 'Anonymous';
+export const UNSETTLED_LAZY_NAME = 'Lazy(loading…)';
+
+/** Prefix for an id that stands for *some* component rather than a particular one. */
+const PLACEHOLDER_PREFIX = 'n_';
+
+/** True for a name that identifies nothing — see `ANONYMOUS_NAME`. */
+export function isPlaceholderName(name: string): boolean {
+  return name === ANONYMOUS_NAME || name === UNSETTLED_LAZY_NAME;
+}
+
+/**
  * Id for a component whose source could not be read at all — an unsettled lazy
  * component, or a native function. Name-only, and marked so it is never mistaken
  * for something the resolver could have found and failed to.
+ *
+ * A fallback name gets a *second* mark, `n_`, because a name-only id is only an
+ * identity while the name is one. Two unnamed components hash to the same
+ * `n_…`, so whatever the first of them happened to know — a `_debugSource`
+ * pointing at the file its JSX was written in — would be handed to every later
+ * one as fact. Minting a fresh id per sighting instead would be worse: the table
+ * is keyed by id, so a flow that clicked one lazy modal forty times would file
+ * forty rows and blow the per-flow cap. So the id stays shared and is instead
+ * flagged as one that must never carry a path: `table.ts` refuses to give it
+ * one, and `owner.ts` refuses to attribute a step to it.
  */
 export function nameOnlyId(name: string): string {
-  return `n${fnv1a(name, SEED_A).toString(16).padStart(8, '0')}`;
+  const digest = fnv1a(name, SEED_A).toString(16).padStart(8, '0');
+  return `${isPlaceholderName(name) ? PLACEHOLDER_PREFIX : 'n'}${digest}`;
 }
 
 /** True for an id produced by `nameOnlyId` — there is no needle to resolve. */
 export function isNameOnly(id: string): boolean {
   return id.startsWith('n');
+}
+
+/**
+ * True for a name-only id built from a fallback name, which several unrelated
+ * components share. `_` is safe as a marker because the rest of the id is hex.
+ */
+export function isPlaceholderId(id: string): boolean {
+  return id.startsWith(PLACEHOLDER_PREFIX);
 }

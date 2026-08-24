@@ -12,10 +12,12 @@
 import { describe, expect, it } from 'vitest';
 import { withImportedScreenshot } from '../src/core/flow/index.js';
 import {
+  checkPixelBudget,
   fitWithin,
   firstImage,
   MAX_EDGE,
   MAX_FILE_BYTES,
+  MAX_PIXELS,
   validateImageFile,
 } from '../src/features/screenshots/import.js';
 import type { BoundingBox, Step } from '../src/shared/types.js';
@@ -64,6 +66,40 @@ describe('what is refused, and why', () => {
 
   it('refuses an empty file rather than producing a blank screenshot', () => {
     expect(validateImageFile({ type: 'image/png', size: 0 }).ok).toBe(false);
+  });
+});
+
+/**
+ * The byte cap bounds the *compressed* file and nothing else, and the two are
+ * barely related: a 200KB PNG of 30000x30000 flat pixels is well inside every
+ * byte check and decodes to about 3.6GB, which is the viewer tab gone along
+ * with any review the user had not saved. `fitWithin` cannot help — it runs
+ * after the decode, and bounds only what is kept.
+ */
+describe('what the byte cap does not bound', () => {
+  it('refuses a decompression bomb that passes every byte check', () => {
+    expect(validateImageFile({ type: 'image/png', size: 200 * 1024 }).ok).toBe(true);
+    expect(checkPixelBudget(30_000, 30_000).ok).toBe(false);
+  });
+
+  it('accepts the screenshots people actually import', () => {
+    expect(checkPixelBudget(3840, 2160).ok).toBe(true); // a 4K capture
+    expect(checkPixelBudget(6016, 3384).ok).toBe(true); // a 6K retina display
+    expect(checkPixelBudget(3000, 8000).ok).toBe(true); // a long scrolling capture
+  });
+
+  it('draws the line at the budget itself', () => {
+    expect(checkPixelBudget(MAX_PIXELS / 1000, 1000).ok).toBe(true);
+    expect(checkPixelBudget(MAX_PIXELS / 1000, 1001).ok).toBe(false);
+  });
+
+  it('says how big the image is and how big it may be', () => {
+    const refused = checkPixelBudget(30_000, 30_000, 'poster.png');
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.error.message).toContain('poster.png');
+    expect(refused.error.message).toContain('30000');
+    expect(refused.error.message).toContain('40 megapixel');
   });
 });
 

@@ -28,6 +28,12 @@ export function confirm({ title, body, confirmLabel, tone = 'danger' }: ConfirmO
   ok.className = `btn btn--${tone}`;
 
   return new Promise((resolve) => {
+    // Cleared before every open. `returnValue` is only written when a *button*
+    // closes the dialog, so dismissing with Escape leaves whatever the last
+    // answer was — and these dialogs are shared elements. Having once confirmed
+    // a deletion, pressing Escape on the next one read as "yes" and deleted the
+    // flow the user had just decided to keep.
+    dialog.returnValue = '';
     dialog.addEventListener(
       'close',
       () => resolve(dialog.returnValue === 'ok'),
@@ -55,6 +61,8 @@ export function askName({ title, label, value, confirmLabel }: NameOptions): Pro
   input.value = value;
 
   return new Promise((resolve) => {
+    // See `confirm` — a dismissed dialog must not inherit the last answer.
+    dialog.returnValue = '';
     dialog.addEventListener(
       'close',
       () => {
