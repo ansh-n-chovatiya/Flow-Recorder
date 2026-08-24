@@ -49,6 +49,27 @@ Set `FLOWSNAP_DIR` to put them somewhere else.
 Not inside the npm package: under `npx` that directory is a cache which gets
 cleared without warning, and it would take every recording with it.
 
+### How much is kept
+
+The newest 200 flows, up to 2 GB. Past either ceiling the oldest recordings are
+deleted as new ones arrive, oldest first, and each one is named on stderr and in
+the POST response rather than disappearing quietly.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `FLOWSNAP_MAX_FLOWS` | `200` | Recordings kept |
+| `FLOWSNAP_MAX_BYTES` | `2147483648` | Bytes kept, screenshots included |
+
+Two ceilings because they fail differently: a handful of enormous flows blows the
+disk budget while the count still looks fine, and a great many tiny ones blow the
+count while the bytes look fine. Both are runaway guards rather than a retention
+policy — losing a recording someone still wanted is the worse failure — so they
+sit well above any plausible working set.
+
+A recording is ordered by when it was *made*, not when it was last sent, so
+re-sending an old flow does not make it look new. It is never evicted by its own
+save: the flow you just sent is always there when you go to read it.
+
 ## Running more than one Claude session
 
 The extension POSTs recordings to `127.0.0.1:7734`, and at user scope every
@@ -66,8 +87,14 @@ your home directory.
 
 Captured **request and response bodies are not redacted** — only headers are. A
 recorded flow can therefore contain whatever your app sent, including tokens in
-payloads. That's why auto-send is off by default in the extension, and why
-hosting this server somewhere shared is a decision to make carefully.
+payloads. URLs are not redacted either, so an OAuth callback recorded mid-flow
+keeps its `?code=` intact. That's why auto-send is off by default in the
+extension, and why hosting this server somewhere shared is a decision to make
+carefully.
+
+Deleting a flow in the extension deletes it here too. Only the extension may
+write or delete: a request carrying a web page's `Origin` is refused, because a
+loopback port is reachable from any page you happen to have open.
 
 ## Remote mode
 

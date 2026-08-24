@@ -196,6 +196,18 @@ const FILTER_LABEL: Record<StepFilter, string> = {
   errors: 'Errors',
 };
 
+/**
+ * The first step the filter shows, or `null` when it shows nothing.
+ *
+ * Exported so the review screen can re-seat its selection when the filter
+ * changes: the active index addresses the whole list, and leaving it on a step
+ * the filter now hides pointed Delete at something that was not on screen.
+ */
+export function firstVisibleIndex(steps: Step[], filter: StepFilter): number | null {
+  const at = steps.findIndex((step) => passes(step, filter));
+  return at === -1 ? null : at;
+}
+
 function passes(step: Step, filter: StepFilter): boolean {
   switch (filter) {
     case 'all':
@@ -388,8 +400,12 @@ export function deriveReviewView(input: ReviewInput): ReviewView {
     failures,
     canExport: true,
     // Only the live recording can be archived; a flow already in the library has
-    // nowhere to be saved to.
-    canSave: flow.id === null,
+    // nowhere to be saved to — and only once it has stopped. Archiving a
+    // recording that is still running froze a partial prefix into the library,
+    // with a partial component table behind it (the final resolve pass is
+    // refused while recording), and left the user with two flows for one task
+    // once they pressed Stop and saved again.
+    canSave: flow.id === null && input.recording === 'idle',
     canDelete: flow.id !== null,
   };
 }

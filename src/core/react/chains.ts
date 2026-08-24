@@ -51,13 +51,25 @@ export interface ChainBuffer<T> {
 
 export function createChainBuffer<T>(options: ChainBufferOptions): ChainBuffer<T> {
   const held: KeyedChain<T>[] = [];
-  const waiters = new Map<number, (value: T) => void>();
+  /*
+   * A queue per key, not one waiter per key.
+   *
+   * `event.timeStamp` is the key, and two steps can legitimately share one: a
+   * `click` and the `change` it triggers are dispatched from the same user
+   * gesture, and both ask for the chain. A single slot meant the second `take`
+   * overwrote the first's resolver, so the first waited out its timeout and
+   * recorded no components even though its chain had arrived. Costly rather than
+   * wrong — a step loses its attribution, it never gains someone else's — but it
+   * loses it silently, and the fix is a line.
+   */
+  const waiters = new Map<number, ((value: T) => void)[]>();
 
   return {
     deliver(chain) {
-      const waiter = waiters.get(chain.eventTime);
+      const queue = waiters.get(chain.eventTime);
+      const waiter = queue?.shift();
       if (waiter) {
-        waiters.delete(chain.eventTime);
+        if (queue && queue.length === 0) waiters.delete(chain.eventTime);
         waiter(chain.value);
         return;
       }
@@ -82,15 +94,26 @@ export function createChainBuffer<T>(options: ChainBufferOptions): ChainBuffer<T
       }
 
       return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          waiters.delete(eventTime);
-          resolve(null);
-        }, options.timeoutMs);
+        const settle = (value: T | null): void => {
+          const queue = waiters.get(eventTime);
+          if (queue) {
+            const at = queue.indexOf(waiter);
+            if (at !== -1) queue.splice(at, 1);
+            if (queue.length === 0) waiters.delete(eventTime);
+          }
+          resolve(value);
+        };
 
-        waiters.set(eventTime, (value) => {
+        const timer = setTimeout(() => settle(null), options.timeoutMs);
+
+        const waiter = (value: T): void => {
           clearTimeout(timer);
           resolve(value);
-        });
+        };
+
+        const queue = waiters.get(eventTime);
+        if (queue) queue.push(waiter);
+        else waiters.set(eventTime, [waiter]);
       });
     },
 

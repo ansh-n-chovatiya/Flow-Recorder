@@ -95,3 +95,34 @@ describe('createChainBuffer', () => {
     expect(await pending).toBeNull();
   });
 });
+
+/**
+ * `event.timeStamp` is the key, and one gesture can produce two steps that both
+ * ask for it — a `click` and the `change` it triggers. A single waiter slot let
+ * the second overwrite the first, which then timed out with no components.
+ */
+describe('two steps waiting on one event', () => {
+  it('serves both, in the order they asked', async () => {
+    const buffer = createChainBuffer<string>({ size: 8, ttlMs: 5000, timeoutMs: 200 });
+
+    const first = buffer.take(42, Date.now());
+    const second = buffer.take(42, Date.now());
+
+    buffer.deliver({ eventTime: 42, value: 'a', at: Date.now() });
+    buffer.deliver({ eventTime: 42, value: 'b', at: Date.now() });
+
+    expect(await first).toBe('a');
+    expect(await second).toBe('b');
+  });
+
+  it('still times out the waiter nobody delivered to', async () => {
+    const buffer = createChainBuffer<string>({ size: 8, ttlMs: 5000, timeoutMs: 20 });
+
+    const first = buffer.take(7, Date.now());
+    const second = buffer.take(7, Date.now());
+    buffer.deliver({ eventTime: 7, value: 'only', at: Date.now() });
+
+    expect(await first).toBe('only');
+    expect(await second).toBeNull();
+  });
+});

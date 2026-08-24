@@ -102,19 +102,110 @@ export function buildSchema(parsed: unknown): string {
  * Replace a large body with its schema. Returns the original when it is under
  * the threshold, and falls back to truncation when it is not JSON.
  */
-export function compactBody(bodyStr: string | null | undefined): string | null | undefined {
-  if (!bodyStr || typeof bodyStr !== 'string') return bodyStr;
-  if (bodyStr.length <= SCHEMA_THRESHOLD) return bodyStr;
+/**
+ * What the capture already did to a body before it got here.
+ *
+ * Without this, a body the agent had cut short was indistinguishable from a
+ * short one: the JSON parse failed on the missing tail and the result was
+ * labelled `[non-JSON]`, which is the one thing it certainly was not.
+ */
+export interface BodyMeta {
+  truncated?: boolean;
+  /** Length of the original body, not of the prefix that survived. */
+  bytes?: number;
+}
 
+/**
+ * Close whatever a truncated JSON body left open, so its shape can be read.
+ *
+ * A prefix cut at a fixed length almost always ends mid-value. Trimming back to
+ * the last completed element and closing the brackets that are still open
+ * recovers a document whose *schema* is the real one — which is all the caller
+ * wants from a body this size. Strings are tracked so a brace inside one is not
+ * mistaken for structure.
+ */
+function repairJson(prefix: string): string | null {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  // Where the last complete element ended, and the depth at that point.
+  let safe = -1;
+
+  for (let i = 0; i < prefix.length; i++) {
+    const char = prefix[i];
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+
+    if (char === '"') inString = true;
+    else if (char === '{' || char === '[') stack.push(char === '{' ? '}' : ']');
+    else if (char === '}' || char === ']') {
+      stack.pop();
+      safe = i;
+    } else if (char === ',' && stack.length > 0) safe = i - 1;
+  }
+
+  if (safe < 0) return null;
+
+  // Re-walk the kept prefix, because trimming may have closed some of what was
+  // open at the cut.
+  const kept = prefix.slice(0, safe + 1);
+  const open: string[] = [];
+  inString = false;
+  escaped = false;
+  for (const char of kept) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') open.push('}');
+    else if (char === '[') open.push(']');
+    else if (char === '}' || char === ']') open.pop();
+  }
+
+  return kept + open.reverse().join('');
+}
+
+export function compactBody(
+  bodyStr: string | null | undefined,
+  meta?: BodyMeta,
+): string | null | undefined {
+  if (!bodyStr || typeof bodyStr !== 'string') return bodyStr;
+  if (!meta?.truncated && bodyStr.length <= SCHEMA_THRESHOLD) return bodyStr;
+
+  // The size the caller cares about is the body the server sent, not the slice
+  // that survived capture.
+  const size = ((meta?.bytes ?? bodyStr.length) / 1024).toFixed(1);
   const trimmed = bodyStr.trim();
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+  const looksJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+
+  if (looksJson) {
     try {
-      const schema = buildSchema(JSON.parse(trimmed));
-      return `[schema — ${(bodyStr.length / 1024).toFixed(1)}KB raw]\n${schema}`;
+      return `[schema — ${size}KB raw]\n${buildSchema(JSON.parse(trimmed))}`;
     } catch {
-      // Not valid JSON after all — fall through to truncation.
+      // Cut mid-structure rather than malformed: repair the prefix and read the
+      // shape off that. This is why the flag matters — the parse fails either
+      // way, and only the flag says which failure it is.
+      if (meta?.truncated) {
+        const repaired = repairJson(trimmed);
+        if (repaired) {
+          try {
+            return `[schema — ${size}KB raw, body truncated at capture]\n${buildSchema(JSON.parse(repaired))}`;
+          } catch {
+            // The repair did not produce readable JSON either; fall through.
+          }
+        }
+        return `${trimmed.slice(0, 300)}\n\n[JSON · ${size}KB · truncated at capture, shape unreadable]`;
+      }
     }
   }
 
-  return `${trimmed.slice(0, 300)}\n\n[non-JSON · ${(bodyStr.length / 1024).toFixed(1)}KB · truncated]`;
+  return `${trimmed.slice(0, 300)}\n\n[non-JSON · ${size}KB · truncated]`;
 }

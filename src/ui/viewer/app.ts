@@ -13,6 +13,19 @@ import type { LibrarySort } from './library-view.js';
 import type { ReviewFlow, StepFilter } from './review-view.js';
 import type { Route } from './route.js';
 
+/**
+ * A deletion that can still be taken back.
+ *
+ * `before` is the step this one sat in front of, and is what the undo re-anchors
+ * on: `index` alone is the position at deletion time, which a later deletion at
+ * a lower index silently invalidates.
+ */
+export interface UndoEntry {
+  index: number;
+  step: Step;
+  before: Step | null;
+}
+
 export interface ViewerState {
   route: Route;
 
@@ -32,7 +45,7 @@ export interface ViewerState {
   filter: StepFilter;
   activeIndex: number | null;
   /** Deletions that Ctrl+Z can still take back, oldest first. */
-  undo: { index: number; step: Step }[];
+  undo: UndoEntry[];
   /**
    * The settings behind "Open in editor". `null` until they have been read, and
    * whenever there is no project root to resolve a path against.

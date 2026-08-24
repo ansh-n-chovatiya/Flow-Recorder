@@ -11,18 +11,19 @@
 import { compactBody } from '../../core/schema/index.js';
 import { statusClass, withImportedScreenshot } from '../../core/flow/index.js';
 import { ACCEPT, firstImage, importScreenshot } from '../../features/screenshots/import.js';
+import { getLocal } from '../../chrome/storage.js';
 import { deleteFlow, renameFlow } from '../../features/flows/store.js';
 import { sendToWorker } from '../../shared/messages.js';
 import type { ConsoleEntry, NetworkCall, Step } from '../../shared/types.js';
 import { hydrateIcons } from '../icons.js';
 import { showToast } from '../toast.js';
-import type { App } from './app.js';
+import type { App, UndoEntry } from './app.js';
 import { openAnnotate } from './annotate.js';
 import { confirm } from './dialogs.js';
 import { clone, el, find, show } from './dom.js';
 import { openExport } from './export-dialog.js';
 import { openSend } from './send-dialog.js';
-import { deriveReviewView, type StepCardView, type StepFilter } from './review-view.js';
+import { deriveReviewView, firstVisibleIndex, type StepCardView, type StepFilter } from './review-view.js';
 import { LIBRARY } from './route.js';
 
 const dom = {
@@ -126,16 +127,37 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
   // is spent rather than after.
   dom.send.addEventListener('click', () => {
     const { flow } = app.state;
-    if (flow) {
+    if (!flow) return;
+
+    void (async () => {
+      /*
+       * The live recording is sent under the id auto-export already gave it.
+       *
+       * With auto-send on, stopping a recording POSTs it as `flow-<ms>` with
+       * everything included. Pressing Send then minted a *second* id and sent
+       * the same recording again, pruned to the dialog's defaults — so the
+       * server held two near-identical flows whose `errorCount` contradicted
+       * each other, one saying two steps failed and the other saying none, with
+       * nothing to say which was authoritative. Reusing the id makes the second
+       * send an update of the first.
+       */
+      let id = flow.id ?? undefined;
+      if (flow.id === null) {
+        const stored = await getLocal('lastMcpFlowId');
+        if (stored.ok && stored.value.lastMcpFlowId) id = stored.value.lastMcpFlowId;
+      }
+
       openSend({
         steps: flow.steps,
         name: flow.name,
-        id: flow.id ?? undefined,
+        id,
         // The live recording's table is re-read at send time, after the last
         // resolve pass; an archived one is already frozen, so it travels here.
         react: flow.id === null ? undefined : flow.react,
+        // So a flow recorded last week is not filed under today.
+        recordedAt: flow.createdAt,
       });
-    }
+    })();
   });
 
   dom.more.addEventListener('click', () => {
@@ -243,6 +265,14 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     if (app.state.filter === id) return;
 
     app.state.filter = id;
+    // The active step is what Delete and `e` act on, and it is an index into the
+    // *whole* list. Leaving it pointing at a step the new filter hides meant
+    // pressing Delete removed something that was not on screen — with nothing
+    // highlighted to say what was about to go — and the toast then named a step
+    // the user could not see. Re-seated rather than merely cleared, so the
+    // highlight always sits on a card the user can actually see.
+    const { flow } = app.state;
+    app.state.activeIndex = flow ? firstVisibleIndex(flow.steps, id) : null;
     app.paint();
     window.scrollTo({ top: 0 });
   }
@@ -276,8 +306,10 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       return;
     }
 
+    let replaced: Step | null = null;
     await editSteps((steps) => {
-      steps[index] = withImportedScreenshot(steps[index], imported.value);
+      replaced = withImportedScreenshot(steps[index], imported.value);
+      steps[index] = replaced;
       return steps;
     });
 
@@ -286,7 +318,12 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       tone: 'success',
       undo: () => {
         void editSteps((steps) => {
-          steps[index] = before;
+          // Found by identity, not by the position the step held when it was
+          // replaced. The toast lives for six seconds, and a deletion in that
+          // window shifts every later step down — so writing the old step back
+          // to its old index overwrote a different step and lost it outright.
+          const at = replaced ? steps.indexOf(replaced) : -1;
+          if (at !== -1) steps[at] = before;
           return steps;
         });
       },
@@ -403,7 +440,10 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     const step = flow?.steps[index];
     if (!flow || !step) return;
 
-    const entry = { index, step };
+    // The step that followed this one is remembered so the undo can find its
+    // place again. The bare index is the position at deletion time, and any
+    // deletion at a lower index since then has moved it.
+    const entry = { index, step, before: flow.steps[index + 1] ?? null };
     app.state.undo.push(entry);
 
     void editSteps((steps) => {
@@ -419,7 +459,7 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     });
   }
 
-  function undoDelete(entry?: { index: number; step: Step }): void {
+  function undoDelete(entry?: UndoEntry): void {
     const { undo } = app.state;
     const target = entry ?? undo[undo.length - 1];
     if (!target) return;
@@ -429,7 +469,14 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     undo.splice(at, 1);
 
     void editSteps((steps) => {
-      steps.splice(Math.min(target.index, steps.length), 0, target.step);
+      // Re-anchored on the step this one used to sit in front of. Splicing at
+      // the remembered index put a step back in the wrong place as soon as an
+      // earlier step had been deleted too — undoing the older of two deletions
+      // reordered the flow, and the export then renumbered that wrong order into
+      // "step 5 is the thing that happened last".
+      const anchor = target.before ? steps.indexOf(target.before) : -1;
+      const where = anchor !== -1 ? anchor : Math.min(target.index, steps.length);
+      steps.splice(where, 0, target.step);
       return steps;
     });
   }
@@ -446,7 +493,11 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     });
   }
 
-  function buildBodyPanel(headers: Record<string, string>, body: string | null): HTMLElement {
+  function buildBodyPanel(
+    headers: Record<string, string>,
+    body: string | null,
+    meta?: { truncated?: boolean; bytes?: number },
+  ): HTMLElement {
     const panel = document.createElement('div');
     panel.className = 'call__panel';
 
@@ -486,7 +537,7 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       label.className = 'label';
       label.textContent = 'Body';
 
-      const compact = compactBody(body) ?? body;
+      const compact = compactBody(body, meta) ?? body;
       const pre = document.createElement('pre');
       pre.className = 'body';
       pre.textContent = compact;
@@ -537,9 +588,15 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     find(node, '.call__ms').textContent = `${call.durationMs || 0}ms`;
 
     const panels = find(node, '.call__panels');
-    const request = buildBodyPanel(call.requestHeaders, call.requestBody);
+    const request = buildBodyPanel(call.requestHeaders, call.requestBody, {
+      truncated: call.requestBodyTruncated,
+      bytes: call.requestBodyBytes,
+    });
     request.dataset.panel = 'request';
-    const response = buildBodyPanel(call.responseHeaders, call.responseBody);
+    const response = buildBodyPanel(call.responseHeaders, call.responseBody, {
+      truncated: call.responseBodyTruncated,
+      bytes: call.responseBodyBytes,
+    });
     response.dataset.panel = 'response';
     // The response is what someone opened the row to read.
     response.dataset.active = 'true';
@@ -687,7 +744,18 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
           number: card.number,
           onSave: (screenshot) => {
             void editSteps((steps) => {
-              steps[card.index] = { ...steps[card.index], screenshot };
+              const current = steps[card.index];
+              steps[card.index] = {
+                ...current,
+                screenshot,
+                // The clean capture is preserved, never replaced. The editor
+                // opens on `screenshotOriginal ?? screenshot`, so leaving this
+                // as the recorder's untouched frame meant a second editing
+                // session started from the *un-redacted* image — and saving it
+                // threw away the redaction drawn in the first. A step redacted
+                // to hide an email then shipped that email to Claude.
+                screenshotOriginal: current.screenshotOriginal ?? current.screenshot ?? null,
+              };
               return steps;
             });
           },
@@ -806,7 +874,15 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     const notes = find<HTMLTextAreaElement>(node, '.step__notes');
     notes.value = card.notes;
     notes.addEventListener('blur', () => {
-      if (notes.value === card.notes) return;
+      // Compared against what is stored right now, not against `card`. These
+      // edits pass `repaint: false`, so `card` is the view model from the last
+      // full paint and never catches up — a second edit that returned the field
+      // to the value it had at paint time was read as "nothing changed" and
+      // silently dropped. Clearing a note containing a card number left the
+      // textarea empty on screen while storage, every export and every send
+      // still carried it.
+      const stored = app.state.flow?.steps[card.index]?.notes ?? '';
+      if (notes.value === stored) return;
       void editSteps((steps) => {
         steps[card.index] = { ...steps[card.index], notes: notes.value };
         return steps;
@@ -822,9 +898,12 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     return node;
   }
 
-  function startTitleEdit(action: HTMLElement, index: number, current: string): void {
+  function startTitleEdit(action: HTMLElement, index: number, fallback: string): void {
     const input = document.createElement('input');
     input.className = 'step__action-input';
+    // Seeded from the live step, not from the caller's paint-time copy — which
+    // after a rename is the title the user has already replaced.
+    const current = app.state.flow?.steps[index]?.action ?? fallback;
     input.value = current;
     action.replaceWith(input);
     input.focus();
@@ -838,7 +917,12 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       const next = input.value.trim();
       input.replaceWith(action);
 
-      if (!commit || !next || next === current) return;
+      // Against the stored action, for the same reason as the note above: after
+      // a rename the caller still passes the title from the last paint, so
+      // re-opening the editor seeded it with the *old* text and a small
+      // correction typed there silently reverted the rename.
+      const stored = app.state.flow?.steps[index]?.action ?? current;
+      if (!commit || !next || next === stored) return;
       action.textContent = next;
       void editSteps((steps) => {
         steps[index] = { ...steps[index], action: next };

@@ -17,6 +17,7 @@
 
 import type { ComponentSource } from '../../shared/types.js';
 import { classifyComponent, isSharedPrimitivePath } from './classify.js';
+import { isPlaceholderId } from './id.js';
 
 /**
  * The component id a step should be attributed to, or null.
@@ -34,6 +35,14 @@ import { classifyComponent, isSharedPrimitivePath } from './classify.js';
  *   3. Anything named at all, so a chain of nothing but providers still says
  *      *something* about where the click landed.
  *   4. Null. Rendering nothing beats rendering something wrong.
+ *
+ * A placeholder id — one shared by every component the fiber walk could not
+ * name — is barred from the first two tiers however it looks. It cannot be the
+ * answer to "which component is this", because it is not one component; and it
+ * used to win tier 1 outright whenever some earlier step had handed it a
+ * `_debugSource`, beating the real `CheckoutForm` further out in the chain and
+ * printing a file the click never went near. It is still allowed the last tier,
+ * where a name is all that is being claimed.
  */
 export function pickOwner(
   chain: string[],
@@ -47,9 +56,14 @@ export function pickOwner(
     const component = components[id];
     if (!component) continue;
 
-    if (component.status === 'resolved' && component.dependency !== true) return id;
+    // Kept out of the evidence tiers, not out of the chain: an old flow resolved
+    // before this rule existed still carries such an entry, and it must lose
+    // here rather than be trusted for being already written down.
+    const placeholder = isPlaceholderId(id);
 
-    if (notPlumbing === null) {
+    if (!placeholder && component.status === 'resolved' && component.dependency !== true) return id;
+
+    if (!placeholder && notPlumbing === null) {
       const category = classifyComponent(component.name, component.source);
       if (category === 'unknown') notPlumbing = id;
     }
@@ -100,6 +114,9 @@ export function pickEnclosing(
   for (let i = ownerAt - 1; i >= 0; i--) {
     const id = chain[i];
     if (id === owner) continue;
+    // Same bar as `pickOwner`: a shared id names no particular component, so it
+    // cannot be the feature component that rendered this one either.
+    if (isPlaceholderId(id)) continue;
 
     const component = components[id];
     if (!component) continue;

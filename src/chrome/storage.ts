@@ -48,6 +48,23 @@ export function getLocal(
   return read(chrome.storage.local, keys);
 }
 
+/**
+ * Every key in the local area, whatever it is called.
+ *
+ * Only "Delete all flows" needs this, and it needs it precisely because the
+ * index can be incomplete: a save whose index write failed leaves a
+ * `savedFlow_<id>` key that `savedFlowsMeta` never named. Ids are minted from
+ * the clock so they never repeat, which means nothing will ever overwrite it —
+ * a key nothing can name is a key nothing can free, and sweeping the whole area
+ * is the only way to find one.
+ *
+ * It reads the flows themselves as well as their names, so it belongs on a
+ * button the user pressed, never on a refresh.
+ */
+export function getAllLocal(): Promise<Result<Record<string, unknown>>> {
+  return read(chrome.storage.local, null);
+}
+
 export function setLocal(
   items: Partial<LocalStorageShape> | Record<string, unknown>,
 ): Promise<Result<void>> {
@@ -74,13 +91,23 @@ export function setSync(items: Partial<SyncStorageShape>): Promise<Result<void>>
   return write(chrome.storage.sync, items);
 }
 
-/** Bytes currently used by the local area, across every key. */
-export function bytesInUse(): Promise<number> {
+/**
+ * Bytes currently used by the local area, across every key. `null` when Chrome
+ * would not say.
+ *
+ * It used to answer `0` for a failure, on the grounds that it only fed a budget
+ * guard. It does not: the viewer footer and the Settings page both print this
+ * figure, and `0 B stored` under a library of eight flows is not a missing
+ * guard, it is a lie that reads as "plenty of room". `null` is the honest
+ * answer, and every display already has somewhere to put "we don't know" —
+ * the footer hides, Settings says so. A caller that genuinely wants a number to
+ * compare against a budget can coerce it at its own call site, where "unknown
+ * counts as zero" is a decision somebody made rather than one hidden in here.
+ */
+export function bytesInUse(): Promise<number | null> {
   return new Promise((resolve) => {
     chrome.storage.local.getBytesInUse(null, (bytes) => {
-      // A failure here only costs us the budget guard, so fall back to "unknown
-      // usage is zero" rather than blocking the capture.
-      resolve(chrome.runtime.lastError ? 0 : bytes);
+      resolve(chrome.runtime.lastError ? null : bytes);
     });
   });
 }

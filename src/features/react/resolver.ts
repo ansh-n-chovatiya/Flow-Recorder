@@ -138,8 +138,17 @@ function loadBundle(url: string, deps: ResolveDeps): Promise<string | null> {
 
 // ── Resolving one component ──────────────────────────────────────────────────
 
-/** Why a bundle search ended without a position. */
-type SearchFailure = 'not-found' | 'unfetchable';
+/**
+ * Why a bundle search ended without a position.
+ *
+ * `budget-exhausted` is a separate outcome from `not-found` because the two were
+ * indistinguishable and the caller reported both as the latter. "Not found in
+ * the 3 scripts the page had loaded" was written after reading one of them, and
+ * `retryAfter: urls.length` then told the next pass it had already looked
+ * everywhere — so a clock that ran out once made a component permanently
+ * unresolvable, with a confident sentence explaining the wrong reason.
+ */
+type SearchFailure = 'not-found' | 'unfetchable' | 'budget-exhausted';
 
 interface SearchSuccess {
   url: string;
@@ -147,6 +156,13 @@ interface SearchSuccess {
   column: number;
   matchCount: number;
   content: string;
+  /** The needle that hit, which is the text later bundles must be counted for. */
+  needleText: string;
+  /**
+   * False when the deadline cut the duplicate sweep short, so `matchCount` is a
+   * lower bound rather than the answer.
+   */
+  swept: boolean;
 }
 
 /**
@@ -157,6 +173,12 @@ interface SearchSuccess {
  * was inlined into three chunks has three equally true positions, and reporting
  * one of them as fact would be the kind of confident wrong answer this feature
  * exists to remove.
+ *
+ * That sweep counts `hit.needleText` rather than `needle.head`. The head is the
+ * wrong text whenever the hit came from the body needle, which is precisely the
+ * renamed-function case the body needle exists for: the same component compiled
+ * into two chunks under two minified names shares no head, so every later chunk
+ * counted zero and one of two equally likely paths shipped as unique.
  */
 async function searchForNeedle(
   needle: ComponentNeedle,
@@ -166,9 +188,13 @@ async function searchForNeedle(
 ): Promise<SearchSuccess | SearchFailure> {
   let hit: SearchSuccess | null = null;
   let anyLoaded = false;
+  let outOfTime = false;
 
   for (const url of urls) {
-    if (deps.now() > deadline) break;
+    if (deps.now() > deadline) {
+      outOfTime = true;
+      break;
+    }
 
     const content = await loadBundle(url, deps);
     if (!content) continue;
@@ -177,10 +203,12 @@ async function searchForNeedle(
     if (hit) {
       hit.matchCount += countOccurrences(
         content,
-        needle.head,
+        hit.needleText,
         MAX_MATCHES_TRACKED - hit.matchCount,
       );
-      if (hit.matchCount >= MAX_MATCHES_TRACKED) break;
+      // The cap is as much as is ever tracked, so nothing further would change
+      // the answer: this is a finished sweep, not a truncated one.
+      if (hit.matchCount >= MAX_MATCHES_TRACKED) return hit;
       continue;
     }
 
@@ -192,12 +220,18 @@ async function searchForNeedle(
         column: found.column,
         matchCount: found.matchCount,
         content,
+        needleText: found.needleText,
+        swept: true,
       };
-      if (hit.matchCount >= MAX_MATCHES_TRACKED) break;
+      if (hit.matchCount >= MAX_MATCHES_TRACKED) return hit;
     }
   }
 
-  if (hit) return hit;
+  if (hit) {
+    hit.swept = !outOfTime;
+    return hit;
+  }
+  if (outOfTime) return 'budget-exhausted';
   return anyLoaded ? 'not-found' : 'unfetchable';
 }
 
@@ -242,6 +276,20 @@ async function loadMap(
   return map;
 }
 
+/**
+ * What one component's pass concluded.
+ *
+ * `retryAfter` records the inventory size the answer was reached with; absent
+ * means terminal, and the needle is dropped. `unchanged` is neither: the pass
+ * stopped without learning anything, so the entry and its needle are left
+ * exactly as they were for the next pass to resume from.
+ */
+interface ResolveOutcome {
+  source: ComponentSource;
+  retryAfter?: number;
+  unchanged?: true;
+}
+
 /** One component, start to finish. Never throws — every failure is a status. */
 async function resolveOne(
   entry: ComponentSource,
@@ -249,7 +297,7 @@ async function resolveOne(
   urls: string[],
   deps: ResolveDeps,
   deadline: number,
-): Promise<{ source: ComponentSource; retryAfter?: number }> {
+): Promise<ResolveOutcome> {
   const name = entry.name;
 
   if (urls.length === 0) {
@@ -264,6 +312,17 @@ async function resolveOne(
   }
 
   const found = await searchForNeedle(needle, urls, deps, deadline);
+
+  if (found === 'budget-exhausted') {
+    // Nothing was learned, so nothing is written down. Saying "not found in the
+    // N scripts the page had loaded" here would be a conclusion drawn from the
+    // bundles this pass never got to read, and — because that answer carries a
+    // `searched` count of every script — one no later pass would revisit.
+    // Left as it was, the entry is still `pending`, `selectPending` picks it up
+    // unconditionally next time, and `finish` turns it into an honest `skipped`
+    // if the flow ends first.
+    return { source: entry, unchanged: true };
+  }
 
   if (found === 'unfetchable') {
     return {
@@ -291,9 +350,25 @@ async function resolveOne(
 
   const compiled = { url: found.url, line: found.line + 1, column: found.column + 1 };
   const ambiguous = found.matchCount > 1;
+
+  /*
+   * A match found before the duplicate sweep could finish is not a unique match;
+   * it is a first match with the checking abandoned. The deadline lands here as
+   * readily as anywhere — a hit in the first of four bundles leaves three still
+   * to fetch — and duplicated vendored modules make a second copy ordinary. So a
+   * cut-short sweep is reported at the confidence it was actually reached with,
+   * rather than as the `resolved`, caveat-free answer it used to produce.
+   */
+  const unswept = !found.swept && !ambiguous;
+  const uncertain = ambiguous || unswept;
+
+  const partialNote =
+    " Not all of the page's bundles were checked before the time budget ran out, so the same code may appear elsewhere.";
   const ambiguityNote = ambiguous
     ? ` The same code appears in ${found.matchCount === MAX_MATCHES_TRACKED ? `${MAX_MATCHES_TRACKED} or more` : found.matchCount} places, so this may not be the right one.`
-    : '';
+    : unswept
+      ? partialNote
+      : '';
 
   let map: PreparedMap | null;
   try {
@@ -360,7 +435,7 @@ async function resolveOne(
   return {
     source: {
       name,
-      status: ambiguous ? 'ambiguous' : 'resolved',
+      status: uncertain ? 'ambiguous' : 'resolved',
       via: 'bundle-search',
       source: original.source,
       line: original.line,
@@ -371,6 +446,9 @@ async function resolveOne(
       ...(ambiguous ? { matchCount: found.matchCount } : {}),
       ...(ambiguous
         ? { detail: `Matched in ${found.matchCount} places; this is the first. The path may be the wrong one.` }
+        : {}),
+      ...(unswept
+        ? { detail: `Matched here, but the search did not finish.${partialNote}` }
         : {}),
     },
   };
@@ -440,7 +518,7 @@ export async function resolvePending(
 
       const urls = scriptsForPage(input.scripts, needle.pageUrl);
 
-      let outcome: { source: ComponentSource; retryAfter?: number };
+      let outcome: ResolveOutcome;
       try {
         outcome = await resolveOne(entry, needle, urls, deps, deadline);
       } catch (error) {
@@ -453,6 +531,11 @@ export async function resolvePending(
           },
         };
       }
+
+      // The pass ran out of budget mid-component. Writing anything here — even
+      // the entry it started with — would replace "still queued" with a verdict,
+      // so both the entry and its needle are left untouched for the next pass.
+      if (outcome.unchanged) continue;
 
       components[id] = outcome.source;
       changed = true;

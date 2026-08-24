@@ -97,13 +97,30 @@ function paint(): void {
   dom.runLabel.textContent = view.busy ? 'Packaging…' : 'Export';
   setIcon(dom.runIcon, view.busy ? 'loader-circle' : 'download');
   dom.cancel.disabled = view.busy;
+  // The X is the same door as Cancel and Escape, and it was the only one left
+  // open: `dialog.close()` called from script fires no `cancel` event, so the
+  // guard below never saw it and a second export could start over the first.
+  dom.close.disabled = view.busy;
 
   show(dom.progress, view.caption !== null);
   if (view.caption && session.progress) {
-    dom.caption.textContent = view.caption;
-    const ratio = session.progress.total === 0 ? 1 : session.progress.done / session.progress.total;
-    dom.progressFill.style.width = `${Math.round(ratio * 100)}%`;
+    paintProgress(session.progress);
   }
+}
+
+/**
+ * The two nodes a progress tick actually changes.
+ *
+ * The caption carries the counts, so it has to move with the bar — updating
+ * only the fill would leave the text frozen at "1 of 200" for the whole
+ * package. The wording is duplicated from `deriveExportView` rather than
+ * derived, because deriving it is the measure this exists to avoid; the test
+ * pins the two together.
+ */
+function paintProgress(progress: { done: number; total: number }): void {
+  const ratio = progress.total === 0 ? 1 : progress.done / progress.total;
+  dom.progressFill.style.width = `${Math.round(ratio * 100)}%`;
+  dom.caption.textContent = `Packaging screenshot ${progress.done} of ${progress.total}`;
 }
 
 function buildFormat(card: FormatCard): HTMLElement {
@@ -178,29 +195,48 @@ dom.dialog.addEventListener('cancel', (event) => {
 });
 
 async function run(): Promise<void> {
-  if (!session || session.busy) return;
+  /*
+   * The session this run belongs to, held locally for the whole of it.
+   *
+   * `openExport` replaces the module-level `session` outright, so a flow opened
+   * while an archive is still being packaged makes every `session.` below refer
+   * to the wrong flow: A's export would close B's dialog mid-package and toast
+   * A's filename while B was still building. Every mutation after an await is
+   * therefore against `active`, and skipped once it is no longer on screen.
+   */
+  const active = session;
+  if (!active || active.busy) return;
 
-  const view = deriveExportView({ ...session });
-  session.busy = true;
-  session.progress = { done: 0, total: 0 };
+  const view = deriveExportView({ ...active });
+  active.busy = true;
+  active.progress = { done: 0, total: 0 };
   paint();
 
   const written = await exportFlow({
-    steps: session.steps,
-    title: session.title,
-    format: session.format,
-    options: session.options,
+    steps: active.steps,
+    title: active.title,
+    format: active.format,
+    options: active.options,
     filename: view.filename,
-    react: session.react,
+    react: active.react,
     onProgress: (done, total) => {
-      if (!session) return;
-      session.progress = { done, total };
-      paint();
+      if (session !== active) return;
+      active.progress = { done, total };
+      // The bar only, not a repaint.
+      //
+      // `paint()` runs `deriveExportView`, which re-measures the flow — a
+      // `JSON.stringify` of every step, every network call and every console
+      // entry — and rebuilds all seven rows. Doing that once per packed
+      // screenshot was hundreds of full measures of a multi-megabyte array
+      // between the yields `buildZip` makes precisely so the bar can move, so
+      // the work meant to keep the tab responsive was what froze it.
+      paintProgress(active.progress);
     },
   });
 
-  session.busy = false;
-  session.progress = null;
+  active.busy = false;
+  active.progress = null;
+  if (session !== active) return;
   paint();
 
   if (!written.ok) {

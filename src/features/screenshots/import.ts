@@ -22,13 +22,28 @@ import { flowError } from '../../shared/errors.js';
 import { err, ok, type Result } from '../../shared/result.js';
 
 /**
- * Refused before decoding rather than after.
+ * Refused before reading the file rather than after.
  *
- * Generous — a 4K PNG screenshot is around 10 MB — but bounded, because
- * decoding is what actually costs memory and a 200 MB file would take the tab
- * down before any of this ran.
+ * Generous — a 4K PNG screenshot is around 10 MB — but bounded, because a
+ * 200 MB file would take the tab down before any of this ran.
+ *
+ * This bounds the *compressed* bytes and nothing else. What costs memory is the
+ * decoded bitmap, and the two are barely related: a 200 KB PNG of 30000×30000
+ * flat pixels decodes to around 3.6 GB, which is the viewer tab gone and any
+ * unsaved review with it. `MAX_PIXELS` is the bound that actually matters.
  */
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * The largest decoded image we will draw, in pixels.
+ *
+ * 40 megapixels is roughly 160 MB as RGBA — far more than any screenshot needs
+ * (a 4K capture is 8.3 MP, a 6K retina display 20 MP, an 8000px scrolling
+ * capture around 24 MP) and far below what a decompression bomb asks for.
+ * Checked against `naturalWidth × naturalHeight` as soon as the header has been
+ * parsed, which is before the pixels are ever rasterised into a canvas.
+ */
+export const MAX_PIXELS = 40 * 1000 * 1000;
 
 /**
  * The longest edge an imported screenshot keeps.
@@ -101,6 +116,30 @@ export function validateImageFile(file: FileFacts): Result<void> {
 }
 
 /**
+ * Is this image small enough to draw?
+ *
+ * Asked the moment the dimensions are known and before a single pixel is
+ * rasterised, because `fitWithin` runs *after* the decode and so bounds only
+ * what is kept, never what it costs to get there. The numbers are in the
+ * message: "too big" with no size reads as a bug in FlowSnap, and the user
+ * cannot tell how much smaller is small enough.
+ */
+export function checkPixelBudget(width: number, height: number, name?: string): Result<void> {
+  const pixels = width * height;
+  if (!Number.isFinite(pixels) || pixels <= MAX_PIXELS) return ok();
+
+  const mp = (pixels / 1_000_000).toFixed(0);
+  const budget = (MAX_PIXELS / 1_000_000).toFixed(0);
+  return err(
+    flowError(
+      'IMAGE_UNUSABLE',
+      `${width}x${height}`,
+      `${name ?? 'That image'} is ${width} × ${height} (${mp} megapixels), past the ${budget} megapixel limit. Crop or resize it first.`,
+    ),
+  );
+}
+
+/**
  * The size to draw at, never scaling up.
  *
  * Enlarging a small image would cost storage to add nothing — the pixels are
@@ -152,6 +191,29 @@ function decode(blob: Blob): Promise<HTMLImageElement> {
 }
 
 /**
+ * Decode straight to the size we are going to draw at.
+ *
+ * `createImageBitmap` does the downscale inside the decoder and off the main
+ * thread, so the full-size bitmap is never held as a JavaScript-visible
+ * allocation and the tab does not jank while a large screenshot is resized.
+ * Returns null when the browser has no `createImageBitmap`, or refuses this
+ * file with it — the `<img>` the caller already holds is then drawn instead,
+ * which is what happened before this existed.
+ */
+async function decodeScaled(file: Blob, width: number, height: number): Promise<ImageBitmap | null> {
+  if (typeof createImageBitmap !== 'function') return null;
+  try {
+    return await createImageBitmap(file, {
+      resizeWidth: width,
+      resizeHeight: height,
+      resizeQuality: 'high',
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Normalise a user-supplied image into a step-ready JPEG data URL.
  *
  * The white fill is not cosmetic: JPEG has no alpha, so a PNG with a
@@ -164,6 +226,13 @@ export async function importScreenshot(file: File): Promise<Result<string>> {
 
   try {
     const image = await decode(file);
+
+    // Between knowing the dimensions and drawing anything with them. `<img>`
+    // reports `naturalWidth` from the header; `drawImage` is where a 900
+    // megapixel bomb would actually be rasterised, and it is never reached.
+    const affordable = checkPixelBudget(image.naturalWidth, image.naturalHeight, file.name);
+    if (!affordable.ok) return affordable;
+
     const { width, height } = fitWithin(image.naturalWidth, image.naturalHeight);
 
     if (!width || !height) {
@@ -185,7 +254,15 @@ export async function importScreenshot(file: File): Promise<Result<string>> {
 
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, width, height);
-    ctx.drawImage(image, 0, 0, width, height);
+
+    const scaled = await decodeScaled(file, width, height);
+    try {
+      ctx.drawImage(scaled ?? image, 0, 0, width, height);
+    } finally {
+      // Released explicitly: a bitmap holds its pixels outside the JS heap, so
+      // the collector has no idea how much it is sitting on.
+      scaled?.close();
+    }
 
     return ok(canvas.toDataURL('image/jpeg', SCREENSHOT_QUALITY / 100));
   } catch (error) {

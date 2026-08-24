@@ -66,6 +66,23 @@ export const SCREENSHOT_QUALITY = 60;
 /** Delay before an `input` event is committed as a step, so typing is one step. */
 export const INPUT_DEBOUNCE_MS = 800;
 
+/**
+ * How long to let a single-page app render its new route before screenshotting.
+ *
+ * The URL changes first and the framework paints afterwards, so a capture in the
+ * same task photographs the route the user has just left.
+ */
+export const SPA_SETTLE_MS = 250;
+
+/**
+ * How long to wait for a reloading tab to come back before recording anyway.
+ *
+ * Only a backstop: a page that never fires `complete` — a hung request, a
+ * download — should not leave the user staring at a Start button that does
+ * nothing.
+ */
+export const RELOAD_TIMEOUT_MS = 10_000;
+
 /** Response and request bodies are truncated to this before leaving the page. */
 export const BODY_CAP = 51_200;
 

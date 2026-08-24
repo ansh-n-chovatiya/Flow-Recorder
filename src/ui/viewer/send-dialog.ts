@@ -47,6 +47,8 @@ interface Session {
   /** An archived flow's frozen table. Absent for the live recording, whose
    *  table `sendFlow` reads back itself after its final resolve pass. */
   react: FlowReact | undefined;
+  /** When the flow was recorded, so a re-send is not dated to the re-send. */
+  recordedAt: number | undefined;
 }
 
 let session: Session | null = null;
@@ -158,6 +160,7 @@ async function run(): Promise<void> {
     session.id,
     session.options,
     session.react,
+    session.recordedAt,
   );
 
   session.busy = false;
@@ -189,9 +192,11 @@ export interface OpenSendOptions {
   id?: string;
   /** An archived flow's frozen component table; omitted for the recording. */
   react?: FlowReact | null;
+  /** The flow's own recording time. The server prints it and orders by it. */
+  recordedAt?: number | null;
 }
 
-export function openSend({ steps, name, id, react }: OpenSendOptions): void {
+export function openSend({ steps, name, id, react, recordedAt }: OpenSendOptions): void {
   if (steps.length === 0) {
     showToast({ message: 'There is nothing to send yet.' });
     return;
@@ -211,6 +216,7 @@ export function openSend({ steps, name, id, react }: OpenSendOptions): void {
       options,
       busy: false,
       react: react ?? undefined,
+      recordedAt: recordedAt ?? undefined,
     };
 
     paint();

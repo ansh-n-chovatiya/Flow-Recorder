@@ -54,6 +54,46 @@ export async function getActiveTab(): Promise<Result<chrome.tabs.Tab>> {
   return tab?.id == null ? err(flowError('NO_ACTIVE_TAB')) : ok(tab);
 }
 
+/**
+ * Reload a tab and resolve when the new document has finished loading.
+ *
+ * `chrome.tabs.reload` resolves when the reload has been *started*, so starting
+ * a recording straight after it raced the navigation: the outgoing page was
+ * still there to answer the readiness ping, so it was told to record and logged
+ * a navigation step for the page being thrown away — and then the incoming one
+ * logged the real one. Two navigation steps for a page the user saw once.
+ *
+ * `complete` is only accepted after a `loading`, so a tab that was already
+ * mid-load when the popup opened cannot resolve this with the old document's
+ * event.
+ */
+export function reloadAndWait(tabId: number, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let started = false;
+    let settled = false;
+
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+
+    const onUpdated = (id: number, info: chrome.tabs.TabChangeInfo): void => {
+      if (id !== tabId) return;
+      if (info.status === 'loading') started = true;
+      else if (info.status === 'complete' && started) finish();
+    };
+
+    // Registered before the reload, so the events it produces cannot be missed.
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    const timer = setTimeout(finish, timeoutMs);
+
+    void chrome.tabs.reload(tabId).catch(finish);
+  });
+}
+
 // ── Capture ──────────────────────────────────────────────────────────────────
 
 /**

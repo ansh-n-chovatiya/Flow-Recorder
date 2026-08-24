@@ -13,6 +13,7 @@
  */
 
 import { countByType, countFailures, flowHost, renumber } from '../../core/flow/index.js';
+import { deleteRemoteFlow } from '../mcp/remote.js';
 import { buildFlowReact, pruneComponents } from '../../core/react/attribution.js';
 import { getLocal, removeLocal, setLocal } from '../../chrome/storage.js';
 import { sendToWorker } from '../../shared/messages.js';
@@ -25,7 +26,7 @@ import {
   type FlowReact,
   type Step,
 } from '../../shared/types.js';
-import { makeThumbnail } from './thumbnail.js';
+import { makeThumbnail, thumbnailSource } from './thumbnail.js';
 
 /** A flow and its steps, whether it is the live recording or an archived one. */
 export interface Flow {
@@ -56,6 +57,38 @@ function writeIndex(flows: FlowMeta[]): Promise<Result<void>> {
   return setLocal({ savedFlowsMeta: flows });
 }
 
+/** Serialises index writes, so no two of them can be based on the same read. */
+let indexQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Apply a change to `savedFlowsMeta` — one at a time, against a fresh copy.
+ *
+ * The index is a single key rewritten whole, and the paths that rewrite it are
+ * long. `updateFlowSteps` lists the index, reads the React table, writes a
+ * megabyte of steps, then decodes and re-encodes a full-page JPEG for the
+ * thumbnail before it finally writes the index back — hundreds of milliseconds
+ * in which a rename can read the same snapshot, write its own copy, and be
+ * silently reverted by the stale one the first call has been holding all along.
+ * Every mutation here used to be that unguarded read-modify-write.
+ *
+ * So the caller no longer supplies a list, it supplies a change: a function of
+ * whatever the index holds at the moment the write is made. The queue is what
+ * guarantees nothing lands between that read and that write.
+ */
+function mutateIndex(mutate: (flows: FlowMeta[]) => FlowMeta[]): Promise<Result<void>> {
+  const run = indexQueue.then(async (): Promise<Result<void>> => {
+    const flows = await listFlows();
+    if (!flows.ok) return flows;
+
+    return writeIndex(mutate(flows.value));
+  });
+
+  // The chain must survive a rejection, or one failed write blocks every index
+  // change for the life of the page.
+  indexQueue = run.catch(() => undefined);
+  return run;
+}
+
 // ── Reading ──────────────────────────────────────────────────────────────────
 
 /**
@@ -76,8 +109,70 @@ export async function readCurrent(): Promise<Result<Step[]>> {
   return ok(Array.isArray(steps) ? steps : []);
 }
 
-export function writeCurrent(steps: Step[]): Promise<Result<void>> {
-  return setLocal({ recordedSteps: steps });
+/**
+ * Two steps are the same step if they happened at the same moment in the same
+ * way. Identity, never index: the worker appends while the viewer is editing,
+ * so position 3 is not a name that survives the round trip.
+ */
+function stepKey(step: Step): string {
+  return `${step.timestamp}:${step.type}`;
+}
+
+/**
+ * Write the live recording back, merging into what is stored rather than
+ * replacing it.
+ *
+ * `recordedSteps` has two writers. This is one; the other is the worker's
+ * capture queue, which reads the array and then spends hundreds of milliseconds
+ * screenshotting and annotating before it writes its own copy back. Sending the
+ * viewer's whole in-memory array over the top of that loses whichever write
+ * landed first — the annotation the user just saved, or the step they just
+ * clicked (and with it the badge count) — and neither loss says anything on
+ * screen, because the toast has already claimed success.
+ *
+ * So the edit is re-applied to whatever storage holds *now*:
+ *
+ *  - a stored step the edit also has takes the edited version;
+ *  - a stored step the edit has never seen is a capture that arrived while the
+ *    user was typing, and is kept;
+ *  - a stored step that `base` had and the edit no longer does was deleted by
+ *    the user, and is dropped;
+ *  - an edited step storage no longer has was deleted from somewhere else —
+ *    Discard, another viewer tab — and is *not* written back. Storage is the
+ *    truth about what still exists; resurrecting a discarded recording because
+ *    a stale tab still had it on screen is not a merge, it is an undo nobody
+ *    asked for.
+ *
+ * `base` is the array the edit was derived from. Left out, it defaults to the
+ * edit itself, which reads as "this changes steps, it does not remove any" —
+ * the safe direction, since the cost of getting it wrong is a step that stays
+ * rather than a step that vanishes.
+ *
+ * Returns the merged array, because that — not what the caller passed — is what
+ * storage now holds and what the screen should be showing.
+ */
+export async function writeCurrent(steps: Step[], base: Step[] = steps): Promise<Result<Step[]>> {
+  const stored = await getLocal('recordedSteps');
+  if (!stored.ok) return stored;
+
+  const current = Array.isArray(stored.value.recordedSteps) ? stored.value.recordedSteps : [];
+
+  const storedKeys = new Set(current.map(stepKey));
+  const baseKeys = new Set(base.map(stepKey));
+  const editedKeys = new Set(steps.map(stepKey));
+
+  const kept = steps.filter((step) => storedKeys.has(stepKey(step)) || !baseKeys.has(stepKey(step)));
+  // The worker only ever appends, so anything it added since the edit began
+  // belongs after everything the viewer was looking at.
+  const appended = current.filter((step) => {
+    const key = stepKey(step);
+    return !editedKeys.has(key) && !baseKeys.has(key);
+  });
+
+  const merged = renumber([...kept, ...appended]);
+
+  const written = await setLocal({ recordedSteps: merged });
+  return written.ok ? ok(merged) : written;
 }
 
 /**
@@ -96,16 +191,30 @@ export async function readCurrentReact(steps: Step[]): Promise<FlowReact | null>
 }
 
 /**
- * One saved flow. `null` means the id is not in storage — a link to a flow that
- * has since been deleted, which the viewer shows as a missing flow rather than
- * as an empty one.
+ * What storage actually holds for an id, with the two ways a flow can be absent
+ * kept apart.
+ *
+ * Collapsing them into one `null` is what made a half-deleted flow permanent.
+ * `deleteFlow` removes the steps first, so an index write that fails leaves a
+ * row that is listed but has no steps to open — and the retry was then refused
+ * by a guard that read `no flow <id>` out of the very state the first attempt
+ * had created. The recovery path was blocked by the condition it existed to
+ * recover from.
  */
-export async function readFlow(id: string): Promise<Result<Flow | null>> {
+interface FlowRecord {
+  /** `null` when the index has never heard of this id. */
+  meta: FlowMeta | null;
+  /** `null` when the index lists the flow but its steps key is gone. */
+  steps: Step[] | null;
+  react: FlowReact | null;
+}
+
+async function readFlowRecord(id: string): Promise<Result<FlowRecord>> {
   const flows = await listFlows();
   if (!flows.ok) return flows;
 
   const meta = flows.value.find((flow) => flow.id === id) ?? null;
-  if (!meta) return ok(null);
+  if (!meta) return ok({ meta: null, steps: null, react: null });
 
   const key = savedFlowKey(id);
   const reactKey = savedFlowReactKey(id);
@@ -113,12 +222,26 @@ export async function readFlow(id: string): Promise<Result<Flow | null>> {
   if (!stored.ok) return stored;
 
   const steps = stored.value[key];
-  if (!Array.isArray(steps)) return ok(null);
-
   // Flows archived before components were captured have no such key at all.
   const react = (stored.value[reactKey] as FlowReact | undefined) ?? null;
 
-  return ok({ id, name: meta.name, steps: steps as Step[], meta, react });
+  return ok({ meta, steps: Array.isArray(steps) ? (steps as Step[]) : null, react });
+}
+
+/**
+ * One saved flow. `null` means the id names nothing openable — either it is not
+ * in the index, or it is listed but its steps are gone. The viewer shows both as
+ * a missing flow rather than as an empty one; `deleteFlow` is the one caller
+ * that has to tell them apart, and it reads the record directly.
+ */
+export async function readFlow(id: string): Promise<Result<Flow | null>> {
+  const record = await readFlowRecord(id);
+  if (!record.ok) return record;
+
+  const { meta, steps, react } = record.value;
+  if (!meta || !steps) return ok(null);
+
+  return ok({ id, name: meta.name, steps, meta, react });
 }
 
 // ── Describing ───────────────────────────────────────────────────────────────
@@ -192,21 +315,29 @@ export async function saveAsFlow(name: string, steps: Step[]): Promise<Result<Fl
   await sendToWorker({ type: 'RESOLVE_COMPONENTS', final: true });
   const react = await readCurrentReact(numbered);
 
-  // Steps first: if the index write fails, the orphaned key is overwritten by
-  // the next save with the same timestamp-derived id or cleaned up by "delete
-  // all". If the index went first and the steps failed, the library would list a
-  // flow that cannot be opened.
+  // Steps first: if the index went first and the steps failed, the library would
+  // list a flow that cannot be opened.
   const written = await setLocal({
     [savedFlowKey(id)]: numbered,
     ...(react ? { [savedFlowReactKey(id)]: react } : {}),
   });
   if (!written.ok) return written;
 
-  const flows = await listFlows();
-  if (!flows.ok) return flows;
-
-  const indexed = await writeIndex([meta, ...flows.value]);
-  if (!indexed.ok) return indexed;
+  const indexed = await mutateIndex((flows) => [meta, ...flows]);
+  if (!indexed.ok) {
+    /*
+     * Take the steps back before reporting the failure.
+     *
+     * Left behind, that key is megabytes of a 10 MB budget that nothing can
+     * reach: it is not in the index, so the library never lists it and no row
+     * can delete it; the id is `flow_<ms>` and never recurs, so no later save
+     * overwrites it. The user is told "there is no room", and the space is
+     * occupied by a key nothing can name — which is the failure they were
+     * already having, made permanent.
+     */
+    await removeLocal([savedFlowKey(id), savedFlowReactKey(id)]);
+    return indexed;
+  }
 
   return ok(meta);
 }
@@ -233,8 +364,13 @@ export async function updateFlowSteps(id: string, steps: Step[]): Promise<Result
    * Pruning against the surviving steps is idempotent, so an edit that changed
    * nothing structural rewrites the same table.
    */
-  const stored = await getLocal(savedFlowReactKey(id));
+  // The steps are read alongside the React table because the thumbnail decision
+  // below needs the picture this edit is replacing, not just its step count.
+  const stored = await getLocal([savedFlowKey(id), savedFlowReactKey(id)]);
   const react = stored.ok ? (stored.value[savedFlowReactKey(id)] as FlowReact | undefined) : undefined;
+  const previous = stored.ok && Array.isArray(stored.value[savedFlowKey(id)])
+    ? (stored.value[savedFlowKey(id)] as Step[])
+    : null;
 
   const written = await setLocal({
     [savedFlowKey(id)]: numbered,
@@ -242,10 +378,26 @@ export async function updateFlowSteps(id: string, steps: Step[]): Promise<Result
   });
   if (!written.ok) return written;
 
-  // The step count is the signal that the *shape* of the flow changed and the
-  // thumbnail may now be of a step that is gone. An edit to a note or a title
-  // leaves it alone.
-  const structural = existing.stepCount !== numbered.length;
+  /*
+   * Redraw the thumbnail when the picture it is made of changed — which the
+   * step count alone does not tell you.
+   *
+   * The thumbnail is the first step that has a screenshot, and annotating that
+   * step, or importing an image over it, changes that image while leaving the
+   * count exactly where it was. Keyed on the count, a flow annotated on step 1
+   * showed its un-annotated original for the rest of its life; and a flow
+   * recorded with no screenshots saved with `thumbnail: null`, so importing an
+   * image onto every step still handed `existing.thumbnail ?? null` straight
+   * back and the blank placeholder became permanent.
+   *
+   * A read that failed counts as changed: redrawing a thumbnail costs one JPEG
+   * decode, and showing the wrong picture costs the user their trust in the row.
+   */
+  const structural =
+    existing.stepCount !== numbered.length ||
+    previous === null ||
+    thumbnailSource(previous) !== thumbnailSource(numbered);
+
   const meta = await describeFlow(
     id,
     existing.name,
@@ -254,14 +406,16 @@ export async function updateFlowSteps(id: string, steps: Step[]): Promise<Result
     structural ? undefined : (existing.thumbnail ?? null),
   );
 
-  return writeIndex(flows.value.map((flow) => (flow.id === id ? meta : flow)));
+  // The name comes from the fresh entry, not from the snapshot this call opened
+  // with: a rename that landed while the thumbnail was being drawn is somebody's
+  // deliberate edit, and writing `existing.name` over it would revert it.
+  return mutateIndex((current) =>
+    current.map((flow) => (flow.id === id ? { ...meta, name: flow.name } : flow)),
+  );
 }
 
-export async function renameFlow(id: string, name: string): Promise<Result<void>> {
-  const flows = await listFlows();
-  if (!flows.ok) return flows;
-
-  return writeIndex(flows.value.map((flow) => (flow.id === id ? { ...flow, name } : flow)));
+export function renameFlow(id: string, name: string): Promise<Result<void>> {
+  return mutateIndex((flows) => flows.map((flow) => (flow.id === id ? { ...flow, name } : flow)));
 }
 
 /**
@@ -270,22 +424,49 @@ export async function renameFlow(id: string, name: string): Promise<Result<void>
  * The index entry is removed *after* the steps: a failure between the two leaves
  * a flow that is listed and openable, which is recoverable. The other order
  * leaves bytes in a 10 MB store that nothing can name.
+ *
+ * "Recoverable" only holds if the retry is allowed to run, and it was not: this
+ * guard used to ask `readFlow`, which answered `null` for a flow whose steps
+ * were already gone, and refused the delete as `no flow <id>`. The row was
+ * listed, unopenable, and undeletable — a ghost. So the question asked here is
+ * "is this id in the index?", which is the only thing a delete needs to know,
+ * and steps that are already absent are simply a removal that has nothing left
+ * to do rather than an error.
  */
 export async function deleteFlow(id: string): Promise<Result<DeletedFlow>> {
-  const flow = await readFlow(id);
-  if (!flow.ok) return flow;
-  if (!flow.value?.meta) return err(flowError('STORAGE_WRITE', `no flow ${id}`));
+  const record = await readFlowRecord(id);
+  if (!record.ok) return record;
 
-  const removed = await removeLocal([savedFlowKey(id), savedFlowReactKey(id)]);
-  if (!removed.ok) return removed;
+  const { meta, steps, react } = record.value;
+  if (!meta) return err(flowError('STORAGE_WRITE', `no flow ${id}`));
 
-  const flows = await listFlows();
-  if (!flows.ok) return flows;
+  if (steps !== null) {
+    const removed = await removeLocal([savedFlowKey(id), savedFlowReactKey(id)]);
+    if (!removed.ok) return removed;
+  }
 
-  const indexed = await writeIndex(flows.value.filter((entry) => entry.id !== id));
+  const indexed = await mutateIndex((flows) => flows.filter((entry) => entry.id !== id));
   if (!indexed.ok) return indexed;
 
-  return ok({ meta: flow.value.meta, steps: flow.value.steps, react: flow.value.react });
+  /*
+   * And on the server, where a sent flow also lives.
+   *
+   * Not awaited for permission and never allowed to fail the delete: the MCP
+   * server is usually not running, and refusing to remove a flow locally
+   * because nothing answered on loopback would be the wrong way round.
+   *
+   * Done now rather than after the undo window, because the reason someone
+   * deletes a recording in a hurry is that they have just noticed what it
+   * captured. The undo restores the local copy; the server's is gone until the
+   * flow is sent again, which is the right way for that trade to fall.
+   */
+  void deleteRemoteFlow(id).catch(() => {
+    // Belt and braces: nothing downstream of a local delete may reject.
+  });
+
+  // `steps: []` is the ghost case, and the caller reads it as "there is nothing
+  // here to offer an undo for".
+  return ok({ meta, steps: steps ?? [], react });
 }
 
 /** Everything a delete took, which is everything an undo has to put back. */
@@ -307,8 +488,5 @@ export async function restoreFlow(
   });
   if (!written.ok) return written;
 
-  const flows = await listFlows();
-  if (!flows.ok) return flows;
-
-  return writeIndex([meta, ...flows.value.filter((entry) => entry.id !== meta.id)]);
+  return mutateIndex((flows) => [meta, ...flows.filter((entry) => entry.id !== meta.id)]);
 }

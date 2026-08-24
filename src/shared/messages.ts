@@ -57,6 +57,20 @@ export interface CaptureAndSaveStep {
   components?: CapturedComponent[];
   /** The page the components were seen on; its bundles are what gets searched. */
   componentsPageUrl?: string;
+  /**
+   * Where the page was scrolled when `elementBox` was measured.
+   *
+   * The box is viewport-relative and the capture happens at least
+   * `SETTLE_DELAY_MS` later, so the worker needs both ends to know whether the
+   * element is still where it was. See `GetScroll`.
+   */
+  scroll?: { x: number; y: number };
+}
+
+/** Where the page is scrolled right now, asked of the tab about to be captured. */
+export interface GetScrollResponse {
+  x: number;
+  y: number;
 }
 
 /**
@@ -145,8 +159,24 @@ export interface OpenEditor {
   url: string;
 }
 
+/**
+ * End the recording, once everything already captured has been written.
+ *
+ * Stopping is a storage write like every other recording state change, but it
+ * cannot be *only* that: a step spends a few hundred milliseconds in the
+ * worker's capture queue between the click and the write, and `captureAndSave`
+ * drops anything that finds the recording already over. Pressing Stop straight
+ * after the thing you wanted to record therefore lost exactly that step — and
+ * the MCP auto-export, which fires on the same storage change, shipped the flow
+ * without it. The worker owns the order instead: drain, then flip.
+ */
+export interface FinishRecording {
+  type: 'FINISH_RECORDING';
+}
+
 export type WorkerRequest =
   | CaptureAndSaveStep
+  | FinishRecording
   | Precapture
   | AnnotateScreenshot
   | ReactMeta
@@ -186,6 +216,7 @@ export interface ResponseByType {
   RESOLVE_COMPONENTS: OkResponse;
   GET_STEPS: GetStepsResponse;
   CLEAR_STEPS: OkResponse;
+  FINISH_RECORDING: OkResponse;
   OPEN_EDITOR: OpenEditorResponse;
 }
 
@@ -193,6 +224,7 @@ export interface ResponseByType {
 
 export type ContentRequest =
   | { type: 'PING' }
+  | { type: 'GET_SCROLL' }
   | { type: 'START_RECORDING' }
   | { type: 'STOP_RECORDING' }
   | { type: 'PAUSE_RECORDING' }
@@ -221,6 +253,19 @@ export interface AgentNetworkMessage {
   responseBody: string | null;
   durationMs: number;
   timestamp: number;
+  /**
+   * Truncation, carried beside the body rather than inside it.
+   *
+   * The agent caps bodies and used to append `[truncated — Nb total]` to the
+   * string, which made a cut-off JSON body unparseable — so the export called a
+   * JSON API "non-JSON", reported the kept length as the real one, and never ran
+   * the schema inference that exists precisely for large bodies. The body is now
+   * a clean prefix and these say what happened to it.
+   */
+  requestBodyTruncated?: boolean;
+  requestBodyBytes?: number;
+  responseBodyTruncated?: boolean;
+  responseBodyBytes?: number;
 }
 
 /**

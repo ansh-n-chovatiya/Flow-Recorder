@@ -30,12 +30,29 @@ describe('mayNavigate', () => {
     expect(mayNavigate(document.querySelector('div')!)).toBe(true);
   });
 
-  it('is true for a submit button and for any button inside a form', () => {
+  it('is true for a submit button, typed or untyped', () => {
     mount('<button type="submit">Save</button>');
     expect(mayNavigate(document.querySelector('button')!)).toBe(true);
 
-    mount('<form><button type="button">Add row</button></form>');
+    // No type attribute is `submit`, which is why the old `closest('form')`
+    // clause added nothing for the buttons that do navigate.
+    mount('<form><button>Save</button></form>');
     expect(mayNavigate(document.querySelector('button')!)).toBe(true);
+  });
+
+  /*
+   * A false positive here costs the step its picture. The pre-capture is the
+   * frame from *before* the gesture and the click claims it in place of the
+   * settled capture, so `Clicked "Advanced"` came out beside a photograph of the
+   * panel still collapsed. `type="button"` and `type="reset"` exist precisely
+   * because they do not submit — being inside a form says nothing about them.
+   */
+  it('is false for a non-submitting button, form or no form', () => {
+    mount('<form><button type="button">Add row</button></form>');
+    expect(mayNavigate(document.querySelector('button')!)).toBe(false);
+
+    mount('<form><button type="reset">Clear</button></form>');
+    expect(mayNavigate(document.querySelector('button')!)).toBe(false);
   });
 
   it('is false for a standalone button', () => {

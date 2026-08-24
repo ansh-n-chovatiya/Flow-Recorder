@@ -6,6 +6,83 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [2.5.0] — 2026-08-24
+
+An audit of the recorder, the MCP server, the exporter, the viewer, flow storage
+and React attribution. Almost everything here is one recurring shape: data that
+was silently wrong, missing, duplicated, or attributed to the wrong thing. A step
+is evidence, and presenting the wrong evidence confidently is worse than
+presenting none, because somebody acts on it.
+
+### Added
+
+- **Route changes in single-page apps are recorded as navigation steps.** A
+  `pushState` loads no document, starts no content script and fires no
+  `popstate`, so a React flow — which is most of what FlowSnap records — came out
+  as a run of clicks with nothing to say the page had changed underneath them.
+- **Credentials in URLs are masked at capture.** An OAuth callback kept its
+  `?code=`, and an implicit-flow app its `#access_token=`, all the way into the
+  export and the MCP server. Only the value is replaced, never the parameter or
+  the path, so a step still reads as a record of where the user was. `state` and
+  `nonce` are left alone — CSRF machinery, and usually the thing being debugged.
+- **The MCP server keeps the newest 200 flows, up to 2 GB**, oldest evicted
+  first and each one named rather than dropped quietly. Nothing had ever deleted
+  anything. `FLOWSNAP_MAX_FLOWS` and `FLOWSNAP_MAX_BYTES` override both.
+- **Deleting a flow in the extension deletes it on the server too.** It used to
+  clear `chrome.storage` and stop there, so a recording deleted *because* it had
+  captured a session token was still handed to Claude by the next `list_flows`.
+
+### Fixed
+
+- **Pressing Start wrote one "Navigated to …" step per open tab**, in the same
+  millisecond, each carrying a screenshot of whichever tab was on screen. Every
+  tab runs the content script and extension storage is shared by all of them, so
+  the listener that starts a recording fired in every one at once. Tabs now log
+  themselves when the user actually arrives, which is what the feature meant.
+- **The last step before Stop was discarded.** A step is written a few hundred
+  milliseconds after the click, and stopping flipped the flag out from under the
+  queue — losing exactly the thing a bug report is made of, and shipping the flow
+  to MCP without it.
+- **A step from a background tab carried a picture of a different page.**
+  `captureVisibleTab` photographs the window's visible tab, whichever tab asked.
+- **A recorded page could read any file the MCP server could.** A step's
+  `screenshotFile` is the server's own field, but a POSTed one survived into
+  `flow.json`, and `path.join` resolves `..` — so a page the user visited could
+  name a file for `get_flow` to hand over. The receiver also had no origin check,
+  no body cap and no overwrite guard.
+- **`get_flow_errors` reported "no step failed" for flows sent with the default
+  options**, which leave out network and console — the worst possible answer to
+  the question that tool exists to answer.
+- **Form values became element names**, defeating the masking applied everywhere
+  else: `Typed "•••••••" into S3cret!`, and an autofilled card number as
+  `Clicked "4111 1111 1111 1111"`. An `Authorization` header given as an array of
+  pairs never matched the redaction regex either.
+- **Re-annotating a step undid its redaction.** The editor reopened the pristine
+  capture, so saving an arrow discarded what was drawn before it and shipped the
+  readable image.
+- **The patched `fetch` never resolved for a streaming response.** It awaited the
+  whole body before returning, so SSE, token streams and long polls hung — on
+  every page, whether or not a recording was running. Reused `XMLHttpRequest`
+  objects reported duplicates, and `responseType = 'json'` dropped the entry.
+- **A response body containing its own code fence swallowed the rest of the
+  export** — every later step and the components table. Console output and
+  page-derived labels could forge step headings the same way.
+- **Escape on a confirmation dialog read as "yes"** and deleted the flow: the
+  dialogs are shared elements and `returnValue` is only written by a button.
+- **Undo could destroy an unrelated step**, Delete under a filter removed one
+  that was not on screen, and an edit returning a field to its previous value was
+  silently dropped.
+- A React chain could be attributed to the wrong source file, from a shared
+  `Anonymous` id minted for every host DOM node and from a bundle search that
+  walked back into the previous module; an exhausted time budget was reported as
+  a confident "not found" and never retried.
+- Flows saved by both auto-send and Send appeared twice with contradictory error
+  counts; `flow.json` could be left truncated where a complete one had been.
+
+### Developer
+
+- 561 → 695 tests.
+
 ## [2.4.0] — 2026-08-23
 
 React attribution becomes recording data you can decline, like console logs and

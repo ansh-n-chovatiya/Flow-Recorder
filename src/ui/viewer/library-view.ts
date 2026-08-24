@@ -24,7 +24,12 @@ export interface LibraryInput {
   flows: FlowMeta[] | null;
   /** The recording in progress. `null` while it is still being read. */
   current: { steps: Step[]; recording: RecordingState } | null;
-  /** `null` when usage has not been measured yet. */
+  /**
+   * `null` when usage has not been measured yet — or when the measurement was
+   * refused. Both are "we do not know", and the footer hides for both. A
+   * failure used to arrive here as `0`, which is a figure, so the footer showed
+   * "0 B stored" beneath a library of eight flows.
+   */
   usedBytes: number | null;
   query: string;
   sort: LibrarySort;

@@ -6,7 +6,12 @@ import type {
   NetworkCall,
   Step,
 } from '../src/shared/types.js';
-import { deriveReviewView, STEP_ICON, type ReviewInput } from '../src/ui/viewer/review-view.js';
+import {
+  deriveReviewView,
+  firstVisibleIndex,
+  STEP_ICON,
+  type ReviewInput,
+} from '../src/ui/viewer/review-view.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -400,5 +405,29 @@ describe('the React component on a step', () => {
     }).header;
 
     expect(header?.components).toBe('2 components · 1 resolved');
+  });
+});
+
+/**
+ * The active step is an index into the whole flow, but the list on screen is
+ * filtered — so a selection left on a hidden step pointed Delete at something
+ * the user could not see.
+ */
+describe('firstVisibleIndex', () => {
+  const steps = [
+    { type: 'click', action: 'a', url: 'u', timestamp: 1, stepNumber: 1, screenshot: null },
+    { type: 'navigate', action: 'b', url: 'u', timestamp: 2, stepNumber: 2, screenshot: null },
+    { type: 'click', action: 'c', url: 'u', timestamp: 3, stepNumber: 3, screenshot: null },
+  ] as unknown as Step[];
+
+  it('finds the first step the filter actually shows', () => {
+    expect(firstVisibleIndex(steps, 'navigate')).toBe(1);
+    expect(firstVisibleIndex(steps, 'click')).toBe(0);
+    expect(firstVisibleIndex(steps, 'all')).toBe(0);
+  });
+
+  it('reports nothing to select when the filter hides everything', () => {
+    expect(firstVisibleIndex(steps, 'errors')).toBeNull();
+    expect(firstVisibleIndex([], 'all')).toBeNull();
   });
 });

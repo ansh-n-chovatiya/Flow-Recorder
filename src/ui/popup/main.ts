@@ -12,6 +12,8 @@
  */
 
 import { bytesInUse, getLocal, setLocal } from '../../chrome/storage.js';
+import { reloadAndWait } from '../../chrome/tabs.js';
+import { RELOAD_TIMEOUT_MS } from '../../shared/constants.js';
 import { prepare, probe, type Preflight } from '../../features/recording/preflight.js';
 import { sendToWorker } from '../../shared/messages.js';
 import type { RecordingState, Step, StoredError } from '../../shared/types.js';
@@ -294,6 +296,11 @@ async function beginRecording(): Promise<void> {
     recordedSteps: [],
     recordingStartedAt: Date.now(),
     lastError: null,
+    // Cleared so it only ever names the flow this recording was auto-exported
+    // as. The review tab reuses it when the user presses Send, which is what
+    // stops one recording from becoming two flows on the MCP server; a stale id
+    // from the previous recording would make it overwrite the wrong one.
+    lastMcpFlowId: '',
   });
 
   if (!written.ok) {
@@ -333,15 +340,26 @@ dom.reload.addEventListener('click', () => {
     }
 
     dom.reload.disabled = true;
-    await chrome.tabs.reload(found.target.tabId);
+    await reloadAndWait(found.target.tabId, RELOAD_TIMEOUT_MS);
     await beginRecording();
     dom.reload.disabled = false;
   })();
 });
 
+/**
+ * Stopping goes through the worker so the steps still in its capture queue are
+ * written before the recording is declared over — see `FinishRecording`. The
+ * direct write stays as the fallback: a recording that will not stop because a
+ * message failed is worse than one that stops a step short.
+ */
 dom.stop.addEventListener('click', () => {
   void (async () => {
-    await setLocal({ recordingActive: false, recordingPaused: false, recordingStartedAt: null });
+    dom.stop.disabled = true;
+    const finished = await sendToWorker({ type: 'FINISH_RECORDING' });
+    if (!finished?.ok) {
+      await setLocal({ recordingActive: false, recordingPaused: false, recordingStartedAt: null });
+    }
+    dom.stop.disabled = false;
     await refresh();
   })();
 });
