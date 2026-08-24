@@ -215,7 +215,7 @@ describe('writeCurrent merges instead of overwriting', () => {
     stub.store.recordedSteps = [...before, step({ timestamp: NOW + 5000, stepNumber: 6 })];
 
     const edited = before.map((entry, index) =>
-      index === 2 ? { ...entry, note: 'the button is mislabelled' } : entry,
+      index === 2 ? { ...entry, notes: 'the button is mislabelled' } : entry,
     );
 
     const written = await writeCurrent(edited, before);
@@ -223,7 +223,7 @@ describe('writeCurrent merges instead of overwriting', () => {
 
     const stored = stub.store.recordedSteps as Step[];
     expect(stored).toHaveLength(6);
-    expect(stored[2].note).toBe('the button is mislabelled');
+    expect(stored[2].notes).toBe('the button is mislabelled');
     expect(stored[5].timestamp).toBe(NOW + 5000);
     // The step the worker appended is numbered as part of the flow, not left
     // holding whatever number it was pushed with.
@@ -237,13 +237,13 @@ describe('writeCurrent merges instead of overwriting', () => {
     stub.store.recordedSteps = [...before, step({ timestamp: NOW + 3000, stepNumber: 4 })];
 
     await writeCurrent(
-      before.map((entry, index) => (index === 0 ? { ...entry, note: 'first' } : entry)),
+      before.map((entry, index) => (index === 0 ? { ...entry, notes: 'first' } : entry)),
       before,
     );
 
     const stored = stub.store.recordedSteps as Step[];
-    expect(stored[0].note).toBe('first');
-    expect(stored.filter((entry) => entry.note).length).toBe(1);
+    expect(stored[0].notes).toBe('first');
+    expect(stored.filter((entry) => entry.notes).length).toBe(1);
   });
 
   it('honours a deletion the user made', async () => {

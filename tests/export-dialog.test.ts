@@ -34,7 +34,9 @@ const exportFlow = vi.fn(
 const toasts: string[] = [];
 
 vi.mock('../src/features/export/download.js', () => ({
-  exportFlow: (request: unknown) => exportFlow(request as never),
+  // The request is not inspected — these tests are about the dialog's own state
+  // machine, not what it hands the exporter — so the stub simply drops it.
+  exportFlow: () => exportFlow(),
   suggestFilename: () => 'flowsnap-test',
 }));
 
