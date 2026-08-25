@@ -310,6 +310,65 @@ export interface DescribedTarget {
   action: string;
 }
 
+/**
+ * How far up from the touched element to look for the region it belongs to.
+ *
+ * Four is enough to leave a button and land on the card, row or panel around it,
+ * and few enough that it does not reach the page shell — where the text would be
+ * the whole app and the delta would be noise on every step.
+ */
+const CONTAINER_DEPTH = 4;
+
+/** Visible text worth keeping from one region. Two lines of prose, roughly. */
+const CONTAINER_TEXT_CAP = 240;
+
+/**
+ * The nearest region that reads as a unit around `el`.
+ *
+ * Preference order matters: a landmark or a list item is a thing the user can
+ * see the edges of, and the delta is only useful when a reader can picture what
+ * changed. Falling back to a plain ancestor is fine — it is still smaller than
+ * the page.
+ */
+export function nearestContainer(el: Element): Element {
+  const named = el.closest(
+    '[role="dialog"],[role="alert"],[role="status"],form,li,tr,article,section,fieldset',
+  );
+  if (named) return named;
+
+  /*
+   * The element's own document, never the global one. `core/` is pure by rule —
+   * it is handed the nodes it works on and reaches for nothing — and that rule
+   * is what lets `mcp-bundle.ts` ship this directory to a Node process with no
+   * DOM at all. A bare `document` here would have been the first thing in
+   * `core/` to need one.
+   */
+  const body = el.ownerDocument?.body;
+
+  let node: Element = el;
+  for (let depth = 0; depth < CONTAINER_DEPTH; depth++) {
+    const parent = node.parentElement;
+    if (!parent || parent === body) break;
+    node = parent;
+  }
+  return node;
+}
+
+/**
+ * What a region says, as one line.
+ *
+ * This is the cheap half of what a screenshot tells a human. *The button said
+ * "Processing…" and an error banner appeared* is the sentence a reader wants,
+ * and it costs about fifty tokens against roughly fifteen hundred for opening
+ * the JPEG and looking. It does not replace the image; it means the image only
+ * has to be opened when the text is not enough.
+ */
+export function containerText(el: Element): string {
+  const text = (el as HTMLElement).innerText ?? el.textContent ?? '';
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > CONTAINER_TEXT_CAP ? `${flat.slice(0, CONTAINER_TEXT_CAP)}…` : flat;
+}
+
 /** Resolve the real target of a click and describe what the user just did. */
 export function describeTarget(rawEl: Element): DescribedTarget {
   const el = resolveTarget(rawEl);

@@ -118,6 +118,103 @@ for (const level of LEVELS) {
 
 /* eslint-enable no-console */
 
+// ── uncaught failures ────────────────────────────────────────────────────────
+
+/**
+ * Errors that never pass through `console`.
+ *
+ * An uncaught exception and a rejected promise nobody handled are printed to
+ * devtools by Chrome itself, not by the page calling `console.error` — so the
+ * interception above, which is the whole of this file's console capture, never
+ * saw either of them. A recording made *because* the page threw came back with
+ * an empty console, and the flow said nothing had gone wrong on the one step
+ * where everything had.
+ *
+ * That is the highest-information artifact a bug report can carry — a stack
+ * trace naming the file and line — and it was the one thing FlowSnap could not
+ * record. The README documented the gap rather than closing it.
+ *
+ * Recorded as `error`, because that is what they are: everything downstream
+ * that asks "did this step fail" reads the console level, and a genuine crash
+ * that registered as a warning would be a step that failed silently in the
+ * viewer, the export, the error tool and the failure summary alike.
+ *
+ * Listeners are passive and never call `preventDefault`, so the page's own
+ * handlers, and Chrome's own reporting, see exactly what they saw before.
+ */
+
+/** How much of a stack trace is worth keeping. Deeper frames are framework. */
+const STACK_FRAMES = 12;
+
+function describeThrown(value: unknown): string {
+  if (value instanceof Error) {
+    const frames = (value.stack ?? '').split('\n').slice(1, STACK_FRAMES + 1);
+    const trace = frames.map((frame) => frame.trim()).filter(Boolean).join('\n');
+    // The name and message first, on their own line, so a reader that keeps only
+    // the first line of an entry still gets the part that says what happened.
+    return `${value.name}: ${value.message}${trace ? `\n${trace}` : ''}`;
+  }
+  // A page can throw anything. `throw "nope"` and `Promise.reject(undefined)`
+  // are both real, and both used to be invisible.
+  return serializeArg(value);
+}
+
+function reportUncaught(prefix: string, value: unknown, fallback?: string): void {
+  try {
+    /*
+     * `null` and `undefined` take the fallback rather than being described.
+     * `describeThrown(undefined)` returns the string `"undefined"`, which is
+     * truthy — so a cross-origin `Script error.` with no error object attached
+     * was reported as the word "undefined" and the filename and line that were
+     * the only things it had were dropped.
+     */
+    const described = value == null ? '' : describeThrown(value);
+    emit({
+      kind: 'log',
+      level: 'error',
+      // Prefixed so a reader can tell a crash from a message the app chose to
+      // print. `[uncaught]` in a flow means nobody handled this.
+      args: serializeArgs([`${prefix} ${described || fallback || 'unknown error'}`]),
+      timestamp: Date.now(),
+    });
+  } catch {
+    // Never let instrumentation break the page's own error handling.
+  }
+}
+
+window.addEventListener(
+  'error',
+  (event) => {
+    /*
+     * `error` fires for failed resource loads too — a broken <img>, a script
+     * that 404ed — and those bubble to the window with the element as the
+     * target. They are already visible as failed network calls, and reporting
+     * them here would file a crash for a missing favicon.
+     *
+     * Tested by `nodeType` rather than `event.target !== window`, because that
+     * comparison is a lie in any realm where the global is a proxy — under jsdom
+     * a genuine window error has a target that prints as `[object Window]` and
+     * is not `===` the `window` this file closed over, so the guard dropped the
+     * exact events it was written to keep. A DOM node has a `nodeType`; a window
+     * does not, in any realm.
+     */
+    const target = event.target as { nodeType?: number } | null;
+    if (target && typeof target.nodeType === 'number') return;
+
+    const where = event.filename ? ` (${event.filename}:${event.lineno}:${event.colno})` : '';
+    reportUncaught('[uncaught]', event.error, `${event.message}${where}`);
+  },
+  true,
+);
+
+window.addEventListener(
+  'unhandledrejection',
+  (event) => {
+    reportUncaught('[unhandled rejection]', event.reason);
+  },
+  true,
+);
+
 // ── fetch ────────────────────────────────────────────────────────────────────
 
 const originalFetch = window.fetch.bind(window);

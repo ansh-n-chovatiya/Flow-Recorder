@@ -1,6 +1,6 @@
 /** Operations on a flow's step list. Pure — no storage, no Chrome APIs. */
 
-import type { ConsoleLevel, NetworkCall, Step, StepType } from '../../shared/types.js';
+import type { ConsoleEntry, ConsoleLevel, NetworkCall, Step, StepType } from '../../shared/types.js';
 
 /**
  * Re-derive `stepNumber` from position.
@@ -95,6 +95,76 @@ export function withImportedScreenshot(step: Step, dataUrl: string): Step {
   return next;
 }
 
+/**
+ * A name for one step that survives a round trip through storage.
+ *
+ * Identity, never index: the worker appends while the viewer is editing, so
+ * position 3 is not a name two readers will agree on. Two steps are the same
+ * step if they happened at the same moment in the same way.
+ *
+ * Lives here rather than beside either of its callers because both of them —
+ * `writeCurrent`'s merge and the screenshot side-table — must key on exactly
+ * the same string, and a second copy of this rule is a silent way for a step's
+ * image to end up filed under a name nothing looks for.
+ */
+export function stepKey(step: Pick<Step, 'timestamp' | 'type'>): string {
+  return `${step.timestamp}:${step.type}`;
+}
+
+/**
+ * Console and network activity that no step ever claimed.
+ *
+ * Handed over by each recorded tab when a recording stops — see `FLUSH_PENDING`.
+ */
+export interface Pending {
+  consoleLogs?: ConsoleEntry[];
+  networkCalls?: NetworkCall[];
+  url?: string;
+  title?: string;
+}
+
+/**
+ * Merge what every tab was still holding into one trailing step's worth, or
+ * `null` when there is nothing to say.
+ *
+ * A recording follows the user across tabs, so the request that failed may have
+ * been issued by one they had already left — every tab is asked, and the answers
+ * arrive in whatever order they came back. Sorted by clock afterwards, because a
+ * stack trace printed *before* a request failed is a different story from one
+ * printed after it, and tab response order is not a story at all.
+ *
+ * `url` is taken from the first tab that actually had something, not from the
+ * first that answered: the page this activity belongs to is the page that
+ * produced it.
+ */
+export function mergeTrailing(answers: (Pending | null | undefined)[]): {
+  consoleLogs: ConsoleEntry[];
+  networkCalls: NetworkCall[];
+  url?: string;
+} | null {
+  const consoleLogs: ConsoleEntry[] = [];
+  const networkCalls: NetworkCall[] = [];
+  let url: string | undefined;
+
+  for (const answer of answers) {
+    if (!answer) continue;
+    const logs = answer.consoleLogs ?? [];
+    const calls = answer.networkCalls ?? [];
+    if (logs.length === 0 && calls.length === 0) continue;
+
+    consoleLogs.push(...logs);
+    networkCalls.push(...calls);
+    url ??= answer.url;
+  }
+
+  if (consoleLogs.length === 0 && networkCalls.length === 0) return null;
+
+  consoleLogs.sort((a, b) => a.timestamp - b.timestamp);
+  networkCalls.sort((a, b) => a.timestamp - b.timestamp);
+
+  return { consoleLogs, networkCalls, ...(url ? { url } : {}) };
+}
+
 // ── Reading failure out of a step ────────────────────────────────────────────
 
 export type StatusClass = '2xx' | '3xx' | '4xx' | '5xx';
@@ -110,6 +180,20 @@ export function statusClass(status: number | null): StatusClass {
   if (status >= 400) return '4xx';
   if (status >= 300) return '3xx';
   return '2xx';
+}
+
+/**
+ * Did this one call fail?
+ *
+ * `statusClass` folds a missing status into `5xx` for colouring, which is right
+ * for a rail tick and wrong for a filter: `worstStatus(calls) === '5xx'` is true
+ * of a step where every call succeeded except one that never landed, and says
+ * nothing about *which* call that was. Anything that needs the call itself —
+ * the MCP payload deciding whose body to keep, the server listing what broke —
+ * reads this instead, and reads the same rule the server does.
+ */
+export function callFailed(call: NetworkCall): boolean {
+  return call.status === null || call.status >= 400;
 }
 
 /** The most severe status among a step's network calls, or `null` if it made none. */

@@ -20,6 +20,13 @@ import { describe, expect, it } from 'vitest';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const server = readFileSync(resolve(root, 'mcp-server/server.js'), 'utf8');
+/*
+ * The renderer and `formatSource` now live in `src/core/`, bundled into the
+ * server package by `npm run build:mcp`. The guard follows them: what matters is
+ * that nothing on the path from a source map to the reader's screen touches the
+ * filesystem, and after the move that path runs through both files.
+ */
+const bundle = readFileSync(resolve(root, 'mcp-server/core.js'), 'utf8');
 
 /** Every `path.join(...)` / `path.resolve(...)` argument list in the server. */
 function pathCalls(source: string): string[] {
@@ -40,12 +47,21 @@ describe('the server never builds a filesystem path from page-supplied text', ()
   });
 
   it('renders a component location through the one function that only returns text', () => {
-    // `componentSource` is a template literal and nothing else. If it ever grows
-    // a `path.` call, the line above catches it and this says why it mattered.
-    const body = /function componentSource\(component\) \{[\s\S]*?\n\}/.exec(server)?.[0] ?? '';
+    // `formatSource` is template literals and nothing else. If it ever grows a
+    // `path.` call, this says why that mattered.
+    const body = /function formatSource\(component\) \{[\s\S]*?\n\}/.exec(bundle)?.[0] ?? '';
 
     expect(body).not.toBe('');
     expect(body).not.toContain('path.');
     expect(body).not.toContain('readFile');
+  });
+
+  it('bundles no filesystem access at all into the shared renderer', () => {
+    // `core/` is pure by rule — no Chrome, no DOM, no clock, and nothing that
+    // opens a file. Bundling it into a process that *can* read the reader's disk
+    // is exactly when that rule stops being a style preference.
+    expect(bundle).not.toContain('node:fs');
+    expect(bundle).not.toContain('readFile');
+    expect(bundle).not.toContain('require(');
   });
 });

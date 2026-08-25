@@ -13,6 +13,9 @@
  * to refuse a write.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   deleteFlow,
@@ -23,6 +26,7 @@ import {
   updateFlowSteps,
   writeCurrent,
 } from '../src/features/flows/store.js';
+import { withoutImages } from '../src/features/flows/shots.js';
 import { bytesInUse, getAllLocal } from '../src/chrome/storage.js';
 import { deriveLibraryView } from '../src/ui/viewer/library-view.js';
 import { savedFlowKey, savedFlowReactKey, type FlowMeta, type Step } from '../src/shared/types.js';
@@ -538,4 +542,75 @@ describe('getAllLocal', () => {
     );
   });
 
+});
+
+/*
+ * The viewer decides whether a storage change is its own echo by fingerprinting
+ * what it believes it wrote. `writeCurrent` hands back the steps carrying their
+ * screenshots — that is what the screen shows — while what it puts in the key is
+ * the same array with the images stripped to `shot_` keys. Marking the returned
+ * form recorded a fingerprint the change event could never match, so the viewer
+ * read every one of its own writes as somebody else's and repainted: rebuilding
+ * the step list under a textarea the user had just left, which is the exact
+ * failure that machinery exists to prevent.
+ *
+ * `withoutImages` is the transform `dehydrate` applies on the way in, so this is
+ * the invariant `viewer/main.ts` relies on rather than a restatement of it.
+ */
+describe('what writeCurrent returns against what it stored', () => {
+  const shot = `data:image/jpeg;base64,${'A'.repeat(500)}`;
+
+  it('differ only by the images, so the stored form is recoverable', async () => {
+    const before = recording(3, () => ({ screenshot: shot }));
+    stub.store.recordedSteps = before.map(withoutImages);
+    for (const entry of before) {
+      stub.store[`shot_${entry.timestamp}:${entry.type}`] = { s: shot, o: null };
+    }
+
+    const edited = before.map((entry, index) =>
+      index === 1 ? { ...entry, notes: 'looks wrong here' } : entry,
+    );
+
+    const written = await writeCurrent(edited, before);
+    expect(written.ok).toBe(true);
+    if (!written.ok) return;
+
+    // What the viewer got back still carries the pictures, for the screen.
+    expect(written.value[1].screenshot).toBe(shot);
+    // What onChanged will deliver does not — and the two agree once the same
+    // transform is applied, which is all the marker needs.
+    expect(written.value.map(withoutImages)).toEqual(stub.store.recordedSteps);
+  });
+
+  it('holds when the worker appended a step mid-edit', async () => {
+    const before = recording(2, () => ({ screenshot: shot }));
+    stub.store.recordedSteps = [
+      ...before.map(withoutImages),
+      withoutImages(step({ timestamp: NOW + 5000, stepNumber: 3, screenshot: shot })),
+    ];
+
+    const written = await writeCurrent(before, before);
+    expect(written.ok).toBe(true);
+    if (!written.ok) return;
+
+    expect(written.value).toHaveLength(3);
+    expect(written.value.map(withoutImages)).toEqual(stub.store.recordedSteps);
+  });
+
+  /*
+   * Structural, like tests/react-server-guard.test.ts: the invariant above is
+   * only worth anything if the viewer actually applies it, and `main.ts` is a
+   * module with top-level side effects that cannot be imported to be asked.
+   * What can be checked is that no marker for this key is taken straight from
+   * what `writeCurrent` returned — which is the whole of the original bug.
+   */
+  it('is applied by the viewer, not merely available to it', () => {
+    const viewer = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../src/ui/viewer/main.ts'),
+      'utf8',
+    );
+
+    expect(viewer).toContain('markSelfWriteSteps');
+    expect(viewer).not.toMatch(/markSelfWrite\(\s*'recordedSteps'\s*,\s*\w+\.value\s*\)/);
+  });
 });

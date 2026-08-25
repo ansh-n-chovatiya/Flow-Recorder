@@ -72,15 +72,34 @@ and a screenshot of each step — from inside the project you're trying to fix.
 
 | Tool | Use it for |
 | --- | --- |
-| `list_flows` | What has been recorded, newest first, with a count of failing steps |
+| `list_flows` | What has been recorded, newest first, each failing flow summed up in a line |
 | `get_flow_errors` | Only the steps that broke — the first call when debugging |
-| `get_flow` | The whole recording: walkthrough, step data, screenshot paths |
+| `get_flow_step` | One step in detail, after something else named it |
+| `compare_flows` | A run that worked against one that did not |
+| `get_flow` | The whole recording as a walkthrough; `raw:true` adds the step data |
 | `get_flow_screenshots` | Images inline, when reading files from disk isn't possible |
 | `get_latest_flow` | The recording you just made |
 
 Screenshots are written to disk and referenced by absolute path. Claude Code
 reads them with its own file tools, one at a time, so a long recording costs
 nothing until a specific image is opened.
+
+A long recording comes back a page at a time. Every MCP client caps how much a
+tool may return and enforces it by cutting the text, which on a large flow meant
+a walkthrough that stopped mid-sentence and a JSON block that never closed —
+with nothing to say it had happened. So the server cuts instead, on a step
+boundary, and the page says which steps it holds, of how many, and what to call
+for the rest:
+
+```
+> Steps 1–89 of 120. This is not the whole recording —
+  call get_flow({"id":"flow-big","from":90}) for the rest.
+```
+
+`FLOWSNAP_MAX_TOKENS` sets the budget if 20,000 is the wrong size for your
+client. `get_flow_errors` is bounded the same way, and is still the call to make
+first — twelve failing steps out of a hundred and twenty is a few thousand
+tokens, against twenty for the recording around them.
 
 ### Where flows live
 
@@ -135,19 +154,26 @@ looks like the recording is missing rather than the server being unreachable.
 | **Screenshots** | One per step, with the touched element boxed |
 | **Selectors** | CSS selector, XPath, ARIA label, role, bounding box |
 | **Network** | `fetch` and `XMLHttpRequest` — method, URL, status, response body |
-| **Console** | `console.log`, `warn`, `error`, `info`, `debug` |
+| **Console** | `console.log`, `warn`, `error`, `info`, `debug`, and uncaught errors |
 | **React components** | The component each step happened in, and the file it was written in |
+| **What changed** | The text of the region around the element, before and after |
 
 Password fields are recorded as bullets, never as text.
 
 Console capture is interception of the `console.*` methods. An uncaught exception
-or an unhandled promise rejection is printed by Chrome without passing through
-them, so it is not recorded — if your app reports errors through a global handler
-that logs, those are captured like anything else.
+and an unhandled promise rejection are printed by Chrome without passing through
+them, so those are captured separately, by their own listeners, and recorded as
+errors marked `[uncaught]` or `[unhandled rejection]` with the frames under them.
+A crash is the highest-value thing a recording can hold, and it is the one thing
+that never reaches `console.error` on its own.
 
 Console and network activity is attached to the **next** step, since that is when
-a step is written. A failure raised after your last click needs one more
-interaction before you stop recording, or it has nowhere to land.
+a step is written. Anything the page produces after your last interaction is
+collected when you press Stop and written as a final `After the last step` note —
+so the failure that happens *because* of the last click, which is the usual shape
+of a bug, no longer needs an extra click to be recorded. That step carries no
+screenshot: nobody performed it, and a picture of the page as it was left would
+read as evidence of an action that never happened.
 
 ### React components
 
@@ -218,6 +244,13 @@ with a **Test connection** button, and the React component controls: whether to
 record components at all, whether to look their source files up, and the project
 root and editor that make a recorded path clickable.
 
+Most of what FlowSnap decides — the step limit, screenshot quality, how much of
+a request body is kept, when a body is summarised rather than stored — is still
+hardcoded. [`docs/CONFIGURATION-PLAN.md`](docs/CONFIGURATION-PLAN.md) is the plan
+for making those settings, which knobs should never become settings and why, and
+how a value reaches a page-world agent and a separate Node process that cannot
+read the extension's storage.
+
 **Auto-send is off by default**, and turning it on shows a warning first. It
 ships whole flows — screenshots and captured request bodies — to the local server
 on every stop, and that should be a decision rather than a default.
@@ -229,9 +262,17 @@ server binds to loopback and writes to your home directory. Nothing is uploaded
 anywhere, and there is no telemetry.
 
 Captured **request and response bodies are not redacted** — only headers are. A
-recorded flow can therefore contain whatever your app sent, including tokens in
-payloads. Use the redact tool before sharing a flow, and be deliberate about
-auto-send.
+recorded flow held in the extension can therefore contain whatever your app
+sent, including tokens in payloads. Use the redact tool before sharing a flow,
+and be deliberate about auto-send.
+
+What is *sent* is narrower. A flow handed to the MCP server carries each
+successful response as an inferred schema rather than its content — field names
+and types, not values — so a body that held a token arrives as
+`{ access_token: string }`. Failed calls keep their bodies, because on a failed
+call the body is the error. Headers are dropped except for five on a call that
+failed, where the header can itself be the bug. None of this changes what the
+extension stores or what the viewer shows you.
 
 ### Permissions, and why each is needed
 
@@ -273,6 +314,7 @@ public/         manifest, icons, fonts, content.css — copied verbatim
 scripts/        icon and mark generation, token guard, version sync, packaging
 docs/           SHARED-CORE.md — the files shared with react-source-locator
 mcp-server/     published to npm as flowsnap-mcp; not part of the extension build
+                core.js is src/core/ bundled in by `npm run build:mcp` — generated
 ```
 
 Six files under `src/core/react/` are shared by copy with the sibling extension
@@ -289,7 +331,14 @@ Three rules hold the structure together:
   `Result<T>`, so a failed storage write or a blocked tab is a value to handle
   rather than an exception to miss.
 - **`core/` is pure** — no Chrome, no DOM, no clock. That is why most of it is
-  testable in Node.
+  testable in Node, and why `npm run build:mcp` can bundle it into the MCP
+  server package: the walkthrough Claude reads and the Markdown you download are
+  rendered by the same function. The server used to keep a second, smaller copy
+  of that renderer, and the two disagreed about which selectors were worth
+  printing, when to repeat a URL, and whether page text needed escaping — with
+  the careful one rendering the file a human opens and the weak one rendering
+  what the model read. `mcp-server/core.js` is generated; `npm run verify`
+  builds it before the tests that spawn the server.
 - **Views are derived, then rendered.** `derivePopupView`, `deriveLibraryView`,
   `deriveReviewView` and `deriveExportView` decide what a screen shows; the
   controllers only bind the result to markup. Every state a screen can be in is

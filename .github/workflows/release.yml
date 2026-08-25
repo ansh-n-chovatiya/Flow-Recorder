@@ -91,6 +91,16 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         working-directory: mcp-server
         run: |
+          # `core.js` is `src/core/` bundled in by `npm run build:mcp`, which the
+          # verify step above runs. It is listed in `files`, and npm does not
+          # complain about a listed file that is missing — so without this check
+          # a publish that skipped the build ships a server that throws
+          # ERR_MODULE_NOT_FOUND on its first tool call, and only for users.
+          if [ ! -f core.js ]; then
+            echo "::error::mcp-server/core.js is missing — run npm run build:mcp before publishing."
+            exit 1
+          fi
+
           VERSION=$(node -p "require('./package.json').version")
 
           # A re-run, a re-pushed tag or a manual dispatch would otherwise fail

@@ -9,6 +9,7 @@
   },
   "files": [
     "server.js",
+    "core.js",
     "README.md"
   ],
   "license": "MIT",

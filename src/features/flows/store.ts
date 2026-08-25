@@ -12,7 +12,7 @@
  * normal outcome to report — not an exception to swallow.
  */
 
-import { countByType, countFailures, flowHost, renumber } from '../../core/flow/index.js';
+import { countByType, countFailures, flowHost, renumber, stepKey } from '../../core/flow/index.js';
 import { deleteRemoteFlow } from '../mcp/remote.js';
 import { buildFlowReact, pruneComponents } from '../../core/react/attribution.js';
 import { getLocal, removeLocal, setLocal } from '../../chrome/storage.js';
@@ -27,6 +27,7 @@ import {
   type Step,
 } from '../../shared/types.js';
 import { makeThumbnail, thumbnailSource } from './thumbnail.js';
+import { dehydrate, hydrate } from './shots.js';
 
 /** A flow and its steps, whether it is the live recording or an archived one. */
 export interface Flow {
@@ -100,22 +101,16 @@ function mutateIndex(mutate: (flows: FlowMeta[]) => FlowMeta[]): Promise<Result<
  */
 export async function readCurrent(): Promise<Result<Step[]>> {
   const live = await sendToWorker({ type: 'GET_STEPS' });
-  if (live?.steps.length) return ok(live.steps);
+  // Hydrated either way: the worker answers out of the same storage, so its
+  // steps carry no images either, and a caller that had to know which of the two
+  // it got would be a caller that eventually forgets.
+  if (live?.steps.length) return ok(await hydrate(live.steps));
 
   const stored = await getLocal('recordedSteps');
   if (!stored.ok) return stored;
 
   const steps = stored.value.recordedSteps;
-  return ok(Array.isArray(steps) ? steps : []);
-}
-
-/**
- * Two steps are the same step if they happened at the same moment in the same
- * way. Identity, never index: the worker appends while the viewer is editing,
- * so position 3 is not a name that survives the round trip.
- */
-function stepKey(step: Step): string {
-  return `${step.timestamp}:${step.type}`;
+  return ok(Array.isArray(steps) ? await hydrate(steps) : []);
 }
 
 /**
@@ -171,8 +166,23 @@ export async function writeCurrent(steps: Step[], base: Step[] = steps): Promise
 
   const merged = renumber([...kept, ...appended]);
 
-  const written = await setLocal({ recordedSteps: merged });
-  return written.ok ? ok(merged) : written;
+  /*
+   * `kept` came from the viewer and carries images; `appended` came from storage
+   * and does not. `dehydrate` reads both the same way — a step with no image
+   * contributes no shot — so the merge does not have to know which half a step
+   * came from, and a step the worker added between the read and the write keeps
+   * the image the worker filed for it.
+   */
+  const { steps: lean, shots, orphans } = dehydrate(merged, current);
+
+  const written = await setLocal({ recordedSteps: lean, ...shots });
+  if (!written.ok) return written;
+
+  // After the write, never before: an image deleted first is an image lost if
+  // the write that was meant to drop its step then fails.
+  if (orphans.length) await removeLocal(orphans);
+
+  return ok(merged);
 }
 
 /**

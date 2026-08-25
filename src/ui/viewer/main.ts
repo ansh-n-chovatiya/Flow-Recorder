@@ -21,6 +21,7 @@ import {
   updateFlowSteps,
   writeCurrent,
 } from '../../features/flows/store.js';
+import { withoutImages } from '../../features/flows/shots.js';
 import { REACT_SETTING_DEFAULTS } from '../../shared/constants.js';
 import { ok, type Result } from '../../shared/result.js';
 import type { RecordingState, Step } from '../../shared/types.js';
@@ -227,11 +228,11 @@ let inFlight: Promise<void> | null = null;
  * A fingerprint of a stored value, used for "is this change ours?" and nothing
  * else.
  *
- * Not `JSON.stringify`: `recordedSteps` is mostly base64 screenshot data, and
- * serialising megabytes of it on every capture the worker makes would cost far
- * more than the repaint it saves. Long strings are folded down to their length
- * and their first few characters — enough that an annotated screenshot differs
- * from the one it replaced, which is the comparison that matters.
+ * Not `JSON.stringify`: a stored value can run to megabytes, and serialising
+ * all of it on every capture the worker makes would cost far more than the
+ * repaint it saves. Long strings are folded down to their length and their
+ * first few characters — enough that an annotated screenshot differs from the
+ * one it replaced, which is the comparison that matters.
  *
  * Two different values can collide only if every one of those matches, and a
  * collision costs a repaint that was not needed. The failure that matters is
@@ -254,6 +255,24 @@ function fingerprint(value: unknown): string {
 /** Record what our write left behind, so its change event can be recognised. */
 function markSelfWrite(key: string, value: unknown): void {
   selfWrites.set(key, fingerprint(value));
+}
+
+/**
+ * The same, for `recordedSteps` — fingerprinted as *stored*, not as returned.
+ *
+ * `writeCurrent` hands back the steps carrying their screenshots, because that
+ * is what the screen should be showing; what it puts in the key is the same
+ * array with the images stripped out to `shot_` keys of their own. Marking the
+ * returned form recorded a fingerprint that the change event could never match,
+ * so the viewer read every one of its own writes as somebody else's and
+ * repainted — rebuilding the step list under a textarea the user had just left,
+ * which is the exact failure the markers above exist to prevent.
+ *
+ * `withoutImages` is the transform `dehydrate` applies on the way in, so this
+ * reproduces what landed rather than guessing at it.
+ */
+function markSelfWriteSteps(steps: Step[]): void {
+  markSelfWrite('recordedSteps', steps.map(withoutImages));
 }
 
 /**
@@ -325,7 +344,7 @@ async function writeFlow(id: string | null, steps: Step[]): Promise<Result<Step[
   }
 
   const written = await writeCurrent(steps, state.current?.steps ?? steps);
-  if (written.ok) markSelfWrite('recordedSteps', written.value);
+  if (written.ok) markSelfWriteSteps(written.value);
   return written;
 }
 
@@ -365,7 +384,7 @@ async function saveCurrent(): Promise<void> {
    * the ones that are now safely in the library.
    */
   const cleared = await writeCurrent([], steps);
-  if (cleared.ok) markSelfWrite('recordedSteps', cleared.value);
+  if (cleared.ok) markSelfWriteSteps(cleared.value);
   else showToast({ message: cleared.error.message, tone: 'danger' });
 
   await reload();

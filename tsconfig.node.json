@@ -10,6 +10,7 @@
     "vite.config.ts",
     "vite.content.config.ts",
     "vite.agent.config.ts",
+    "vite.mcp.config.ts",
     "vitest.config.ts",
     "scripts",
     "tests"

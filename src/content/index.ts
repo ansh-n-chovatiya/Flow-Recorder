@@ -9,10 +9,12 @@
 
 import {
   accessibleName,
+  containerText,
   describeTarget,
   getElementLabel,
   getElementText,
   mayNavigate,
+  nearestContainer,
 } from '../core/describe/index.js';
 import { redactUrl } from '../core/redact/index.js';
 import { generateSelector, generateXPath } from '../core/selector/index.js';
@@ -29,6 +31,7 @@ import {
   SPA_SETTLE_MS,
 } from '../shared/constants.js';
 import { createChainBuffer } from '../core/react/chains.js';
+import { stepKey } from '../core/flow/index.js';
 import {
   sendToWorker,
   type AgentMessage,
@@ -147,6 +150,24 @@ chrome.runtime.onMessage.addListener((message: ContentRequest, _sender, sendResp
 
     case 'START_RECORDING':
       applyState(true, false);
+      break;
+
+    /*
+     * Everything the page produced that no step has claimed, handed over and
+     * forgotten.
+     *
+     * `splice(0)` rather than a copy, and answered even when both are empty, so
+     * the worker can tell "nothing happened" from "this tab never replied" —
+     * a tab that has been closed or navigated returns no answer at all, and the
+     * two must not look the same.
+     */
+    case 'FLUSH_PENDING':
+      sendResponse({
+        consoleLogs: pendingLogs.splice(0),
+        networkCalls: pendingNetworkCalls.splice(0),
+        url: redactUrl(window.location.href),
+        title: document.title,
+      });
       break;
 
     case 'STOP_RECORDING':
@@ -431,6 +452,7 @@ document.addEventListener(
         action,
       },
       event.timeStamp,
+      el,
     );
   },
   true,
@@ -490,6 +512,7 @@ document.addEventListener(
             action: `Typed "${value}" into ${label}`,
           },
           eventTime,
+          el,
         );
       }, INPUT_DEBOUNCE_MS),
     });
@@ -529,17 +552,57 @@ document.addEventListener(
         action: `Selected "${selectedText}" from ${label}`,
       },
       event.timeStamp,
+      el,
     );
   },
   true,
 );
 
 /**
+ * How long to let the page respond before reading the region back.
+ *
+ * Long enough for a click to have produced its visible result — a spinner, a
+ * banner, a disabled button — and short enough that it is still that click's
+ * result rather than the next thing the user did. Deliberately longer than
+ * `SETTLE_DELAY_MS`, which exists to get a good *photograph*: the screenshot is
+ * the moment the page reacted, and this is what it settled into.
+ */
+const DOM_DELTA_MS = 700;
+
+/**
+ * Watch what the interaction did to the region around the element.
+ *
+ * Sent as its own message rather than held onto, because the step is written
+ * immediately — delaying it to wait for this would delay the screenshot with it,
+ * and the picture is the thing that must not move. The worker merges the two by
+ * step key.
+ *
+ * Nothing is sent when the text did not change, which is most steps.
+ */
+function watchDomDelta(el: Element, key: string): void {
+  const container = nearestContainer(el);
+  const before = containerText(container);
+
+  setTimeout(() => {
+    if (!isRecording || isPaused) return;
+
+    // Re-read from the container captured at interaction time. Re-finding it
+    // would follow the page's *current* DOM, and on a re-render that is a
+    // different node — which reads as "everything changed" on every step.
+    const after = containerText(container);
+    if (after === before) return;
+
+    void sendToWorker({ type: 'STEP_DOM_DELTA', key, before, after });
+  }, DOM_DELTA_MS);
+}
+
+/**
  * `eventTime` is the `timeStamp` of the interaction that produced this step, and
  * is how its component chain is claimed. Steps with no originating event — a
- * navigation — pass nothing and simply carry no components.
+ * navigation — pass nothing and simply carry no components. `el` is the element
+ * itself, for the DOM delta above; a step without one is not watched.
  */
-function requestScreenshotAndSave(step: DraftStep, eventTime?: number): void {
+function requestScreenshotAndSave(step: DraftStep, eventTime?: number, el?: Element): void {
   // Drained synchronously, exactly as before: waiting for a component chain must
   // not change which console and network activity lands on which step.
   const enriched: DraftStep = {
@@ -547,6 +610,10 @@ function requestScreenshotAndSave(step: DraftStep, eventTime?: number): void {
     consoleLogs: pendingLogs.splice(0),
     networkCalls: pendingNetworkCalls.splice(0),
   };
+
+  // Only for steps with an element: a navigation has no region to watch, and
+  // the page it landed on is a different document anyway.
+  if (el && step.element) watchDomDelta(el, stepKey(step));
 
   void (async () => {
     let components: CapturedComponent[] | undefined;

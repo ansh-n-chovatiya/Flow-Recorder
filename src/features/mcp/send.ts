@@ -7,8 +7,9 @@
  * step is always a paste, and pretending otherwise was the old toast's mistake.
  */
 
-import { renumber, startUrl } from '../../core/flow/index.js';
+import { callFailed, renumber, startUrl } from '../../core/flow/index.js';
 import { attributeSteps, pruneComponents, stripReactRef } from '../../core/react/attribution.js';
+import { compactBody } from '../../core/schema/index.js';
 import { getSync } from '../../chrome/storage.js';
 import { readCurrentReact } from '../flows/store.js';
 import { sendToWorker } from '../../shared/messages.js';
@@ -64,6 +65,88 @@ export function pruneSteps(steps: Step[], include: ExportOptions): Step[] {
   });
 }
 
+/**
+ * Response headers worth the tokens on a call that failed.
+ *
+ * Everything else is dropped outright — see `leanCalls`. These five earn their
+ * place because each one *is* the bug in some flow: a 401 whose
+ * `www-authenticate` names the scheme, a CORS failure whose whole story is that
+ * `access-control-allow-origin` is absent, a 429 with a `retry-after`, a
+ * redirect loop readable only from `location`, and `content-type` because an
+ * endpoint answering a fetch with an HTML error page is a class of bug that
+ * looks like malformed JSON until you see the header.
+ *
+ * Lower-cased: `Headers` normalises on the way in for `fetch`, but the XHR path
+ * splits raw response lines, so the case is whatever the server sent.
+ */
+const DIAGNOSTIC_HEADERS = new Set([
+  'content-type',
+  'www-authenticate',
+  'access-control-allow-origin',
+  'retry-after',
+  'location',
+]);
+
+function keepHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  const kept: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    if (DIAGNOSTIC_HEADERS.has(key.toLowerCase())) kept[key] = value;
+  }
+  return kept;
+}
+
+/**
+ * What the network half of a step costs Claude, cut to what it answers.
+ *
+ * Two things happen here, and both used to happen only on the *download* path —
+ * `exportToJSON` has compacted bodies since it was written, and the flow the
+ * agent actually reads never did. A modest 15-step recording with three calls a
+ * step measured 93k tokens through `get_flow`; past the client's MCP output cap
+ * it is not merely expensive but silently cut mid-JSON, which is the one
+ * failure this codebase refuses everywhere else.
+ *
+ * - **Bodies are compacted**, exactly as the ZIP export compacts them, except
+ *   that a *failed* call keeps its body verbatim (`diagnostic`). A schema of a
+ *   500 is a description of the error's grammar with the error removed.
+ * - **Headers are dropped**, except the handful above on a call that failed.
+ *   They are already redacted at capture, they repeat per call, and no question
+ *   an agent asks of a successful request is answered by its `date` or `vary`.
+ *
+ * The extension's own storage is untouched: the viewer still shows every header
+ * and offers "Show raw" on every body. This is what leaves the machine.
+ */
+export function leanCalls(step: Step): Step {
+  if (!step.networkCalls?.length) return step;
+
+  return {
+    ...step,
+    networkCalls: step.networkCalls.map((call) => {
+      const failed = callFailed(call);
+      return {
+        ...call,
+        requestHeaders: failed ? keepHeaders(call.requestHeaders) : {},
+        responseHeaders: failed ? keepHeaders(call.responseHeaders) : {},
+        // The truncation flags travel with the body, so a body the capture cut
+        // short is read as truncated JSON rather than mislabelled non-JSON.
+        requestBody: call.requestBody
+          ? (compactBody(call.requestBody, {
+              truncated: call.requestBodyTruncated,
+              bytes: call.requestBodyBytes,
+              diagnostic: failed,
+            }) ?? null)
+          : call.requestBody,
+        responseBody: call.responseBody
+          ? (compactBody(call.responseBody, {
+              truncated: call.responseBodyTruncated,
+              bytes: call.responseBodyBytes,
+              diagnostic: failed,
+            }) ?? null)
+          : call.responseBody,
+      };
+    }),
+  };
+}
+
 export interface SendResult {
   /** The id the server stored the flow under. */
   id: string;
@@ -97,6 +180,10 @@ export function buildPayload(
   const carries = react !== null && react !== undefined && Object.keys(components).length > 0;
   const omitted = (['images', 'network', 'logs', 'react'] as const).filter((key) => !include[key]);
 
+  // The owner is stamped here so the server does not have to know the rules
+  // that pick it — see `attributeSteps`.
+  const attributed = carries ? attributeSteps(steps, components) : steps;
+
   return {
     schemaVersion: FLOW_SCHEMA_VERSION,
     id,
@@ -104,9 +191,9 @@ export function buildPayload(
     timestamp: at,
     startUrl: startUrl(steps),
     ...(omitted.length ? { omitted } : {}),
-    // The owner is stamped here so the server does not have to know the rules
-    // that pick it — see `attributeSteps`.
-    steps: carries ? attributeSteps(steps, components) : steps,
+    // Last, so it sees whatever the steps ended up being. `pruneSteps` may have
+    // deleted `networkCalls` outright, in which case this is a no-op.
+    steps: attributed.map(leanCalls),
     ...(carries ? { react: { ...react, components } } : {}),
   };
 }

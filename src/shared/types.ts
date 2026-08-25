@@ -199,6 +199,18 @@ interface StepBase {
   element?: ElementRef;
   consoleLogs?: ConsoleEntry[];
   networkCalls?: NetworkCall[];
+  /**
+   * What the region around the touched element said before the interaction and
+   * shortly after it — the cheap half of what a screenshot tells a human.
+   *
+   * *The button said "Add to cart" and then "Processing…", and an error banner
+   * appeared* is roughly fifty tokens. Learning the same thing from the image
+   * costs about fifteen hundred, and only a reader that can see images at all.
+   * Present only when the text actually changed: a step where nothing visibly
+   * happened has nothing to say, and saying it anyway on every step is how a
+   * useful field becomes noise.
+   */
+  domDelta?: { before: string; after: string };
 }
 
 export interface ClickStep extends StepBase {

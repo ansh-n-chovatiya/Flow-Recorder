@@ -8,6 +8,7 @@
 
 import { annotateScreenshot } from './annotator.js';
 import { getLocal, getSync, setLocal } from '../chrome/storage.js';
+import { shotPatch, sweep as sweepShots, withoutImages } from '../features/flows/shots.js';
 import { captureVisibleTab, sendToTab } from '../chrome/tabs.js';
 import type { OpenEditorResponse, WorkerRequest } from '../shared/messages.js';
 import { isEditorScheme } from '../core/react/editor.js';
@@ -25,6 +26,7 @@ import { flowError, type FlowError } from '../shared/errors.js';
 import type { BoundingBox, DraftStep, Step } from '../shared/types.js';
 import type { CapturedComponent } from '../shared/messages.js';
 import { stripReactRef } from '../core/react/attribution.js';
+import { mergeTrailing, stepKey, type Pending } from '../core/flow/index.js';
 import { mergeComponents } from '../core/react/table.js';
 import { mergeScripts } from '../features/react/inventory.js';
 import { clearResolverCaches, resolvePending } from '../features/react/resolver.js';
@@ -178,14 +180,24 @@ async function captureAndSave(
     screenshotOriginal = screenshot === dataUrl ? null : dataUrl;
   }
 
-  recordedSteps.push({
+  /*
+   * The step goes in the array; its images go in a key of their own.
+   *
+   * Every capture rewrites `recordedSteps` whole, so anything left inline here
+   * is paid for again on every step that follows it — see `features/flows/shots`
+   * for what that cost measured. The two are written together below, in one
+   * `set`, so there is no moment where one exists without the other.
+   */
+  const captured = {
     ...step,
     screenshotOriginal,
     highlightBox: capturedBox,
     dpr: dpr || 1,
     screenshot,
     stepNumber: recordedSteps.length + 1,
-  } as Step);
+  } as Step;
+
+  recordedSteps.push(withoutImages(captured));
 
   const merged = components?.length
     ? mergeComponents(
@@ -198,6 +210,7 @@ async function captureAndSave(
 
   const written = await setLocal({
     recordedSteps,
+    ...(shotPatch(captured, screenshot, screenshotOriginal) ?? {}),
     // Only when something actually changed: a flow that clicks one button forty
     // times would otherwise rewrite an identical table forty times.
     ...(merged?.changed ? { reactComponents: merged.table, reactNeedles: merged.needles } : {}),
@@ -210,6 +223,33 @@ async function captureAndSave(
   updateBadge(recordedSteps.length);
 
   if (merged?.changed) scheduleResolve();
+}
+
+/**
+ * Attach a DOM delta to the step it belongs to.
+ *
+ * Arrives a few hundred milliseconds after the step, because it is a fact about
+ * what the interaction *did* rather than what it was — and the step is written
+ * immediately so the screenshot is not delayed waiting for it.
+ *
+ * Queued behind the capture queue, not run alongside it: both rewrite
+ * `recordedSteps`, and two writers on one key is how an update gets lost. It is
+ * cheap now that the array carries no images.
+ */
+async function attachDomDelta(key: string, before: string, after: string): Promise<void> {
+  const stored = await getLocal(['recordedSteps', 'recordingActive']);
+  if (!stored.ok || !stored.value.recordingActive) return;
+
+  const recordedSteps = stored.value.recordedSteps ?? [];
+  const index = recordedSteps.findIndex((step) => stepKey(step) === key);
+  // The step may have been deleted in the review tab while the page was still
+  // settling, or the recording cleared. Nothing to attach it to is not an error.
+  if (index === -1) return;
+
+  recordedSteps[index] = { ...recordedSteps[index], domDelta: { before, after } };
+
+  const written = await setLocal({ recordedSteps });
+  if (!written.ok) await reportError(written.error);
 }
 
 /**
@@ -233,12 +273,80 @@ async function finishRecording(): Promise<void> {
     await drained;
   } while (drained !== captureQueue);
 
+  await flushTrailing();
+
   const written = await setLocal({
     recordingActive: false,
     recordingPaused: false,
     recordingStartedAt: null,
   });
   if (!written.ok) await reportError(written.error);
+}
+
+/**
+ * The failure that happened after the last click.
+ *
+ * Console and network activity is attached to the *next* step, because a step is
+ * the thing it gets written onto. So anything the page produced after the user's
+ * final interaction had nowhere to land, and stopping the recording threw it
+ * away — which is exactly backwards, because the ordinary shape of a bug report
+ * is *click the thing, watch it break, stop recording*. The README documented
+ * this as a limitation users had to work around by clicking once more.
+ *
+ * Every tab is asked, not just the active one: a recording follows the user
+ * across tabs, and the request that failed may have been issued by the one they
+ * left. Tabs with no content script, or none listening, simply do not answer.
+ *
+ * The step is a `note`, and says what it is. It is not an interaction and must
+ * not read as one — nobody clicked anything here.
+ */
+async function flushTrailing(): Promise<void> {
+  const tabs = await new Promise<chrome.tabs.Tab[]>((resolve) => {
+    chrome.tabs.query({}, (found) => resolve(chrome.runtime.lastError ? [] : found));
+  });
+
+  const answers = await Promise.all(
+    tabs.map(async (tab) =>
+      tab.id === undefined ? null : (await sendToTab<Pending>(tab.id, { type: 'FLUSH_PENDING' })),
+    ),
+  );
+
+  // The merge itself is pure and lives in `core/flow` — see `mergeTrailing`,
+  // which is where the ordering rule is stated and tested.
+  const trailing = mergeTrailing(answers.map((answer) => (answer?.ok ? answer.value : null)));
+  if (!trailing) return;
+
+  const stored = await getLocal('recordedSteps');
+  if (!stored.ok) {
+    await reportError(stored.error);
+    return;
+  }
+
+  const recordedSteps = stored.value.recordedSteps ?? [];
+  // Nothing to append to, and nothing this could mean: a recording with no steps
+  // has no "after the last one".
+  if (recordedSteps.length === 0 || recordedSteps.length >= MAX_STEPS) return;
+
+  const last = recordedSteps[recordedSteps.length - 1];
+
+  recordedSteps.push({
+    type: 'note',
+    url: trailing.url ?? last.url,
+    timestamp: Date.now(),
+    action: 'After the last step',
+    value:
+      'Console and network activity the page produced after the final interaction. ' +
+      'No screenshot: nobody clicked anything here, and a picture of the page as it was ' +
+      'left would read as evidence of a step that was never taken.',
+    screenshot: null,
+    stepNumber: recordedSteps.length + 1,
+    ...(trailing.consoleLogs.length ? { consoleLogs: trailing.consoleLogs } : {}),
+    ...(trailing.networkCalls.length ? { networkCalls: trailing.networkCalls } : {}),
+  });
+
+  const written = await setLocal({ recordedSteps });
+  if (!written.ok) await reportError(written.error);
+  else updateBadge(recordedSteps.length);
 }
 
 // ── React source resolution ──────────────────────────────────────────────────
@@ -512,6 +620,18 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
       return true;
     }
 
+    case 'STEP_DOM_DELTA': {
+      // Behind the capture queue: it owns `recordedSteps`, and the step this
+      // belongs to may still be in it.
+      captureQueue = captureQueue.then(() =>
+        attachDomDelta(message.key, message.before, message.after).catch((error: unknown) =>
+          console.warn('FlowSnap: DOM delta not attached', error),
+        ),
+      );
+      sendResponse({ ok: true });
+      return true;
+    }
+
     case 'CAPTURE_AND_SAVE_STEP': {
       const { step, elementBox, dpr, components, componentsPageUrl, scroll } = message;
       // Enqueue so captures run one at a time. A rejected step is swallowed so
@@ -602,18 +722,29 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
 
     case 'CLEAR_STEPS': {
       clearResolverCaches();
-      void setLocal({
-        recordedSteps: [],
-        recordingActive: false,
-        recordingPaused: false,
-        reactComponents: {},
-        reactNeedles: {},
-        reactScripts: {},
-        reactMeta: null,
-      }).then((written) => {
-        updateBadge(0);
-        sendResponse({ ok: written.ok });
-      });
+      /*
+       * Awaited, not fired alongside. On a Chrome that cannot list storage keys
+       * `sweep` falls back to reading `recordedSteps` for the images to delete,
+       * and the write below is what empties it — racing the two means the sweep
+       * reads an empty array about half the time and leaves every screenshot of
+       * the discarded recording behind, under keys nothing will name again.
+       */
+      void sweepShots()
+        .then(() =>
+          setLocal({
+            recordedSteps: [],
+            recordingActive: false,
+            recordingPaused: false,
+            reactComponents: {},
+            reactNeedles: {},
+            reactScripts: {},
+            reactMeta: null,
+          }),
+        )
+        .then((written) => {
+          updateBadge(0);
+          sendResponse({ ok: written.ok });
+        });
       return true;
     }
 

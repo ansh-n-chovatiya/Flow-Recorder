@@ -5,9 +5,14 @@
  * user redo everything.
  *
  * Every capture rewrites the whole `recordedSteps` key, so a step costs more the
- * longer the flow: measured against real screenshot sizes, ~8 ms at 30 steps,
- * 43 ms at 200, 106 ms at 500 — all inside `CAPTURE_MIN_INTERVAL_MS`. Going
- * higher would mean splitting the array into a key per step first.
+ * longer the flow — but the array no longer carries the screenshots, which is
+ * what made that slope matter. With the images inline a capture at step 200 cost
+ * 136 ms and held 128 MB in the worker, and a 500-step recording did not finish
+ * measuring; with them in a key each (`features/flows/shots`) the same capture
+ * is 0.4 ms against an array of 60 KB, and step 500 is 0.8 ms against 150 KB.
+ *
+ * So this is once again what it says it is — a runaway guard — rather than the
+ * point where recording falls over.
  */
 export const MAX_STEPS = 500;
 

@@ -44,8 +44,10 @@ describe('the published MCP server', () => {
 
   it('publishes the server and nothing else', () => {
     // Without `files`, npm packs the whole directory — including flows/, which
-    // is 125 real recordings of someone's browsing.
-    expect(server.files).toEqual(['server.js', 'README.md']);
+    // is 125 real recordings of someone's browsing. `core.js` is `src/core/`
+    // bundled in by `npm run build:mcp`; the server imports it, so a publish
+    // that leaves it out ships something that throws on its first tool call.
+    expect(server.files).toEqual(['server.js', 'core.js', 'README.md']);
   });
 
   it('is not private, unlike the extension package', () => {

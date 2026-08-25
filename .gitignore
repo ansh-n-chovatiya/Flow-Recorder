@@ -10,6 +10,11 @@ flowsnap-flow-*/
 # MCP server recorded flows (generated output, may contain PII)
 mcp-server/flows/
 
+# `src/core/` bundled into the server package by `npm run build:mcp`. Generated,
+# but published — `npm run verify` builds it before the tests that spawn the
+# server, and the release workflow checks it exists before it publishes.
+mcp-server/core.js
+
 # The marketing take. Not part of the product, and not published: it drives a
 # real browser, spawns servers and records the screen, none of which belongs in
 # a repository people install an extension from. Everything it produces that the

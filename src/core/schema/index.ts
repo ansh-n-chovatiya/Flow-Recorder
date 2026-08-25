@@ -113,7 +113,29 @@ export interface BodyMeta {
   truncated?: boolean;
   /** Length of the original body, not of the prefix that survived. */
   bytes?: number;
+  /**
+   * This body *is* the diagnostic, not an example of a shape — the response to
+   * a call that failed.
+   *
+   * A schema answers "what does this endpoint return"; it cannot answer "why
+   * did this one break". `{"error":"Cannot read property 'id' of undefined",
+   * "stack":"at CartService.total (…)"}` compacts to `{ error: string, stack:
+   * string }`, which is every word of the failure replaced by the observation
+   * that it had words. So a failed call keeps its body verbatim up to
+   * `DIAGNOSTIC_LIMIT` — long enough for a stack trace, short enough that a
+   * server returning its whole database on a 500 cannot blow the budget.
+   */
+  diagnostic?: boolean;
 }
+
+/**
+ * How much of a failed call's body survives compaction.
+ *
+ * Larger than `SCHEMA_THRESHOLD` on purpose: the threshold asks "is this too
+ * big to be worth showing", and for an error body the answer is almost always
+ * no. A stack trace runs to two or three kilobytes and is worth every one.
+ */
+export const DIAGNOSTIC_LIMIT = 4096;
 
 /**
  * Close whatever a truncated JSON body left open, so its shape can be read.
@@ -179,6 +201,19 @@ export function compactBody(
 ): string | null | undefined {
   if (!bodyStr || typeof bodyStr !== 'string') return bodyStr;
   if (!meta?.truncated && bodyStr.length <= SCHEMA_THRESHOLD) return bodyStr;
+
+  /*
+   * A failed call's body is kept, not summarised. Truncation is still stamped
+   * rather than silent — the same rule the rest of this file follows — so a
+   * stack trace cut at the limit cannot read as one that ended there.
+   */
+  if (meta?.diagnostic) {
+    const size = ((meta.bytes ?? bodyStr.length) / 1024).toFixed(1);
+    if (bodyStr.length <= DIAGNOSTIC_LIMIT) {
+      return meta.truncated ? `${bodyStr}\n\n[${size}KB total, truncated at capture]` : bodyStr;
+    }
+    return `${bodyStr.slice(0, DIAGNOSTIC_LIMIT)}\n\n[${size}KB total, truncated]`;
+  }
 
   // The size the caller cares about is the body the server sent, not the slice
   // that survived capture.

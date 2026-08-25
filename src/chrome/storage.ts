@@ -65,6 +65,34 @@ export function getAllLocal(): Promise<Result<Record<string, unknown>>> {
   return read(chrome.storage.local, null);
 }
 
+/**
+ * The names of every key in the local area, without reading a byte of what they
+ * hold.
+ *
+ * `getAllLocal` is the only other way to learn what exists, and it reads the
+ * values too — every archived flow, every screenshot in it. Anything that wants
+ * to *find* keys rather than read them (the screenshot sweep) would pay
+ * hundreds of megabytes for a list of strings.
+ *
+ * `getKeys` landed in Chrome 130 and the extension supports 116, so `null` is a
+ * real answer meaning "this browser cannot do it cheaply" — distinct from `[]`,
+ * which means the area is empty. Callers that get `null` fall back to whatever
+ * they can derive; they must not read the world instead.
+ */
+export function getLocalKeys(): Promise<Result<string[] | null>> {
+  const area = chrome.storage.local as chrome.storage.LocalStorageArea & {
+    getKeys?: (callback: (keys: string[]) => void) => void;
+  };
+  if (typeof area.getKeys !== 'function') return Promise.resolve(ok(null));
+
+  return new Promise((resolve) => {
+    area.getKeys((keys) => {
+      const lastError = chrome.runtime.lastError;
+      resolve(lastError ? err(flowError('STORAGE_READ', lastError.message)) : ok(keys));
+    });
+  });
+}
+
 export function setLocal(
   items: Partial<LocalStorageShape> | Record<string, unknown>,
 ): Promise<Result<void>> {

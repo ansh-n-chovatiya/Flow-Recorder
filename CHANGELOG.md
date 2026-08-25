@@ -6,6 +6,168 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+Two costs nobody was paying attention to: what a recorded flow weighs in the
+context window of the assistant reading it, and what it weighs in the browser
+while it is still being recorded.
+
+### Changed
+
+- **A flow sent to Claude is about a tenth of the size it was.** A 15-step
+  recording with three API calls a step measured 90,220 tokens through
+  `get_flow` and now measures 9,194. The compaction that has always run on the
+  ZIP export — a large response body replaced by its inferred schema — never ran
+  on the path the assistant actually reads, so the tool that exists to be read by
+  a model was the one export that shipped four hundred rows of JSON verbatim.
+  Past a client's MCP output cap that was not merely expensive: the document was
+  cut mid-JSON with nothing to say so, and the assistant reasoned over half a
+  recording believing it had all of it.
+- **A failed call keeps its body.** Compaction everywhere else answers "what does
+  this endpoint return"; on a 500 the question is "why did this one break", and a
+  schema answers it with every word of the error replaced by the observation that
+  it had words. Failed calls keep up to 4 KB verbatim — enough for a stack trace —
+  and say so when they are cut. `get_flow_errors` was cutting at 2 KB and now
+  matches.
+- **Headers no longer travel with every call.** They are redacted at capture,
+  they repeat per call, and no question worth asking of a successful request is
+  answered by its `date` or `vary`. Five survive on a call that failed —
+  `content-type`, `www-authenticate`, `access-control-allow-origin`, `retry-after`
+  and `location` — because each of those is, in some flow, itself the bug. The
+  viewer still shows every header.
+- **`get_flow` returns a long recording one page at a time.** Every MCP client
+  caps tool output and applies the cap by truncating the string, so a response
+  that outgrew it arrived as a document cut mid-JSON with nothing anywhere saying
+  so — and the model then answered questions about a recording it had half of.
+  The server now does the cutting, on a step boundary, and states it: the page
+  says which steps it holds, of how many, and names the `from` that continues it.
+  `get_flow_errors` is bounded the same way. `FLOWSNAP_MAX_TOKENS` sets the
+  budget, default 20,000.
+- **A step that exceeds the budget on its own is shrunk rather than skipped or
+  emitted whole.** Network calls are dropped from the end and the step carries a
+  count of what went, so a recording of one page making six hundred requests
+  still advances a page at a time instead of returning something no client will
+  deliver intact.
+- **The MCP server renders its walkthrough with the extension's own renderer.**
+  It kept a second, smaller copy — 65 lines that had to agree with 375 and did
+  not. The careful one rendered the Markdown a human downloads; the weak one
+  rendered what the model read. The weak one printed the full URL and the
+  absolute screenshot path on every step, printed brittle full-path CSS
+  selectors, showed network calls as a status line with no body, and escaped
+  nothing — so a response body containing `## Step 99 — Clicked "Delete"` forged
+  a step nobody performed. `src/core/` is now bundled into the server package by
+  `npm run build:mcp`, which is what `core/` being pure has always been for. The
+  walkthrough gained request and response bodies and console errors it did not
+  have, at roughly the same size, and `📍` marks a page change instead of every
+  step repeating its URL.
+- **A component's source is formatted one way rather than two.** The server had
+  its own copy that printed a compiled position with the whole bundle URL where
+  the extension printed just the path, so one flow could describe the same
+  component two ways depending on which half of the response you read.
+- **Steps no longer carry replay-only fields into a context window.** `xpath` and
+  `boundingBox` exist so a future playback feature has something to drive from,
+  and `dpr` and `highlightBox` are the annotator's coordinate bookkeeping; none
+  of them answers a question about what went wrong, and all of them are on every
+  step. They stay in `flow.json`. `get_flow_step` keeps the element ones, since
+  someone looking that closely is often looking at the selector.
+- **Timestamps are offsets rather than absolute epoch milliseconds.** "The 500
+  came 4.2 seconds after the click" is the readable form and a fraction of the
+  characters; the flow's own timestamp stays absolute so the offsets have
+  something to be offsets from.
+- **`get_flow_screenshots` returns three images per call, not eight.** A
+  screenshot is on the order of 1,500 tokens of vision budget, so the old
+  ceiling made one call worth more than the rest of the recording put together.
+- **The server compacts bodies it was handed uncompacted.** The extension does
+  it before sending, so this is a no-op for a current flow — but a recording made
+  before that existed, or a POST from anything that is not the extension, was cut
+  with a slice, and a 4 KB slice of a four-hundred-row JSON array ends mid-object
+  and reads as a complete answer with nine rows in it. `get_flow_errors` was
+  slicing too. Both now run the same schema inference the exports run.
+- **`log`, `info` and `debug` are no longer in the step data.** The markdown has
+  always filtered console output to errors and warnings; the JSON never did, so
+  the two halves of one response disagreed about what was worth reading and a
+  page that prints a render timing every frame filled the step data with it. The
+  count of what was dropped is stated on the step. `get_flow_step` still returns
+  everything — a debug line can be the thing that explains the step you are
+  looking at.
+- **A flow recorded by a newer build is refused on read, with the reason.** The
+  receiver already refused a POST it was too old to understand, which covers the
+  flow arriving and nothing about the flow already on disk — and `~/.flowsnap`
+  outlives any one server, since `npx` resolves to whatever npm cached and a
+  downgrade is one install away. An older server read a newer flow, found the
+  fields it knew, and answered questions about it confidently. It is also no
+  longer reported as "not found": it is sitting in `list_flows` in front of the
+  reader, and sending them to look for it is the wrong instruction.
+- **`get_flow` returns the walkthrough, and the step data only when asked.** The
+  two blocks overlapped almost entirely — every step's url, action, selector,
+  component and screenshot path appeared in both, and the reader paid twice. What
+  the JSON had that the walkthrough did not is replay material: xpath, bounding
+  boxes, full unstable selectors. `raw: true` returns it. The walkthrough is
+  bounded per step by the renderer, so a 400-step recording now arrives in one
+  response where the record of the same flow pages four times over.
+- **`failureCount` beside `errorCount`.** `errorCount` counts *steps*, so one
+  step with six 500s and one with a single warning both read as 1 — the
+  difference between a page failing constantly and a page that hiccupped.
+  Renaming it would break every `meta.json` on disk, so the honest count is added
+  beside it.
+- **The step JSON is no longer pretty-printed**, and `flow.md` is no longer read
+  back off disk to answer a tool call — the walkthrough is rendered from the JSON
+  at the moment it is asked for, because it may be a window onto the recording
+  rather than all of it. The file is still written, for whoever opens the flow's
+  directory.
+
+### Added
+
+- **Uncaught exceptions and unhandled promise rejections are recorded.** Chrome
+  prints both itself rather than routing them through `console.error`, so the
+  interception that is the whole of FlowSnap's console capture never saw either
+  — and a recording made *because* the app threw came back with an empty console
+  and a step that read as fine. They arrive as console errors marked
+  `[uncaught]` or `[unhandled rejection]`, with up to twelve stack frames. A
+  failed image or script does not count as a crash; it is already a failed
+  network call.
+- **The failure after the last click is kept.** Console and network activity is
+  attached to the *next* step, so anything the page produced after the final
+  interaction had nowhere to land and was dropped on Stop — which is exactly the
+  wrong thing to drop, since the usual shape of a bug report is *click the
+  thing, watch it break, stop recording*. Every recorded tab is now asked for
+  what it is still holding, and it becomes a final `After the last step` note,
+  in the order it happened rather than the order the tabs answered. That step
+  carries no screenshot: nobody performed it.
+- **`compare_flows(working, broken)`** — two recordings of the same journey
+  lined up: where they stop doing the same thing, which endpoints answered
+  differently, what only the broken run calls, which errors only it logs, and the
+  component the first failure happened in. A working/broken pair is the strongest
+  evidence a bug report can carry, and the only way to use one was to read both
+  recordings in full. Measured at 98 tokens against several thousand.
+- **What an interaction visibly did.** A step now records the text of the region
+  around the element before it and shortly after — *the button said "Place order"
+  and then "Something went wrong"* — which is the same fact the screenshot
+  carries, in the form a reader can act on without opening a JPEG. About fifty
+  tokens against roughly fifteen hundred, and it works for a reader that cannot
+  see images at all. Only when the text actually changed, which is not most
+  steps.
+- **`get_flow_step`** — one step in detail, with bodies kept four times longer
+  than any other tool keeps them. The choice used to be an error summary or the
+  entire recording, so seeing one step in full meant paying for all of them.
+- **A one-line summary of what broke**, on `list_flows`, at the top of
+  `get_flow_errors` and in the flow header: *"3 of 30 steps failed, all POST
+  /v1/orders → 500, first at step 10, in BuyButton (src/components/Buy.tsx:34)."*
+  `errorCount` says three steps broke; it does not say they all broke the same
+  way, which is the difference between three bugs and one.
+
+### Fixed
+
+- **Long recordings no longer slow down as they get longer.** Every capture
+  rewrote the whole `recordedSteps` key, and the screenshots were inside it, so
+  the cost of recording step N was the cost of rewriting steps 1…N: 136 ms per
+  capture at step 200, with 128 MB live in the service worker — and a 500-step
+  recording that could not be measured at all, against a `MAX_STEPS` of 500. The
+  images now live in a storage key each, so the array stays proportional to the
+  number of steps rather than their weight. The same capture is 0.4 ms against
+  60 KB, and step 500 is 0.8 ms. Deleting a step, discarding a recording or
+  starting a new one takes the images with it.
+
 ## [2.5.0] — 2026-08-24
 
 An audit of the recorder, the MCP server, the exporter, the viewer, flow storage

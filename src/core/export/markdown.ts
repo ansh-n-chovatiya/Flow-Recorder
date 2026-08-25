@@ -184,6 +184,19 @@ function appendStep(
     }
   }
 
+  /*
+   * What the interaction visibly did.
+   *
+   * Placed above the screenshot on purpose: it is the same fact the image
+   * carries, in the form a reader can act on without opening a file, and a
+   * reader that has just been told the button changed to "Processing…" and an
+   * error banner appeared often does not need to look.
+   */
+  if (step.domDelta) {
+    lines.push(`↺ was: ${inlineCode(step.domDelta.before || '(empty)')}`);
+    lines.push(`↺ now: ${inlineCode(step.domDelta.after || '(empty)')}`);
+  }
+
   if (step.notes?.trim()) {
     lines.push(`> ${step.notes.trim().replace(/\n/g, '\n> ')}`);
     lines.push('');
@@ -301,6 +314,43 @@ function appendComponents(lines: string[], react: FlowReact, steps: Step[]): voi
     lines.push(`> ${note}`);
     lines.push('');
   }
+}
+
+/**
+ * One step, rendered on its own.
+ *
+ * The MCP server returns a *window* onto a recording rather than all of it, and
+ * to decide where the window ends it has to know what each step costs before
+ * committing to it. Rendering the whole document to find out is what the budget
+ * exists to avoid, so the per-step renderer is exposed rather than reimplemented
+ * — the alternative was the server keeping a second, weaker copy of these rules,
+ * which is what it did, and which is why a response body containing `## Step 99`
+ * could forge a step that nobody performed.
+ *
+ * `prevPath` is the previous step's path, so `📍` marks real page changes and
+ * not every step; the returned path is what the caller passes to the next call.
+ */
+export function renderStep(
+  step: Step,
+  n: number,
+  prevPath: string,
+  image: string | null,
+  options: Pick<Partial<ExportOptions>, 'network' | 'logs'> = {},
+  components: Record<string, ComponentSource> = {},
+): { lines: string[]; path: string } {
+  const lines: string[] = [];
+  const path = appendStep(lines, step, n, prevPath, image, options, components);
+  return { lines, path };
+}
+
+/**
+ * The React component table for a set of steps, or `[]` when there is nothing
+ * to say. Exposed for the same reason as `renderStep`.
+ */
+export function renderComponents(react: FlowReact, steps: Step[]): string[] {
+  const lines: string[] = [];
+  appendComponents(lines, react, steps);
+  return lines;
 }
 
 export interface MarkdownOptions extends Omit<Partial<ExportOptions>, 'images' | 'react'> {

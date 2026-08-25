@@ -42,6 +42,22 @@ export interface CapturedComponent {
 
 // ── Page → worker ────────────────────────────────────────────────────────────
 
+/**
+ * What the region around a step's element said, once the page had responded.
+ *
+ * Sent separately from the step, and later, because it is a fact about what the
+ * interaction *did* — which is not known at the moment the step is written. The
+ * step goes as soon as it happens so the screenshot is not delayed; this arrives
+ * a few hundred milliseconds behind it and is merged in by key.
+ */
+export interface StepDomDelta {
+  type: 'STEP_DOM_DELTA';
+  /** `timestamp:type`, exactly as `stepKey` builds it. */
+  key: string;
+  before: string;
+  after: string;
+}
+
 export interface CaptureAndSaveStep {
   type: 'CAPTURE_AND_SAVE_STEP';
   step: DraftStep;
@@ -176,6 +192,7 @@ export interface FinishRecording {
 
 export type WorkerRequest =
   | CaptureAndSaveStep
+  | StepDomDelta
   | FinishRecording
   | Precapture
   | AnnotateScreenshot
@@ -208,6 +225,7 @@ export interface OpenEditorResponse {
 export interface ResponseByType {
   /** Resolves once the capture is done, so the page can restore its indicator. */
   CAPTURE_AND_SAVE_STEP: OkResponse;
+  STEP_DOM_DELTA: OkResponse;
   PRECAPTURE: OkResponse;
   ANNOTATE_SCREENSHOT: AnnotateScreenshotResponse;
   REACT_META: OkResponse;
@@ -225,6 +243,18 @@ export interface ResponseByType {
 export type ContentRequest =
   | { type: 'PING' }
   | { type: 'GET_SCROLL' }
+  /**
+   * Hand over whatever console and network activity has not been attached to a
+   * step yet, and forget it.
+   *
+   * Console and network are attached to the *next* step, because a step is what
+   * they are written onto — so anything a page produced after the last
+   * interaction had nowhere to land and was dropped when recording stopped.
+   * That is precisely the moment a bug report is made of: the user clicks the
+   * thing, it breaks, and they stop recording. See `FLUSH_PENDING` in
+   * `content/index.ts` and `finishRecording` in the worker.
+   */
+  | { type: 'FLUSH_PENDING' }
   | { type: 'START_RECORDING' }
   | { type: 'STOP_RECORDING' }
   | { type: 'PAUSE_RECORDING' }

@@ -12,6 +12,7 @@
  */
 
 import { bytesInUse, getLocal, setLocal } from '../../chrome/storage.js';
+import { hydrateTail, sweep as sweepShots } from '../../features/flows/shots.js';
 import { reloadAndWait } from '../../chrome/tabs.js';
 import { RELOAD_TIMEOUT_MS } from '../../shared/constants.js';
 import { prepare, probe, type Preflight } from '../../features/recording/preflight.js';
@@ -20,7 +21,7 @@ import type { RecordingState, Step, StoredError } from '../../shared/types.js';
 import { formatAgo, formatBytes, formatElapsed, formatRelative } from '../format.js';
 import { hydrateIcons, setIcon } from '../icons.js';
 import { initTheme } from '../theme.js';
-import { derivePopupView, type NoticeView, type PopupView } from './view.js';
+import { derivePopupView, THUMBNAIL_LIMIT, type NoticeView, type PopupView } from './view.js';
 
 initTheme();
 hydrateIcons();
@@ -245,7 +246,14 @@ async function readStored(): Promise<void> {
     stored.value;
 
   state.recording = recordingActive ? (recordingPaused ? 'paused' : 'recording') : 'idle';
-  state.steps = Array.isArray(recordedSteps) ? recordedSteps : [];
+  /*
+   * Only the tail. The card draws `THUMBNAIL_LIMIT` images and counts the rest,
+   * and the popup opens on every click of the toolbar icon — hydrating a
+   * 300-step recording to show three pictures is the cost `features/flows/shots`
+   * exists to remove, paid in the one place the user waits for a window.
+   */
+  const captured = Array.isArray(recordedSteps) ? recordedSteps : [];
+  state.steps = await hydrateTail(captured, THUMBNAIL_LIMIT);
   state.startedAt = typeof recordingStartedAt === 'number' ? recordingStartedAt : null;
   state.lastError = lastError ?? null;
 }
@@ -289,6 +297,11 @@ async function beginRecording(): Promise<void> {
     paint();
     return;
   }
+
+  // The previous recording's images are keyed independently of its steps, so
+  // emptying the array does not free them. Swept before the array is replaced:
+  // afterwards there is nothing left that names them.
+  await sweepShots();
 
   const written = await setLocal({
     recordingActive: true,
@@ -413,6 +426,10 @@ dom.discardDialog.addEventListener('close', () => {
 
   void (async () => {
     await sendToWorker({ type: 'CLEAR_STEPS' });
+    // `CLEAR_STEPS` sweeps too. Repeated here because this path does not depend
+    // on the worker answering — it writes the cleared state itself for exactly
+    // that reason, and the images have to be cleared on the same terms.
+    await sweepShots();
     await setLocal({
       recordedSteps: [],
       recordingActive: false,
