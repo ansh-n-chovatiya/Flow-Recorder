@@ -1,6 +1,6 @@
 {
   "name": "flowsnap",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "private": true,
   "description": "Chrome extension that records browser flows — clicks, inputs, network and console — and exports them as AI-ready context.",
   "license": "MIT",

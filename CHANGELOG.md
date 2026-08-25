@@ -6,7 +6,7 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [2.6.0] — 2026-08-25
 
 Two costs nobody was paying attention to: what a recorded flow weighs in the
 context window of the assistant reading it, and what it weighs in the browser
