@@ -28,6 +28,17 @@ jobs:
 
       - run: npm ci
 
+      # The MCP server is its own npm package, with its own lockfile and its own
+      # dependencies, and the root install does not reach it — there are no
+      # workspaces, deliberately, because it is published to npm on its own.
+      # tests/mcp-pagination spawns it for real, so `@modelcontextprotocol/sdk`
+      # has to be on disk before the tests run. Without this the server exits on
+      # its first import and the suite fails only on a machine that has never
+      # installed it by hand, which is every machine but a developer's.
+      - name: Install MCP server dependencies
+        working-directory: mcp-server
+        run: npm ci
+
       # A release whose zip reports a different version than its tag is worse
       # than no release — Chrome shows the manifest version, not the tag. The
       # MCP server is in here too: it ships to npm from this same tag, and a

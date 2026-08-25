@@ -251,6 +251,33 @@ beforeAll(async () => {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
+  /*
+   * A server that dies on startup must say so, not time out.
+   *
+   * Everything below waits on a reply that a dead process will never send, so a
+   * failure to launch surfaced as `Hook timed out in 20000ms` with the reason —
+   * on stderr, discarded — nowhere in the report. The reason is usually the one
+   * thing worth knowing: `mcp-server` is a separate package, and its
+   * dependencies are not installed by the root `npm ci`.
+   */
+  let stderr = '';
+  server.stderr.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+
+  const died = new Promise<never>((_resolve, reject) => {
+    server.on('exit', (code) => {
+      reject(
+        new Error(
+          `The MCP server exited with code ${code} instead of answering.\n` +
+            `${stderr.trim() || '(nothing on stderr)'}\n\n` +
+            'If this is ERR_MODULE_NOT_FOUND, run `npm ci` in mcp-server/ — it is its ' +
+            'own package and the root install does not reach it.',
+        ),
+      );
+    });
+  });
+
   let buffer = '';
   server.stdout.on('data', (chunk: Buffer) => {
     buffer += chunk.toString();
@@ -267,7 +294,7 @@ beforeAll(async () => {
     }
   });
 
-  await new Promise<void>((resolve) => {
+  const ready = new Promise<void>((resolve) => {
     const id = ++nextId;
     pending.set(id, () => resolve());
     server.stdin.write(
@@ -279,6 +306,8 @@ beforeAll(async () => {
       })}\n`,
     );
   });
+
+  await Promise.race([ready, died]);
   server.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
 }, 20_000);
 

@@ -21,6 +21,17 @@ jobs:
 
       - run: npm ci
 
+      # The MCP server is its own npm package, with its own lockfile and its own
+      # dependencies, and the root install does not reach it — there are no
+      # workspaces, deliberately, because it is published to npm on its own.
+      # tests/mcp-pagination spawns it for real, so `@modelcontextprotocol/sdk`
+      # has to be on disk before the tests run. Without this the server exits on
+      # its first import and the suite fails only on a machine that has never
+      # installed it by hand, which is every machine but a developer's.
+      - name: Install MCP server dependencies
+        working-directory: mcp-server
+        run: npm ci
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -31,6 +42,12 @@ jobs:
       - name: No colour outside the tokens
         run: npm run lint:tokens
 
+      # `pretest` builds `mcp-server/core.js` first. It is generated rather than
+      # committed, and two suites need it on disk — one spawns the real server,
+      # which imports it, and one reads it. Hooked onto `test` rather than added
+      # as a step here: this job is not the only caller, and a clean checkout
+      # failing where every machine with a previous build passes is a failure
+      # that only ever shows up in CI.
       - name: Test
         run: npm test
 
