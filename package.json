@@ -25,6 +25,7 @@
     "node": ">=20.11"
   },
   "scripts": {
+    "postinstall": "npm --prefix mcp-server ci",
     "build": "npm run build:main && npm run build:content && npm run build:agent && npm run build:mcp",
     "build:main": "vite build",
     "build:content": "vite build --config vite.content.config.ts",

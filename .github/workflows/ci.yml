@@ -18,19 +18,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
-
-      - run: npm ci
+          # Two packages, two lockfiles — both are installed below, so both
+          # belong in the cache key.
+          cache-dependency-path: |
+            package-lock.json
+            mcp-server/package-lock.json
 
       # The MCP server is its own npm package, with its own lockfile and its own
-      # dependencies, and the root install does not reach it — there are no
+      # dependencies, and a plain root install does not reach it — there are no
       # workspaces, deliberately, because it is published to npm on its own.
       # tests/mcp-pagination spawns it for real, so `@modelcontextprotocol/sdk`
-      # has to be on disk before the tests run. Without this the server exits on
-      # its first import and the suite fails only on a machine that has never
-      # installed it by hand, which is every machine but a developer's.
-      - name: Install MCP server dependencies
-        working-directory: mcp-server
-        run: npm ci
+      # has to be on disk before the tests run. The root `postinstall` installs
+      # it, which is what keeps a fresh clone working for humans too; this job
+      # deliberately has no extra step, so CI fails the day that hook stops
+      # firing rather than papering over it.
+      - run: npm ci
 
       - name: Typecheck
         run: npm run typecheck

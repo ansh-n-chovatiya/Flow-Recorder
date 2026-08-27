@@ -298,6 +298,12 @@ npm run core:drift # what has changed in the files shared with react-source-loca
 
 `npm run verify` is what CI runs. Run it before pushing.
 
+`mcp-server/` is a second npm package with its own lockfile — it is published to
+npm on its own, so it is deliberately not a workspace. The root `postinstall`
+runs `npm --prefix mcp-server ci` so a plain `npm install` sets up both; the
+tests spawn the real server, and skipping that install fails them. If you
+installed with `--ignore-scripts`, run that command yourself.
+
 ### Layout
 
 ```
