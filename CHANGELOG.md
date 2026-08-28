@@ -6,6 +6,46 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [2.7.1] — 2026-08-28
+
+Nothing in the extension or the MCP server changed. This is the repository's
+graphify wiring — the knowledge graph an AI assistant reads before it starts
+opening files — going from "works on the machine that set it up" to "works in a
+clone".
+
+### Fixed
+
+- **The assistant config now travels in git.** `CLAUDE.md`,
+  `.claude/settings.json` and `.agent/` were untracked the whole time they were
+  being developed. Every session on the author's machine consulted the graph
+  while a fresh clone got no `CLAUDE.md` at all — not just the graph rules, the
+  entire project instruction file. The setup script and the README both already
+  claimed otherwise.
+- **The `PreToolUse` hook no longer needs `python3`.** It parsed its payload by
+  shelling out to `python3`, and graphify installs through `uv`, which puts
+  `graphify` on `PATH` and not `python3`. For anyone in that state the hook
+  resolved to nothing on every Bash call, silently, with no error to notice. It
+  is `/bin/sh` now, and lives in `scripts/graphify-hint.sh` rather than as a
+  one-line string embedded in JSON.
+- **A stale graph is reported as stale.** The hook used to say the graph existed
+  and stop there, however old it was. A clone that commits before
+  `npm run graphify:setup` installs the git hooks ends up with a graph naming
+  symbols by the location they had at some earlier commit, which is worse than
+  having no graph: it reads as authoritative. The hook compares the graph's
+  built-from commit against `HEAD` and reports current, stale or absent.
+  `graphify-setup.mjs` had the same blind spot — seeing `graph.json` on disk and
+  calling it done — and now rebuilds when the graph is behind.
+
+### Developer
+
+- `npm run lint:graphify` — part of `npm run verify`, and its own CI step. It
+  asks `git ls-files`, not the filesystem, whether a clone would receive each
+  config file, because the filesystem answers yes on the one machine where the
+  answer does not matter. It also fails if `graphify-out/` or
+  `.claude/settings.local.json` are ever tracked.
+- `.github/workflows/graphify.yml` rebuilds the graph on every push, pins
+  `graphifyy`, and attaches `graph.html` to the run.
+
 ## [2.7.0] — 2026-08-28
 
 Three things FlowSnap decided on your behalf and then said nothing about: which
