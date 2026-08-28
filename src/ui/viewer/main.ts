@@ -8,7 +8,8 @@
  * decision it used to make inline now lives in a pure module with tests.
  */
 
-import { bytesInUse, getLocal, getSync } from '../../chrome/storage.js';
+import { bytesInUse, getLocal } from '../../chrome/storage.js';
+import { load as loadSettings } from '../../features/settings/index.js';
 import { flowHost } from '../../core/flow/index.js';
 import { editorTemplate } from '../../core/react/editor.js';
 import {
@@ -22,12 +23,12 @@ import {
   writeCurrent,
 } from '../../features/flows/store.js';
 import { withoutImages } from '../../features/flows/shots.js';
-import { REACT_SETTING_DEFAULTS } from '../../shared/constants.js';
 import { ok, type Result } from '../../shared/result.js';
 import type { RecordingState, Step } from '../../shared/types.js';
 import { formatDateTime } from '../format.js';
 import { hydrateIcons } from '../icons.js';
 import { initTheme } from '../theme.js';
+import { readRecordingStamp } from '../../features/settings/recording.js';
 import { showToast } from '../toast.js';
 import type { App, ViewerState } from './app.js';
 import { askName } from './dialogs.js';
@@ -160,6 +161,11 @@ async function reload(): Promise<void> {
       // Re-read on every reload rather than held: the resolver writes to this
       // key while the recording runs, so a cached copy would go stale on screen.
       react: await readCurrentReact(state.current.steps),
+      // Re-read alongside the component table, and for the same reason: the
+      // recording may still be running, and the export and send paths both need
+      // the stamp the *worker* is capturing under rather than one this tab
+      // happened to read when it opened.
+      settings: await readRecordingStamp(),
     };
     state.missing = false;
     paint();
@@ -179,6 +185,7 @@ async function reload(): Promise<void> {
       steps: flow.value.steps,
       createdAt: flow.value.meta?.createdAt ?? null,
       react: flow.value.react,
+      settings: flow.value.meta?.settings ?? null,
     };
     state.missing = false;
   }
@@ -421,10 +428,7 @@ function suggestName(steps: Step[]): string {
  * show the path and no button.
  */
 async function readEditorSettings(): Promise<void> {
-  const stored = await getSync(REACT_SETTING_DEFAULTS);
-  if (!stored.ok) return;
-
-  const { projectRoot, editor, customEditorTemplate } = stored.value;
+  const { projectRoot, editor, customEditorTemplate } = await loadSettings();
   const template = editorTemplate(editor, customEditorTemplate);
 
   state.editor = projectRoot && template ? { projectRoot, template } : null;

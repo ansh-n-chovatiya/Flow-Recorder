@@ -5,10 +5,10 @@
  * future playback feature would drive from, and what the MCP server persists.
  */
 
-import { compactBody } from '../schema/index.js';
+import { compactBody, type BodyLimits } from '../schema/index.js';
 import { attributeSteps, pruneComponents, stripReactRef } from '../react/attribution.js';
 import { CAPPED_ID } from '../react/table.js';
-import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowReact, Overrides, Step } from '../../shared/types.js';
 
 export const EXPORT_SCHEMA_VERSION = '1.0';
 
@@ -39,11 +39,21 @@ export interface JsonExportOptions extends Omit<Partial<ExportOptions>, 'react'>
    * indistinguishable files once three exports are unzipped side by side.
    */
   title?: string;
+  /**
+   * The settings the flow was made under — the stamp, sparse.
+   *
+   * On the JSON as well as in the Markdown header, because this is the file a
+   * tool reads: a `flow.json` full of steps with `screenshot: null` is a
+   * question, and `settings: { "screenshots.capture": false }` is the answer.
+   */
+  settings?: Overrides;
+  /** The flow's `network.summariseBodies` / `network.schemaThreshold`. */
+  bodies?: BodyLimits;
 }
 
 /** Serialise recorded steps to the on-disk flow format. */
 export function exportToJSON(steps: Step[], options: JsonExportOptions = {}): string {
-  const { imageNames, images, network, logs, react, title } = options;
+  const { imageNames, images, network, logs, react, title, settings, bodies } = options;
   const components = react ? pruneComponents(steps, react.components) : {};
   /*
    * The cap marker is not a component.
@@ -65,6 +75,9 @@ export function exportToJSON(steps: Step[], options: JsonExportOptions = {}): st
       ...(title ? { name: title } : {}),
       exportedAt: new Date().toISOString(),
       stepCount: steps.length,
+      // Absent when the recording used the defaults — the same rule the payload
+      // and the index follow, so "no stamp" means one thing everywhere.
+      ...(settings && Object.keys(settings).length ? { settings } : {}),
       // Absent rather than empty, so a flow from a page that is not React reads
       // the same as one exported before this existed.
       ...(carries ? { react: { ...react, components } } : {}),
@@ -96,16 +109,18 @@ export function exportToJSON(steps: Step[], options: JsonExportOptions = {}): st
             // The flags travel with the call, so a body the capture cut short is
             // read as truncated JSON rather than mislabelled as non-JSON.
             requestBody: call.requestBody
-              ? compactBody(call.requestBody, {
-                  truncated: call.requestBodyTruncated,
-                  bytes: call.requestBodyBytes,
-                })
+              ? compactBody(
+                  call.requestBody,
+                  { truncated: call.requestBodyTruncated, bytes: call.requestBodyBytes },
+                  bodies,
+                )
               : call.requestBody,
             responseBody: call.responseBody
-              ? compactBody(call.responseBody, {
-                  truncated: call.responseBodyTruncated,
-                  bytes: call.responseBodyBytes,
-                })
+              ? compactBody(
+                  call.responseBody,
+                  { truncated: call.responseBodyTruncated, bytes: call.responseBodyBytes },
+                  bodies,
+                )
               : call.responseBody,
           }));
         }

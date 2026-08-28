@@ -55,10 +55,13 @@ The newest 200 flows, up to 2 GB. Past either ceiling the oldest recordings are
 deleted as new ones arrive, oldest first, and each one is named on stderr and in
 the POST response rather than disappearing quietly.
 
-| Variable | Default | |
+| Setting | Default | |
 | --- | --- | --- |
-| `FLOWSNAP_MAX_FLOWS` | `200` | Recordings kept |
-| `FLOWSNAP_MAX_BYTES` | `2147483648` | Bytes kept, screenshots included |
+| `mcp.maxFlows` | `200` | Recordings kept |
+| `mcp.maxFlowBytes` | `2147483648` | Bytes kept, screenshots included |
+
+Set either in FlowSnap's Settings, in `~/.flowsnap/config.json`, or as
+`FLOWSNAP_MAX_FLOWS` / `FLOWSNAP_MAX_BYTES` — see [Settings](#settings).
 
 Two ceilings because they fail differently: a handful of enormous flows blows the
 disk budget while the count still looks fine, and a great many tiny ones blow the
@@ -69,6 +72,56 @@ sit well above any plausible working set.
 A recording is ordered by when it was *made*, not when it was last sent, so
 re-sending an old flow does not make it look new. It is never evicted by its own
 save: the flow you just sent is always there when you go to read it.
+
+## Settings
+
+Most of what this server decides — the response budget, the `raw` default, how
+many screenshots a call returns, how much of a body is quoted — is a property of
+the *recording*, so it travels inside the flow: the extension's Settings screen
+writes it into `flow.json`, and this server renders that flow under it.
+
+Three settings cannot travel that way, because they are true of this machine
+whichever flow is being read: the port, and the two retention ceilings. Those
+live in `~/.flowsnap/config.json`, which is the same flat-dotted-key settings
+file the extension exports:
+
+```json
+{
+  "mcp.port": 7734,
+  "mcp.maxFlows": 200,
+  "mcp.maxFlowBytes": 2147483648
+}
+```
+
+The extension writes it for you — changing one of the three in Settings posts it
+here — and you can edit it by hand. Keys it does not recognise are left alone,
+so a file written by a newer FlowSnap still works.
+
+**Precedence: environment variable > `config.json` > the flow's own stamp >
+default.** The environment is the last word so a CI or headless run is not
+steered by whatever a browser once synced into a flow it happens to be reading.
+
+| Variable | Setting |
+| --- | --- |
+| `FLOWSNAP_PORT` | `mcp.port` |
+| `FLOWSNAP_MAX_FLOWS` | `mcp.maxFlows` |
+| `FLOWSNAP_MAX_BYTES` | `mcp.maxFlowBytes` |
+| `FLOWSNAP_MAX_TOKENS` | `mcp.maxTokens` |
+| `FLOWSNAP_RAW` | `mcp.raw` |
+| `FLOWSNAP_MAX_IMAGES` | `mcp.maxImages` |
+| `FLOWSNAP_BODY_LIMIT` | `mcp.bodyLimit` |
+| `FLOWSNAP_MAX_RESPONSE_BODY` | `mcp.maxResponseBody` |
+| `FLOWSNAP_MAX_CONSOLE_ENTRIES` | `mcp.maxConsoleEntries` |
+
+Every value is range-checked by the same rules the Settings screen enforces, and
+a value that had to be clamped, ignored or outranked is named on stderr rather
+than quietly replaced.
+
+**The port is the one that has to be changed on both sides.** This server binds
+it and the extension posts to it, so they have to agree — changing it in
+Settings moves the address with it. A running server keeps the port it started
+on; the new one applies when it next starts, which for a stdio MCP server is the
+next session.
 
 ## Running more than one Claude session
 
@@ -93,8 +146,13 @@ extension, and why hosting this server somewhere shared is a decision to make
 carefully.
 
 Deleting a flow in the extension deletes it here too. Only the extension may
-write or delete: a request carrying a web page's `Origin` is refused, because a
-loopback port is reachable from any page you happen to have open.
+write, delete or change settings: a request carrying a web page's `Origin` is
+refused, because a loopback port is reachable from any page you happen to have
+open. The settings endpoint writes one file, at one path this server decides,
+and stores three keys — nothing in a request names a file or reaches one.
+
+In remote mode it is not there at all: a deployment's port and disk budget
+belong to whoever launched it, so they come from the environment.
 
 ## Remote mode
 

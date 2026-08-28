@@ -20,6 +20,7 @@
  */
 
 import { SCREENSHOT_QUALITY } from '../../shared/constants.js';
+import { load as loadSettings } from '../../features/settings/index.js';
 import type { Step } from '../../shared/types.js';
 import { hydrateIcons, icon, type IconName } from '../icons.js';
 import { showToast } from '../toast.js';
@@ -471,7 +472,13 @@ function save(): void {
     // Re-encoded as JPEG at the capture quality: the annotated image replaces
     // the one in storage, and a PNG of a full page would multiply its size
     // against a 10 MB ceiling.
-    onSave(dom.canvas.toDataURL('image/jpeg', SCREENSHOT_QUALITY / 100));
+    //
+    // The *live* `screenshots.quality`, not the recording's frozen one:
+    // annotating is something the user is doing now, to a picture that already
+    // exists. The freeze governs what a recording captured, and this is not
+    // capture. Read when the editor opened — see `quality` below — so a save
+    // cannot block on storage.
+    onSave(dom.canvas.toDataURL('image/jpeg', quality / 100));
   } catch {
     showToast({ message: 'Chrome wouldn’t save that image.', tone: 'danger' });
     return;
@@ -490,7 +497,23 @@ export interface OpenAnnotateOptions {
   onSave: (screenshot: string) => void;
 }
 
+/**
+ * The JPEG quality a save re-encodes at.
+ *
+ * The compiled-in default until the read below lands, which is the same answer
+ * every other surface starts from: a `let` re-read each time the editor opens,
+ * never a value copied out of it at module scope.
+ */
+let quality = SCREENSHOT_QUALITY;
+
 export function openAnnotate({ step, number, onSave }: OpenAnnotateOptions): void {
+  // Refreshed per open rather than subscribed to: the editor is modal and short
+  // lived, and a quality that changed while a box was being drawn would only be
+  // a surprise.
+  void loadSettings().then((settings) => {
+    quality = settings['screenshots.quality'];
+  });
+
   /*
    * The image as it stands, not the pristine capture.
    *

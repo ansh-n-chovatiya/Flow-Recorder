@@ -414,6 +414,18 @@
   color: var(--fg);
 }
 
+/*
+ * A recording is running. Its own intent, not --danger wearing a different
+ * sentence — the whole reason --record exists is that the shipped build used one
+ * red for "recording", "delete" and "failed", so nothing about a red thing told
+ * you which it was.
+ */
+.banner--record {
+  background: var(--record-soft);
+  border-color: color-mix(in srgb, var(--record) 40%, transparent);
+  color: var(--fg);
+}
+
 .banner--info .banner__icon {
   color: var(--accent);
 }
@@ -422,6 +434,15 @@
 }
 .banner--danger .banner__icon {
   color: var(--danger);
+}
+.banner--record .banner__icon {
+  color: var(--record);
+}
+
+/** A banner may carry one action, right-aligned — "Open flow", "Reset all shown". */
+.banner__action {
+  margin-left: auto;
+  flex: none;
 }
 /* ── Empty state ────────────────────────────────────────────────────────────
  * Never a bare sentence: an icon, what this is, why it is empty, and the one

@@ -11,6 +11,15 @@
  */
 
 /** How much of the function source feeds the hash. Matches the head needle. */
+/*
+ * Tier 3 — deliberately not configurable.
+ *
+ * These four are component *identity*. Every id stored in every saved flow was
+ * minted with these exact values, so changing one does not re-key anything — it
+ * silently stops the new ids matching the old ones, and a flow recorded
+ * yesterday quietly loses its component table. No error, no version bump, just
+ * a table that no longer joins.
+ */
 const HASH_SOURCE_LEN = 200;
 
 const FNV_PRIME = 0x01000193;

@@ -21,6 +21,12 @@ mcp-server/core.js
 # README does need — docs/demo.gif — is committed on its own.
 demo/
 
+# `npm run render` — screenshots of the built pages, for a human to look at.
+# A development aid, not an artefact: nothing reads them, there is no golden
+# image to compare against, and committing them would mean regenerating a
+# picture of the whole product on every copy change.
+.render/
+
 # OS / editor junk
 .DS_Store
 Thumbs.db

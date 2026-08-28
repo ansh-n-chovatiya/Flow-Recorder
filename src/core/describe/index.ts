@@ -6,6 +6,8 @@
  * element, so each rule is testable on its own.
  */
 
+import { CONTAINER_TEXT_CAP } from '../../shared/constants.js';
+
 const INTERACTIVE_TAGS = new Set(['a', 'button', 'select', 'summary']);
 
 const INTERACTIVE_ROLES = new Set([
@@ -319,8 +321,12 @@ export interface DescribedTarget {
  */
 const CONTAINER_DEPTH = 4;
 
-/** Visible text worth keeping from one region. Two lines of prose, roughly. */
-const CONTAINER_TEXT_CAP = 240;
+// `CONTAINER_TEXT_CAP` is the default only. The recorder passes the recording's
+// frozen `recording.containerTextCap`; the constant is what this pure module
+// answers with when nobody has an opinion, which is what keeps its tests honest
+// about the shipped behaviour. Visible text worth keeping from one region is in
+// `shared/constants` so `features/settings/fields.ts` can import it as the
+// default for `recording.containerTextCap` rather than retyping the number.
 
 /**
  * The nearest region that reads as a unit around `el`.
@@ -363,10 +369,10 @@ export function nearestContainer(el: Element): Element {
  * the JPEG and looking. It does not replace the image; it means the image only
  * has to be opened when the text is not enough.
  */
-export function containerText(el: Element): string {
+export function containerText(el: Element, cap: number = CONTAINER_TEXT_CAP): string {
   const text = (el as HTMLElement).innerText ?? el.textContent ?? '';
   const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > CONTAINER_TEXT_CAP ? `${flat.slice(0, CONTAINER_TEXT_CAP)}…` : flat;
+  return flat.length > cap ? `${flat.slice(0, cap)}…` : flat;
 }
 
 /** Resolve the real target of a click and describe what the user just did. */

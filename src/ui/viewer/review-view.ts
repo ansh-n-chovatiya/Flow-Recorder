@@ -22,6 +22,7 @@ import type {
   ConsoleLevel,
   FlowReact,
   RecordingState,
+  Overrides,
   Step,
   StepType,
 } from '../../shared/types.js';
@@ -40,6 +41,16 @@ export interface ReviewFlow {
   /** The component table, or `null` when the page was not React. For the live
    *  recording this is a snapshot: the resolver is still filling it in. */
   react: FlowReact | null;
+  /**
+   * The settings this flow was recorded under — the stamp, sparse.
+   *
+   * `null` for the recording in progress, whose stamp is still in
+   * `chrome.storage.local` and is read at send time by whichever path needs it,
+   * for the same reason `react` is re-read there: the recording may still be
+   * running, and a copy taken when the viewer opened would describe a moment
+   * that has passed.
+   */
+  settings: Overrides | null;
 }
 
 export interface ReviewInput {
@@ -113,6 +124,16 @@ export interface StepCardView {
    * frame is a record of what the user says happened.
    */
   screenshotImported: boolean;
+  /**
+   * Why there is no screenshot, when the recorder knows. Nothing may make
+   * a recording silently worse.
+   *
+   * A card that says only "No screenshot for this step" over a flow recorded
+   * with screenshots switched off reads as thirty failures. The recorder wrote
+   * down which it was; this is where the person who made the recording sees it,
+   * and the exports say the same thing to whoever reads the flow afterwards.
+   */
+  screenshotOmitted: string | null;
   /** `null` for a step with no element — a navigation, or a synthesised note. */
   selectors: { css: string; xpath: string } | null;
   /** The React component this step happened in, or `null`. */
@@ -292,6 +313,7 @@ function cardView(
     value: step.value ?? null,
     screenshot: step.screenshot ?? null,
     screenshotImported: step.screenshotImported === true,
+    screenshotOmitted: step.screenshotOmitted ?? null,
     selectors: step.element
       ? { css: step.element.cssSelector, xpath: step.element.xpath }
       : null,

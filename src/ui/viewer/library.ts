@@ -148,7 +148,12 @@ export function mountLibrary(app: App, onSaveCurrent: () => void): { paint: () =
       return;
     }
 
-    openExport({ steps: flow.value.steps, title: flow.value.name, react: flow.value.react });
+    openExport({
+      steps: flow.value.steps,
+      title: flow.value.name,
+      react: flow.value.react,
+      settings: flow.value.meta?.settings,
+    });
   }
 
   async function removeRow(row: FlowRowView): Promise<void> {

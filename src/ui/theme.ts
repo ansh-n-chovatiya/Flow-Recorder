@@ -10,18 +10,24 @@
  * flashing dark (or the reverse) on a machine whose OS disagrees.
  */
 
-import { getSync, setSync } from '../chrome/storage.js';
 import { THEME_MIRROR_KEY } from '../shared/constants.js';
+import { DEFAULTS, load, resolve, save } from '../features/settings/index.js';
 import type { Result } from '../shared/result.js';
 import type { ThemePreference } from '../shared/types.js';
 
-export const DEFAULT_THEME: ThemePreference = 'system';
+export const DEFAULT_THEME: ThemePreference = DEFAULTS.theme;
 
-const THEMES: readonly ThemePreference[] = ['system', 'light', 'dark'];
-
-/** Narrow untrusted input — storage outlives the code that wrote it. */
+/**
+ * Narrow untrusted input — storage outlives the code that wrote it.
+ *
+ * Delegates to `resolve()` rather than keeping its own list of themes, because
+ * `resolve` is the only validator: the field table already says what a theme may
+ * be, and a second copy of that list here is a second thing to update. The
+ * `localStorage` mirror is exactly the untrusted input this is for — it is
+ * per-profile, synchronous, and written by whatever version last ran.
+ */
 export function asTheme(value: unknown): ThemePreference {
-  return THEMES.includes(value as ThemePreference) ? (value as ThemePreference) : DEFAULT_THEME;
+  return resolve({ theme: value }).theme;
 }
 
 /**
@@ -55,8 +61,7 @@ function writeMirror(theme: ThemePreference): void {
 
 /** The stored preference, and the mirror brought back into line with it. */
 export async function loadTheme(): Promise<ThemePreference> {
-  const stored = await getSync({ theme: DEFAULT_THEME });
-  const theme = asTheme(stored.ok ? stored.value.theme : readMirror());
+  const theme = (await load()).theme;
   writeMirror(theme);
   return theme;
 }
@@ -65,7 +70,10 @@ export async function saveTheme(theme: ThemePreference): Promise<Result<void>> {
   // Mirror first: it is what the next page load reads before sync answers.
   writeMirror(theme);
   applyTheme(theme);
-  return setSync({ theme });
+  // `save()` removes the key when the choice is the default, so a user who
+  // picks "System" leaves nothing behind — see the sparseness rule in
+  // `features/settings/index.ts`.
+  return save({ theme });
 }
 
 /**

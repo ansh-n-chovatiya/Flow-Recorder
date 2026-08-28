@@ -14,9 +14,15 @@
 import { bytesInUse, getLocal, setLocal } from '../../chrome/storage.js';
 import { hydrateTail, sweep as sweepShots } from '../../features/flows/shots.js';
 import { reloadAndWait } from '../../chrome/tabs.js';
-import { RELOAD_TIMEOUT_MS } from '../../shared/constants.js';
 import { prepare, probe, type Preflight } from '../../features/recording/preflight.js';
 import { sendToWorker } from '../../shared/messages.js';
+import {
+  RECORDING_DEFAULTS,
+  loadRecordingSettings,
+  snapshotForRecording,
+} from '../../features/settings/recording.js';
+import { DEFAULTS, type RecordingSettings, type Settings } from '../../features/settings/fields.js';
+import { load as loadSettings } from '../../features/settings/index.js';
 import type { RecordingState, Step, StoredError } from '../../shared/types.js';
 import { formatAgo, formatBytes, formatElapsed, formatRelative } from '../format.js';
 import { hydrateIcons, setIcon } from '../icons.js';
@@ -93,6 +99,24 @@ interface PopupState {
   startedAt: number | null;
   usedBytes: number | null;
   lastError: StoredError | null;
+  /**
+   * The settings the live recording was frozen at.
+   *
+   * The compiled-in answer until storage replies, and until a recording starts:
+   * an idle popup has no recording to describe, and the defaults are what the
+   * next one will use unless the user has changed something — which the read
+   * below then corrects, before anything is on screen long enough to read.
+   */
+  frozen: RecordingSettings;
+  /**
+   * The two live settings the popup reads, kept beside the frozen ones.
+   *
+   * Neither shapes a recording: one decides how long a failure is worth
+   * mentioning, the other how long to wait for a reload the user asked for
+   * before Record was pressed. So they are read on every refresh, not taken
+   * from the snapshot.
+   */
+  live: Settings;
 }
 
 const state: PopupState = {
@@ -102,6 +126,8 @@ const state: PopupState = {
   startedAt: null,
   usedBytes: null,
   lastError: null,
+  frozen: RECORDING_DEFAULTS,
+  live: DEFAULTS,
 };
 
 function show(node: HTMLElement, visible: boolean): void {
@@ -223,7 +249,14 @@ function render(view: PopupView): void {
 }
 
 function paint(): void {
-  render(derivePopupView({ ...state, now: Date.now() }));
+  render(
+    derivePopupView({
+      ...state,
+      now: Date.now(),
+      warnSteps: state.frozen['recording.warnSteps'],
+      errorTtlMs: state.live['ui.errorTtlMs'],
+    }),
+  );
 }
 
 // ── Reading ──────────────────────────────────────────────────────────────────
@@ -256,6 +289,11 @@ async function readStored(): Promise<void> {
   state.steps = await hydrateTail(captured, THUMBNAIL_LIMIT);
   state.startedAt = typeof recordingStartedAt === 'number' ? recordingStartedAt : null;
   state.lastError = lastError ?? null;
+  // Read every refresh, never once at import: the popup is opened again and
+  // again across the life of one recording, and each open must describe the
+  // recording that is actually running rather than the one that was.
+  state.frozen = await loadRecordingSettings();
+  state.live = await loadSettings();
 }
 
 async function readUsage(): Promise<void> {
@@ -303,11 +341,22 @@ async function beginRecording(): Promise<void> {
   // afterwards there is nothing left that names them.
   await sweepShots();
 
+  /*
+   * `START_RECORDING` snapshots the settings. This is that moment.
+   *
+   * Read before the write and included in the same batch, so there is no
+   * instant in which a recording is live without a snapshot — the worker reads
+   * this key on every capture, and a capture that found it missing would use
+   * the defaults and put a step in the flow that the stamp does not describe.
+   */
+  const settings = await snapshotForRecording();
+
   const written = await setLocal({
     recordingActive: true,
     recordingPaused: false,
     recordedSteps: [],
     recordingStartedAt: Date.now(),
+    recordingSettings: settings,
     lastError: null,
     // Cleared so it only ever names the flow this recording was auto-exported
     // as. The review tab reuses it when the user presses Send, which is what
@@ -353,7 +402,7 @@ dom.reload.addEventListener('click', () => {
     }
 
     dom.reload.disabled = true;
-    await reloadAndWait(found.target.tabId, RELOAD_TIMEOUT_MS);
+    await reloadAndWait(found.target.tabId, state.live['recording.reloadTimeoutMs']);
     await beginRecording();
     dom.reload.disabled = false;
   })();

@@ -198,8 +198,15 @@ export function interactionTarget(event: Event): Element | null {
   return isElement(event.target) ? event.target : null;
 }
 
-/** Walks up from a DOM element to the nearest fiber backed by a component. */
-export function findNearestComponentFiber(el: Element): Fiber | null {
+/**
+ * Walks up from a DOM element to the nearest fiber backed by a component.
+ *
+ * `walkLimit` is `react.maxFiberWalk`, defaulted to the compiled-in constant so
+ * that every caller that has no settings in hand — the tests, and the fiber
+ * walk's own recursion — still gets the shipped answer. The agent passes its
+ * pushed config; see `chainFor` in `injected/agent.ts`.
+ */
+export function findNearestComponentFiber(el: Element, walkLimit = MAX_FIBER_WALK): Fiber | null {
   let node: Element | null = el;
 
   while (node && node !== node.ownerDocument.documentElement) {
@@ -207,7 +214,7 @@ export function findNearestComponentFiber(el: Element): Fiber | null {
     if (fiber) {
       let f: Fiber | null = fiber;
       let walked = 0;
-      while (f && walked < MAX_FIBER_WALK) {
+      while (f && walked < walkLimit) {
         if (getComponentFn(f)) return f;
         f = f.return;
         walked++;
@@ -253,8 +260,12 @@ export interface ChainResult {
  * of them — and each one that reached `table.ts` was explained to the reader as
  * a lazy component that had not finished loading.
  */
-export function collectChain(el: Element, limit = MAX_COMPONENT_CHAIN): ChainResult {
-  const nearest = findNearestComponentFiber(el);
+export function collectChain(
+  el: Element,
+  limit = MAX_COMPONENT_CHAIN,
+  walkLimit = MAX_FIBER_WALK,
+): ChainResult {
+  const nearest = findNearestComponentFiber(el, walkLimit);
   if (!nearest) return { entries: [], truncated: false };
 
   const entries: ChainEntry[] = [];
@@ -262,7 +273,7 @@ export function collectChain(el: Element, limit = MAX_COMPONENT_CHAIN): ChainRes
   let walked = 0;
   let truncated = false;
 
-  while (f && walked < MAX_FIBER_WALK) {
+  while (f && walked < walkLimit) {
     const fn = getComponentFn(f);
     // A lazy fiber and the fiber it resolved to share one function; keep one.
     const duplicate = fn !== null && entries.length > 0 && entries[entries.length - 1].fn === fn;

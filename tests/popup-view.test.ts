@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Preflight, RecordingTarget } from '../src/features/recording/preflight.js';
 import { flowError } from '../src/shared/errors.js';
-import { MAX_STEPS, WARN_STEPS } from '../src/shared/constants.js';
+import { ERROR_TTL_MS, MAX_STEPS, WARN_STEPS } from '../src/shared/constants.js';
 import type { Step } from '../src/shared/types.js';
 import { derivePopupView, THUMBNAIL_LIMIT, type PopupInput } from '../src/ui/popup/view.js';
 
@@ -44,6 +44,14 @@ function input(overrides: Partial<PopupInput> = {}): PopupInput {
     usedBytes: 0,
     lastError: null,
     now: NOW,
+    // The recording's frozen `recording.warnSteps`, which the controller reads
+    // from the snapshot. The default here so these cases keep describing the
+    // shipped behaviour rather than a threshold the test picked.
+    warnSteps: WARN_STEPS,
+    // `ui.errorTtlMs`, read live by the controller, and here for the same
+    // reason: these cases are about the shipped hour, not about a number a test
+    // chose.
+    errorTtlMs: ERROR_TTL_MS,
     ...overrides,
   };
 }

@@ -200,3 +200,56 @@ describe('counting duplicates across bundles', () => {
     expect(result.components.cart.detail).toMatch(/may be the wrong one/);
   });
 });
+
+
+/**
+ * The budget is a setting, and the number it uses is the one it was given.
+ *
+ * `react.maxResolveMsPerFlow` was tabled in Phase 0 and named by no phase in
+ * the list at all; Phase 4 took it. The wiring is one number reaching one
+ * addition, and the way it fails is that it does not — the deadline is computed
+ * from the compiled-in 30 seconds, every test above still passes because they
+ * drive the clock rather than the budget, and the setting does nothing while
+ * looking exactly like it works.
+ */
+describe('the time budget comes from the setting', () => {
+  const files = {
+    [A]: 'var x=1;\n',
+    [B]: 'var y=2;\n',
+    [C]: bundleWith(CART_SOURCE, 'c.js.map'),
+    'https://shop.test/assets/c.js.map': MAP,
+  };
+
+  /** The clock reads 0, then 10s from the second reading onwards. */
+  const TEN_SECONDS_IN = [0, 10_000];
+
+  it('stops a pass that has exceeded the configured budget', async () => {
+    const { deps, fetched } = harness(files, scriptedClock(TEN_SECONDS_IN));
+
+    const result = await resolvePending(input({ budgetMs: 5_000 }), deps);
+
+    // Ten seconds against a five-second budget: nothing is read at all.
+    expect(fetched).toEqual([]);
+    expect(result.components.cart.status).toBe('pending');
+  });
+
+  it('lets the same pass finish under a budget that allows it', async () => {
+    const { deps } = harness(files, scriptedClock(TEN_SECONDS_IN));
+
+    const result = await resolvePending(input({ budgetMs: 60_000 }), deps);
+
+    // Same clock, same bundles, different setting — so the setting is the only
+    // thing that can have decided this.
+    expect(result.components.cart.status).toBe('resolved');
+  });
+
+  it('falls back to the shipped default when nothing passes one', async () => {
+    // The default is 30s, which this clock is inside. A caller outside the
+    // mechanism — which is a thing only a test can be — still gets a budget.
+    const { deps } = harness(files, scriptedClock(TEN_SECONDS_IN));
+
+    const result = await resolvePending(input(), deps);
+
+    expect(result.components.cart.status).toBe('resolved');
+  });
+});

@@ -220,7 +220,18 @@ async function decodeScaled(file: Blob, width: number, height: number): Promise<
  * transparent background drawn straight onto a fresh canvas flattens against
  * black, and a screenshot of a light UI comes back as an unreadable silhouette.
  */
-export async function importScreenshot(file: File): Promise<Result<string>> {
+export async function importScreenshot(
+  file: File,
+  /**
+   * The JPEG quality to encode at — `screenshots.quality`, read live by the
+   * caller.
+   *
+   * The live value, not a recording's frozen one: importing an image is
+   * something the user is doing now, to a flow that has already been recorded.
+   * The freeze is about what a recording captured, and nobody captured this.
+   */
+  quality: number = SCREENSHOT_QUALITY,
+): Promise<Result<string>> {
   const valid = validateImageFile(file);
   if (!valid.ok) return valid;
 
@@ -264,7 +275,7 @@ export async function importScreenshot(file: File): Promise<Result<string>> {
       scaled?.close();
     }
 
-    return ok(canvas.toDataURL('image/jpeg', SCREENSHOT_QUALITY / 100));
+    return ok(canvas.toDataURL('image/jpeg', quality / 100));
   } catch (error) {
     return err(
       flowError(

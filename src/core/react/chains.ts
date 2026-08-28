@@ -47,9 +47,24 @@ export interface ChainBuffer<T> {
   clear(): void;
   /** Unclaimed chains currently held — for tests and diagnostics. */
   pending(): number;
+  /**
+   * Adopt new limits.
+   *
+   * The buffer is built once, at `document_start`, and the three numbers it is
+   * built from are settings a recording freezes — so they are not known until
+   * the snapshot has been read, which is after the page can already have been
+   * clicked. Rebuilding the buffer at that point would drop chains already
+   * held; reconfiguring it keeps them and applies the new limits from the next
+   * one. Called only when a recording starts, which is exactly when the frozen
+   * values are re-read.
+   */
+  configure(next: ChainBufferOptions): void;
 }
 
 export function createChainBuffer<T>(options: ChainBufferOptions): ChainBuffer<T> {
+  // A copy, so a caller cannot move the limits by mutating what it passed in —
+  // `configure` is the one way, and it is the one that says why.
+  let limits: ChainBufferOptions = { ...options };
   const held: KeyedChain<T>[] = [];
   /*
    * A queue per key, not one waiter per key.
@@ -74,13 +89,13 @@ export function createChainBuffer<T>(options: ChainBufferOptions): ChainBuffer<T
         return;
       }
 
-      const cutoff = chain.at - options.ttlMs;
+      const cutoff = chain.at - limits.ttlMs;
       for (let i = held.length - 1; i >= 0; i--) {
         if (held[i].at < cutoff) held.splice(i, 1);
       }
 
       held.push(chain);
-      while (held.length > options.size) held.shift();
+      while (held.length > limits.size) held.shift();
     },
 
     take(eventTime, now) {
@@ -89,7 +104,7 @@ export function createChainBuffer<T>(options: ChainBufferOptions): ChainBuffer<T
         const [found] = held.splice(index, 1);
         // Older than the buffer's own TTL: the event it describes is long past,
         // and a stale chain is worse than none.
-        if (now - found.at > options.ttlMs) return Promise.resolve(null);
+        if (now - found.at > limits.ttlMs) return Promise.resolve(null);
         return Promise.resolve(found.value);
       }
 
@@ -104,7 +119,7 @@ export function createChainBuffer<T>(options: ChainBufferOptions): ChainBuffer<T
           resolve(value);
         };
 
-        const timer = setTimeout(() => settle(null), options.timeoutMs);
+        const timer = setTimeout(() => settle(null), limits.timeoutMs);
 
         const waiter = (value: T): void => {
           clearTimeout(timer);
@@ -124,6 +139,14 @@ export function createChainBuffer<T>(options: ChainBufferOptions): ChainBuffer<T
 
     pending() {
       return held.length;
+    },
+
+    configure(next) {
+      limits = { ...next };
+      // The new size applies from the next arrival rather than by trimming
+      // here: a chain already held belongs to a step that may be about to ask
+      // for it, and dropping it would lose an attribution the walk already paid
+      // for.
     },
   };
 }

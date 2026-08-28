@@ -19,6 +19,7 @@ import { hydrateIcons } from '../icons.js';
 import { showToast } from '../toast.js';
 import type { App, UndoEntry } from './app.js';
 import { openAnnotate } from './annotate.js';
+import { load as loadSettings } from '../../features/settings/index.js';
 import { confirm } from './dialogs.js';
 import { clone, el, find, show } from './dom.js';
 import { openExport } from './export-dialog.js';
@@ -120,7 +121,14 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
 
   dom.exportButton.addEventListener('click', () => {
     const { flow } = app.state;
-    if (flow) openExport({ steps: flow.steps, title: flow.name, react: flow.react });
+    if (flow) {
+      openExport({
+        steps: flow.steps,
+        title: flow.name,
+        react: flow.react,
+        settings: flow.settings,
+      });
+    }
   });
 
   // The dialog does the sending, so what the flow costs is on screen before it
@@ -156,6 +164,9 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
         react: flow.id === null ? undefined : flow.react,
         // So a flow recorded last week is not filed under today.
         recordedAt: flow.createdAt,
+        // The same split as `react`: an archived flow's stamp travels here; the
+        // live recording's is still in storage and is read at send time.
+        settings: flow.settings,
       });
     })();
   });
@@ -300,7 +311,9 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     const before = flow?.steps[index];
     if (!flow || !before) return;
 
-    const imported = await importScreenshot(file);
+    // The live quality: importing is something the user is doing now, to a
+    // recording that is already made. See `importScreenshot`.
+    const imported = await importScreenshot(file, (await loadSettings())['screenshots.quality']);
     if (!imported.ok) {
       showToast({ message: imported.error.message, tone: 'danger', durationMs: 6000 });
       return;
@@ -724,6 +737,13 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
       acceptDrops(shot, card.index);
     } else {
       shot.remove();
+      // The reason, before the offer. A user looking at a flow with no pictures
+      // is asking "is this broken?", and the answer is one sentence the
+      // recorder already wrote down.
+      if (card.screenshotOmitted) {
+        find(empty, '.shot-empty__body').textContent =
+          `${card.screenshotOmitted} Drop an image here, paste one, or click to choose a file.`;
+      }
       empty.addEventListener('click', () => pickImage(card.index));
       acceptDrops(empty, card.index);
     }
@@ -978,7 +998,14 @@ export function mountReview(app: App, onSaveCurrent: () => void): { paint: () =>
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'e') {
       event.preventDefault();
       const { flow } = app.state;
-      if (flow) openExport({ steps: flow.steps, title: flow.name, react: flow.react });
+      if (flow) {
+      openExport({
+        steps: flow.steps,
+        title: flow.name,
+        react: flow.react,
+        settings: flow.settings,
+      });
+    }
       return;
     }
 

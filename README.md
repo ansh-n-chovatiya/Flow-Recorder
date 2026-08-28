@@ -239,17 +239,29 @@ redact tool blacks out regions permanently before the flow leaves the machine.
 
 ## Settings
 
-Open from the popup's gear. Theme, storage usage, delete-all, the MCP server URL
-with a **Test connection** button, and the React component controls: whether to
-record components at all, whether to look their source files up, and the project
-root and editor that make a recorded path clickable.
+Open from the popup's gear. Seventy-three settings, searchable, grouped down the
+left: recording limits, screenshot quality and timing, what network and console
+detail is captured, annotation, export and send defaults, React component
+capture, and the MCP server's address, budget and retention.
 
-Most of what FlowSnap decides — the step limit, screenshot quality, how much of
-a request body is kept, when a body is summarised rather than stored — is still
-hardcoded. [`docs/CONFIGURATION-PLAN.md`](docs/CONFIGURATION-PLAN.md) is the plan
-for making those settings, which knobs should never become settings and why, and
-how a value reaches a page-world agent and a separate Node process that cannot
-read the extension's storage.
+Every row shows its key and its shipped default — `recording.maxSteps · default
+500` — and a sentence saying what changing it costs. A changed row is marked in
+the gutter and resets from its own button. Search matches titles, descriptions
+and keys, and `@modified` narrows to what you have changed.
+
+The **`{}`** toggle shows the same settings as JSON: the shipped defaults on the
+left, your overrides on the right. Only what you changed is stored, so a better
+default in a later version still reaches you. Export writes
+`flowsnap-settings.json`; import shows you exactly what would change and asks
+before applying it — and refuses mid-recording, offering to wait until you stop.
+
+**Advanced** holds the settings that change how recording behaves, where a bad
+value looks like FlowSnap being broken rather than like a setting. It is
+collapsed until you open it.
+
+Settings are frozen when a recording starts, so changes apply to the next one,
+and each flow records the non-default settings it was made under — a recording
+made at quality 20 says so rather than reading as one where capture failed.
 
 **Auto-send is off by default**, and turning it on shows a warning first. It
 ships whole flows — screenshots and captured request bodies — to the local server
@@ -298,71 +310,15 @@ npm run core:drift # what has changed in the files shared with react-source-loca
 
 `npm run verify` is what CI runs. Run it before pushing.
 
+`src/ui/styles/tokens.css` is the only file allowed to name a colour, enforced by
+`npm run lint:tokens`; the reasoning behind the palette is in
+[`docs/design/README.md`](docs/design/README.md).
+
 `mcp-server/` is a second npm package with its own lockfile — it is published to
 npm on its own, so it is deliberately not a workspace. The root `postinstall`
 runs `npm --prefix mcp-server ci` so a plain `npm install` sets up both; the
 tests spawn the real server, and skipping that install fails them. If you
 installed with `--ignore-scripts`, run that command yourself.
-
-### Layout
-
-```
-src/
-  background/   MV3 service worker: capture queue, step persistence, badge
-  content/      injected into the page: interaction listeners
-  injected/     MAIN-world agent: network and console interception
-  chrome/       the only place chrome.* is called; every call returns a Result
-  core/         pure logic — selectors, describe, schema, export formats
-  features/     recording preflight, flow store, export, MCP
-  ui/           popup, settings, viewer, and the shared design system
-  shared/       types, errors, constants, messages
-public/         manifest, icons, fonts, content.css — copied verbatim
-scripts/        icon and mark generation, token guard, version sync, packaging
-docs/           SHARED-CORE.md — the files shared with react-source-locator
-mcp-server/     published to npm as flowsnap-mcp; not part of the extension build
-                core.js is src/core/ bundled in by `npm run build:mcp` — generated
-```
-
-Six files under `src/core/react/` are shared by copy with the sibling extension
-[react-source-locator](https://github.com/ansh-n-chovatiya/react-source-locator).
-They are copies rather than a package on purpose, and four of the differences
-between the two versions are deliberate — the line base most dangerously, since
-getting it wrong opens every file one line off and nothing fails. Read
-[`docs/SHARED-CORE.md`](docs/SHARED-CORE.md) before copying anything between the
-repos, and run `npm run core:drift` to see what has moved upstream.
-
-Three rules hold the structure together:
-
-- **`chrome.*` is called only from `src/chrome/`.** Everything else receives a
-  `Result<T>`, so a failed storage write or a blocked tab is a value to handle
-  rather than an exception to miss.
-- **`core/` is pure** — no Chrome, no DOM, no clock. That is why most of it is
-  testable in Node, and why `npm run build:mcp` can bundle it into the MCP
-  server package: the walkthrough Claude reads and the Markdown you download are
-  rendered by the same function. The server used to keep a second, smaller copy
-  of that renderer, and the two disagreed about which selectors were worth
-  printing, when to repeat a URL, and whether page text needed escaping — with
-  the careful one rendering the file a human opens and the weak one rendering
-  what the model read. `mcp-server/core.js` is generated; `npm run verify`
-  builds it before the tests that spawn the server.
-- **Views are derived, then rendered.** `derivePopupView`, `deriveLibraryView`,
-  `deriveReviewView` and `deriveExportView` decide what a screen shows; the
-  controllers only bind the result to markup. Every state a screen can be in is
-  a case in one of those functions, and is covered by a test.
-
-### Design
-
-`src/ui/styles/tokens.css` is the only file allowed to name a colour, enforced by
-`npm run lint:tokens`. The rationale, the deliberate departures from the original
-frames, and the decisions worth knowing before changing a screen are in
-[`docs/design/README.md`](docs/design/README.md); the brief they came from is
-[`docs/DESIGN-BRIEF.md`](docs/DESIGN-BRIEF.md).
-
-### Architecture notes
-
-[`AUDIT.md`](AUDIT.md) is the audit of the pre-TypeScript build and the migration
-plan it produced. It is the reference for what each finding was and where it was
-addressed.
 
 ## Releases
 
@@ -378,23 +334,6 @@ git push origin main --follow-tags
 The tag must match all three version files or the workflow refuses to build — a
 server that disagrees with the extension it shipped beside makes "which one do I
 have" unanswerable. `npm version` keeps them in step; editing by hand does not.
-
-### Publishing rights
-
-The release workflow authenticates to npm either way, so switching between them
-is a change on npmjs.com rather than a change to the workflow:
-
-- **`NPM_TOKEN` repository secret.** Required for the first publish — trusted
-  publishing is configured *on* a package, so it cannot create one. A classic
-  Automation token, or a granular token with all-packages write; afterwards,
-  narrow it to `flowsnap-mcp` alone.
-- **Trusted publishing.** Register this repo and `release.yml` as a trusted
-  publisher on the package, then delete the secret. The workflow authenticates
-  with the `id-token` permission it already has, and no long-lived credential
-  exists to leak or rotate.
-
-Either way the tarball carries provenance, which needs the repo and the package
-to both stay public.
 
 ## Licence
 

@@ -167,6 +167,21 @@ a:hover {
 }
 
 /**
+ * `hidden` means hidden.
+ *
+ * The attribute's UA rule is `display: none` at the very bottom of the cascade,
+ * so any component rule that sets `display` silently defeats it — a `.banner`
+ * with `display: flex` paints an empty tinted box where the markup plainly says
+ * there is nothing to show. The settings page depends on this: every slot in a
+ * setting row is always in the DOM and hidden when empty, which is what makes
+ * all seventy-three rows the same object. Stated once, here, with the weight
+ * to hold.
+ */
+[hidden] {
+  display: none !important;
+}
+
+/**
  * Single-line truncation. `min-width: 0` because these almost always sit in a
  * flex row, where the default `min-width: auto` refuses to shrink below the
  * text's intrinsic width and the ellipsis never appears.

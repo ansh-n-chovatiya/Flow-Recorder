@@ -12,17 +12,30 @@ import { flowError, isQuotaMessage } from '../shared/errors.js';
 import { err, ok, type Result } from '../shared/result.js';
 import type { LocalStorageShape, SyncStorageShape } from '../shared/types.js';
 
-/** Reads never fail loudly enough to block the UI, but they are still reported. */
+/**
+ * Reads never fail loudly enough to block the UI, but they are still reported.
+ *
+ * The `try` is for the area itself being absent rather than the read failing:
+ * `chrome.storage.sync` is not there in every context this code runs in, and a
+ * throw from `area.get` escapes the promise as a rejection — which is not the
+ * `Result` every caller here is written against. `load()` documents that it
+ * falls back to the defaults when storage cannot be read, and before this it
+ * did so only for the failures Chrome reports politely.
+ */
 function read<T>(area: chrome.storage.StorageArea, keys: string | string[] | null): Promise<Result<T>> {
   return new Promise((resolve) => {
-    area.get(keys, (items) => {
-      const lastError = chrome.runtime.lastError;
-      if (lastError) {
-        resolve(err(flowError('STORAGE_READ', lastError.message)));
-        return;
-      }
-      resolve(ok(items as T));
-    });
+    try {
+      area.get(keys, (items) => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          resolve(err(flowError('STORAGE_READ', lastError.message)));
+          return;
+        }
+        resolve(ok(items as T));
+      });
+    } catch (error) {
+      resolve(err(flowError('STORAGE_READ', error instanceof Error ? error.message : error)));
+    }
   });
 }
 

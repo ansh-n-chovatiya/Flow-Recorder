@@ -7,8 +7,8 @@
  * reports arrives as a `postMessage`, a tick later.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
-import { AGENT_MESSAGE_SOURCE, BODY_CAP } from '../src/shared/constants.js';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { AGENT_MESSAGE_SOURCE, BODY_CAP, CONTROL_MESSAGE_SOURCE } from '../src/shared/constants.js';
 
 interface AgentMessage {
   __flowsnap_source__: string;
@@ -161,5 +161,88 @@ describe('a body too large to keep whole', () => {
     expect(call.requestBody).toHaveLength(BODY_CAP);
     expect(call.requestBodyTruncated).toBe(true);
     expect(call.requestBodyBytes).toBe(payload.length);
+  });
+});
+
+/**
+ * Bodies switched off — `network.captureBodies`, the "single biggest privacy
+ * and size lever".
+ *
+ * The setting is pushed into the MAIN world on the control channel, because the
+ * agent has no `chrome.storage` at all. Two things have to be true of it and
+ * only the first is obvious:
+ *
+ *   - the bodies are not recorded, and
+ *   - the *absence* is stated. Nothing may make a recording silently worse.
+ *     A `null` request body reads as *this POST sent nothing*, which is a claim
+ *     about the page rather than about the recorder — and it is the claim a
+ *     reader debugging a failed request acts on first.
+ */
+describe('when the user has switched body capture off', () => {
+  /** Deliver a control message the way the content script does. */
+  async function push(captureBodies: boolean): Promise<void> {
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: {
+          __flowsnap_control__: CONTROL_MESSAGE_SOURCE,
+          recording: true,
+          config: { captureBodies },
+        },
+        origin: window.location.origin,
+        source: window,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  afterEach(async () => {
+    // Back on, for whatever runs next. The agent's config is module state and
+    // outlives the test that changed it.
+    await push(true);
+  });
+
+  it('says so instead of recording an empty body', async () => {
+    await push(false);
+    respondWith = () =>
+      new Response('{"total":42}', { status: 200, headers: { 'content-type': 'application/json' } });
+
+    const url = 'https://api.example.com/no-bodies';
+    await window.fetch(url, { method: 'POST', body: '{"amount":100}' });
+    const call = await entryFor(url);
+
+    // The call itself is still recorded: method, URL and status are not bodies,
+    // and they are most of what a flow is for.
+    expect(call.kind).toBe('network');
+    expect(call.requestBody).toContain('not captured');
+    expect(call.responseBody).toContain('not captured');
+    // Never mistakable for the data itself.
+    expect(call.requestBody).not.toContain('100');
+    expect(call.responseBody).not.toContain('42');
+  });
+
+  it('leaves a request that genuinely had no body reading as one', async () => {
+    await push(false);
+
+    const url = 'https://api.example.com/no-bodies-get';
+    await window.fetch(url);
+
+    // `null` means "there was nothing"; the marker means "there was something
+    // and it was not kept". Collapsing the two would make the switch a way to
+    // rewrite every GET in the flow as a POST that sent nothing.
+    expect((await entryFor(url)).requestBody).toBeNull();
+  });
+
+  it('goes back to recording bodies when it is switched on again', async () => {
+    await push(false);
+    await push(true);
+    respondWith = () => new Response('{"ok":true}', { status: 200 });
+
+    const url = 'https://api.example.com/back-on';
+    await window.fetch(url, { method: 'POST', body: '{"amount":100}' });
+    const call = await entryFor(url);
+
+    // Read per call, never hoisted: a config copied into a module constant at
+    // import time would leave this switch stuck wherever it was first set.
+    expect(call.requestBody).toBe('{"amount":100}');
   });
 });

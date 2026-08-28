@@ -1,26 +1,20 @@
 /**
  * `get_flow` against the real server, over the real transport.
  *
- * The server is a standalone script with top-level side effects — it makes a
- * directory and binds a port on import — so it cannot be unit-tested by
- * importing a function out of it. It is also the one component whose failure is
- * invisible: every MCP client caps tool output by truncating the string, so a
- * response that outgrows the cap arrives as a document cut mid-JSON with nothing
- * anywhere saying so, and the model answers from half a recording. That is worth
- * spawning a process for.
- *
- * Flows are written straight into `FLOWSNAP_DIR` rather than POSTed, so the test
- * does not depend on the receiver's port being free.
+ * Why a spawned process rather than an import, and how the plumbing works, is in
+ * `tests/helpers/mcp-server.ts`. The short version: the server is a standalone
+ * script with top-level side effects, it has no typecheck over it, and its
+ * failure mode is invisible — every MCP client caps tool output by truncating
+ * the string, so a response that outgrows the cap arrives as a document cut
+ * mid-JSON with nothing anywhere saying so, and the model answers from half a
+ * recording.
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
-const SERVER = fileURLToPath(new URL('../mcp-server/server.js', import.meta.url));
+import { startServer, writeFlow, type McpSession } from './helpers/mcp-server.js';
 
 /** The budget the server is told to keep, so the assertions can name a number. */
 const BUDGET = 20_000;
@@ -36,30 +30,19 @@ const STEP_COUNT = 400;
 const estimateTokens = (value: string) => Math.ceil(value.length / 4);
 
 let home: string;
-let server: ChildProcessWithoutNullStreams;
-let nextId = 0;
-const pending = new Map<number, (message: { result: ToolResult }) => void>();
+let server: McpSession;
 
-interface ToolResult {
-  content: { type: string; text: string }[];
-  isError?: boolean;
-}
+/** `writeFlow` against this file's own temp directory. */
+const writeOne = (flow: Parameters<typeof writeFlow>[1]): string => writeFlow(home, flow);
 
-function call(name: string, args: Record<string, unknown>): Promise<string> {
-  return new Promise((resolve) => {
-    const id = ++nextId;
-    pending.set(id, (message) => resolve(message.result.content.map((part) => part.text).join('\n')));
-    server.stdin.write(
-      `${JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } })}\n`,
-    );
-  });
-}
+const call = (name: string, args: Record<string, unknown>): Promise<string> =>
+  server.call(name, args);
 
 /**
  * A recording big enough to page: `STEP_COUNT` steps, every tenth failing with a
  * stack trace, bodies already compacted the way the extension sends them.
  */
-function writeFlow(): void {
+function writeBigFlow(): void {
   const dir = path.join(home, 'flows', 'flow-big');
   fs.mkdirSync(dir, { recursive: true });
 
@@ -107,23 +90,6 @@ function writeFlow(): void {
   };
 
   writeOne(flow);
-}
-
-function writeOne(flow: { id: string; name: string; timestamp: number; steps: unknown[] } & Record<string, unknown>): void {
-  const dir = path.join(home, 'flows', flow.id);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'flow.json'), JSON.stringify(flow));
-  fs.writeFileSync(
-    path.join(dir, 'meta.json'),
-    JSON.stringify({
-      id: flow.id,
-      name: flow.name,
-      timestamp: flow.timestamp,
-      stepCount: flow.steps.length,
-      startUrl: flow.startUrl,
-      errorCount: flow.errorCount,
-    }),
-  );
 }
 
 /**
@@ -232,89 +198,78 @@ function writeCallHeavy(): void {
   });
 }
 
+/**
+ * A recording made under settings that are not the defaults — the stamp.
+ *
+ * Screenshots off and a low body cap, which between them produce a flow with no
+ * pictures and no payloads: the exact recording a reader would
+ * otherwise diagnose as a failed capture. One of its two `network.*` keys is
+ * `rendered` rather than `recorded`, so this also proves the server applies the
+ * sender's compaction rules rather than its own — a 400-row body it would
+ * normally summarise arrives with `summariseBodies: false` and has to survive
+ * whole.
+ *
+ * Written straight to disk like the rest, so what is under test is the server's
+ * reading of a stamp rather than the extension's writing of one.
+ */
+function writeStamped(): void {
+  const rows = JSON.stringify({
+    items: Array.from({ length: 400 }, (_, i) => ({ id: i, sku: `SKU-${i}` })),
+  });
+
+  writeOne({
+    id: 'flow-stamped',
+    name: 'Quiet capture',
+    timestamp: 1_787_579_886_415,
+    startUrl: 'https://shop.example.com',
+    errorCount: 0,
+    schemaVersion: 1,
+    settings: {
+      'screenshots.capture': false,
+      'network.bodyCap': 1024,
+      'network.summariseBodies': false,
+    },
+    steps: [
+      {
+        type: 'click',
+        url: 'https://shop.example.com/cart',
+        timestamp: 1_787_579_886_415,
+        action: 'Clicked "Checkout"',
+        stepNumber: 1,
+        screenshot: null,
+        screenshotOmitted: 'Screenshots are switched off in FlowSnap settings for this recording.',
+        element: { tag: 'button', cssSelector: '#checkout', xpath: '/html/body/button' },
+        networkCalls: [
+          {
+            method: 'GET',
+            url: 'https://api.example.com/v1/items',
+            requestHeaders: {},
+            requestBody: null,
+            status: 200,
+            responseHeaders: {},
+            responseBody: rows,
+            durationMs: 20,
+            timestamp: 1,
+          },
+        ],
+      },
+    ],
+  });
+}
+
 beforeAll(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'flowsnap-test-'));
-  writeFlow();
+  writeBigFlow();
   writeUncompacted();
   writeFutureSchema();
   writeCallHeavy();
+  writeStamped();
 
-  server = spawn('node', [SERVER], {
-    env: {
-      ...process.env,
-      FLOWSNAP_DIR: home,
-      FLOWSNAP_MAX_TOKENS: String(BUDGET),
-      // Somewhere unlikely to be taken. If it is, the receiver logs and carries
-      // on — nothing here uses it, because the flow is written to disk directly.
-      FLOWSNAP_PORT: '7913',
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  /*
-   * A server that dies on startup must say so, not time out.
-   *
-   * Everything below waits on a reply that a dead process will never send, so a
-   * failure to launch surfaced as `Hook timed out in 20000ms` with the reason —
-   * on stderr, discarded — nowhere in the report. The reason is usually the one
-   * thing worth knowing: `mcp-server` is a separate package, and only the root
-   * `postinstall` hook reaches it.
-   */
-  let stderr = '';
-  server.stderr.on('data', (chunk: Buffer) => {
-    stderr += chunk.toString();
-  });
-
-  const died = new Promise<never>((_resolve, reject) => {
-    server.on('exit', (code) => {
-      reject(
-        new Error(
-          `The MCP server exited with code ${code} instead of answering.\n` +
-            `${stderr.trim() || '(nothing on stderr)'}\n\n` +
-            'If this is ERR_MODULE_NOT_FOUND, run `npm install` at the repo root — ' +
-            'mcp-server/ is its own package, installed by the root `postinstall` hook. ' +
-            'An install run with --ignore-scripts skips it; `npm --prefix mcp-server ci` ' +
-            'fixes that by hand.',
-        ),
-      );
-    });
-  });
-
-  let buffer = '';
-  server.stdout.on('data', (chunk: Buffer) => {
-    buffer += chunk.toString();
-    let cut: number;
-    while ((cut = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, cut);
-      buffer = buffer.slice(cut + 1);
-      if (!line.trim()) continue;
-      const message = JSON.parse(line) as { id?: number; result: ToolResult };
-      if (message.id && pending.has(message.id)) {
-        pending.get(message.id)?.(message);
-        pending.delete(message.id);
-      }
-    }
-  });
-
-  const ready = new Promise<void>((resolve) => {
-    const id = ++nextId;
-    pending.set(id, () => resolve());
-    server.stdin.write(
-      `${JSON.stringify({
-        jsonrpc: '2.0',
-        id,
-        method: 'initialize',
-        params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } },
-      })}\n`,
-    );
-  });
-
-  await Promise.race([ready, died]);
-  server.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+  server = await startServer({ home, env: { FLOWSNAP_MAX_TOKENS: String(BUDGET) } });
 }, 20_000);
 
 afterAll(() => {
-  server?.kill();
+  server?.stop();
   if (home) fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -563,5 +518,49 @@ describe('a step that outweighs the budget on its own', () => {
     // page would leave a `from` that never moves.
     expect(page).toContain('Steps 1–1 of 2');
     expect(page).toContain('"from":2');
+  });
+});
+
+/**
+ * A flow records the settings it was made under, and the walkthrough header
+ * shows the non-default ones.
+ *
+ * Against the real server, because that is where it has to be true. `server.js`
+ * is JavaScript with no typecheck over it, and the failure — a header line that
+ * silently stops being rendered — leaves a flow that reads exactly like a
+ * recording where capture failed. Nothing else would notice.
+ */
+describe('a flow recorded under non-default settings says so', () => {
+  it('names them in the walkthrough header, above the first step', async () => {
+    const text = await call('get_flow', { id: 'flow-stamped' });
+
+    expect(text).toContain('Recorded with non-default settings');
+    expect(text).toContain('Capture screenshots: off (default on)');
+    expect(text).toContain('Body capture limit: 1024 (default 51200)');
+
+    // Above the steps: a reader who meets a flow with no screenshots needs this
+    // before the first one, not after it.
+    expect(text.indexOf('non-default settings')).toBeLessThan(text.indexOf('### 1.'));
+  });
+
+  it('says why a step has no picture instead of leaving a gap', async () => {
+    const text = await call('get_flow', { id: 'flow-stamped' });
+
+    expect(text).toContain('🚫 no screenshot');
+    expect(text).toContain('switched off in FlowSnap settings');
+  });
+
+  it('renders bodies under the sender rules rather than its own', async () => {
+    const text = await call('get_flow', { id: 'flow-stamped' });
+
+    // The extension deliberately did not summarise this body, and the server
+    // re-summarising it would undo the setting from the other side of the wire.
+    expect(text).not.toContain('[schema —');
+    expect(text).toContain('SKU-0');
+  });
+
+  it('says nothing at all for a flow recorded at the defaults', async () => {
+    const text = await call('get_flow', { id: 'flow-heavy' });
+    expect(text).not.toContain('non-default settings');
   });
 });

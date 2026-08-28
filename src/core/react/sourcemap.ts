@@ -272,7 +272,13 @@ export function lookupOriginal(
 
   return {
     source: normalizeSourcePath(rawSource),
-    // The one place 0-based becomes 1-based. See the file header.
+    /*
+     * The one place 0-based becomes 1-based. See the file header.
+     *
+     * Tier 3 — deliberately not configurable.
+     * Why: get this base wrong and every
+     * file opens one line off, forever, and nothing anywhere fails.
+     */
     line: (segment.originalLine ?? 0) + 1,
     column: (segment.originalColumn ?? 0) + 1,
     name: segment.nameIndex === undefined ? null : (map.names[segment.nameIndex] ?? null),

@@ -13,7 +13,11 @@ import { createZip, dataUrlToBytes, type ZipEntry } from '../../core/export/zip.
 import { flowHost, pad2, renumber } from '../../core/flow/index.js';
 import { err, ok, type Result } from '../../shared/result.js';
 import { flowError } from '../../shared/errors.js';
-import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
+import { describeStamp } from '../settings/stamp.js';
+import { load as loadSettings, resolve } from '../settings/index.js';
+import { renderedOverrides } from '../settings/recording.js';
+import { renderLimits } from '../settings/render.js';
+import type { ExportOptions, FlowReact, Overrides, Step } from '../../shared/types.js';
 import { EXTENSION, type ExportFormat } from './formats.js';
 
 export interface ExportRequest {
@@ -32,6 +36,18 @@ export interface ExportRequest {
    * drops the component ids from the steps.
    */
   react?: FlowReact;
+  /**
+   * The settings the flow was made under — the stamp, sparse.
+   *
+   * What the *caller* hands over is the recording's frozen half; `exportFlow`
+   * merges in the render-time half itself, because that half is decided now and
+   * a viewer that read it when the dialog opened would be describing a moment
+   * that has passed. Both halves reach the writers as one object: the Markdown
+   * header says what was in force in words, and `flow.json` carries the object.
+   *
+   * Absent means the flow was recorded and rendered entirely at the defaults.
+   */
+  settings?: Overrides;
   /** Called as each screenshot is packed, so a large ZIP is not a frozen tab. */
   onProgress?: (done: number, total: number) => void;
 }
@@ -47,7 +63,15 @@ function includedTable(request: ExportRequest): FlowReact | undefined {
   return request.options.react ? request.react : undefined;
 }
 
-function download(filename: string, blob: Blob): void {
+/**
+ * Hand a blob to the browser as a file the user is saving.
+ *
+ * Exported because a settings export is the same operation with different
+ * bytes, and the lesson in the revoke below took a zero-byte ZIP to learn. A
+ * second copy of this three lines away would be a second copy of that bug
+ * waiting to be reintroduced by somebody who never saw the first one.
+ */
+export function downloadFile(filename: string, blob: Blob): void {
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = objectUrl;
@@ -79,6 +103,9 @@ function breathe(): Promise<void> {
 async function buildZip(request: ExportRequest): Promise<Blob> {
   const { steps, options, title, onProgress } = request;
   const react = includedTable(request);
+  // The stamp, resolved: the two `network.*` rules the bodies below were
+  // compacted under, and the two walkthrough caps `flow.md` is written under.
+  const limits = renderLimits(resolve(request.settings ?? {}));
 
   const encoder = new TextEncoder();
   const files: ZipEntry[] = [];
@@ -114,13 +141,24 @@ async function buildZip(request: ExportRequest): Promise<Blob> {
         network: options.network,
         logs: options.logs,
         react,
+        settings: describeStamp(request.settings),
+        limits,
       }),
     ),
   });
 
   files.push({
     name: 'flow.json',
-    data: encoder.encode(exportToJSON(steps, { ...options, imageNames, react, title })),
+    data: encoder.encode(
+      exportToJSON(steps, {
+        ...options,
+        imageNames,
+        react,
+        title,
+        settings: request.settings,
+        bodies: limits,
+      }),
+    ),
   });
 
   return createZip(files);
@@ -130,9 +168,26 @@ function hasImage(step: Step): boolean {
   return typeof step.screenshot === 'string' && step.screenshot.startsWith('data:');
 }
 
-export async function exportFlow(request: ExportRequest): Promise<Result<string>> {
+export async function exportFlow(input: ExportRequest): Promise<Result<string>> {
+  /*
+   * The stamp, completed here rather than at the call site.
+   *
+   * The caller knows what the recording was frozen at; only this moment knows
+   * what it is being *rendered* under, and `network.summariseBodies` and
+   * `network.schemaThreshold` are decided at hand-over precisely so somebody
+   * can turn summarising off and re-export a week-old flow to get the bytes.
+   * Built once, so the Markdown header, the compaction below it and the
+   * `flow.json` beside it cannot describe three different documents. The same
+   * merge `sendFlow` makes — see `features/mcp/send.ts`.
+   */
+  const request: ExportRequest = {
+    ...input,
+    settings: { ...(input.settings ?? {}), ...renderedOverrides(await loadSettings()) },
+  };
+
   const { format, options, title } = request;
   const react = includedTable(request);
+  const limits = renderLimits(resolve(request.settings ?? {}));
   // Numbered on the way out, so a flow with deleted steps exports 1, 2, 3 rather
   // than the capture-time 1, 2, 4.
   const steps = renumber(request.steps);
@@ -142,7 +197,7 @@ export async function exportFlow(request: ExportRequest): Promise<Result<string>
 
   try {
     if (format === 'zip') {
-      download(filename, await buildZip({ ...request, steps }));
+      downloadFile(filename, await buildZip({ ...request, steps }));
     } else if (format === 'markdown') {
       const markdown = exportToMarkdown(steps, {
         title,
@@ -150,14 +205,25 @@ export async function exportFlow(request: ExportRequest): Promise<Result<string>
         network: options.network,
         logs: options.logs,
         react,
+        settings: describeStamp(request.settings),
+        limits,
       });
-      download(filename, new Blob([markdown], { type: 'text/markdown' }));
+      downloadFile(filename, new Blob([markdown], { type: 'text/markdown' }));
     } else {
-      download(
+      downloadFile(
         filename,
-        new Blob([exportToJSON(steps, { ...options, react, title })], {
-          type: 'application/json',
-        }),
+        new Blob(
+          [
+            exportToJSON(steps, {
+              ...options,
+              react,
+              title,
+              settings: request.settings,
+              bodies: limits,
+            }),
+          ],
+          { type: 'application/json' },
+        ),
       );
     }
 

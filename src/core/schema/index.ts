@@ -195,12 +195,48 @@ function repairJson(prefix: string): string | null {
   return kept + open.reverse().join('');
 }
 
+/**
+ * The two settings that decide whether a body is summarised, and above what
+ * size — `network.summariseBodies` and `network.schemaThreshold`.
+ *
+ * Passed in rather than read here, because this module is pure and is bundled
+ * into the MCP server, which has no `chrome.storage` to read from. The defaults
+ * are the shipped constants, which is what a caller with no opinion — a test, an
+ * older flow with no stamp — should get.
+ */
+export interface BodyLimits {
+  /** Bodies at or under this length are quoted verbatim. */
+  threshold?: number;
+  /** `false` quotes every body verbatim, however large. */
+  summarise?: boolean;
+}
+
 export function compactBody(
   bodyStr: string | null | undefined,
   meta?: BodyMeta,
+  limits?: BodyLimits,
 ): string | null | undefined {
   if (!bodyStr || typeof bodyStr !== 'string') return bodyStr;
-  if (!meta?.truncated && bodyStr.length <= SCHEMA_THRESHOLD) return bodyStr;
+
+  const threshold = limits?.threshold ?? SCHEMA_THRESHOLD;
+
+  /*
+   * Summarising switched off: the bytes, as they were captured.
+   *
+   * "Someone debugging a serialisation bug needs the bytes" is the whole reason
+   * the setting exists, and handing them a schema anyway would make it a switch
+   * that does nothing. Truncation is still stamped, because nothing may make a
+   * recording silently worse, and a body cut at the capture limit that reads as
+   * a complete one is exactly that. It is also why this is not simply an
+   * infinite threshold: the stamp would go with it.
+   */
+  if (limits?.summarise === false) {
+    if (!meta?.truncated) return bodyStr;
+    const cut = ((meta.bytes ?? bodyStr.length) / 1024).toFixed(1);
+    return `${bodyStr}\n\n[${cut}KB total, truncated at capture]`;
+  }
+
+  if (!meta?.truncated && bodyStr.length <= threshold) return bodyStr;
 
   /*
    * A failed call's body is kept, not summarised. Truncation is still stamped

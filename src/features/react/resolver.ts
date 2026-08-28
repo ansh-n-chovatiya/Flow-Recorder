@@ -1,7 +1,7 @@
 /**
  * Turning a captured needle into the file somebody wrote.
  *
- * This is stage B of the three (plan §1): it runs in the service worker, on
+ * This is stage B of the three: it runs in the service worker, on
  * idle, decoupled from capture on purpose. A step is never delayed, degraded or
  * lost because a bundle was slow or a source map 404'd — the worst this can do
  * is leave a component with its name and a sentence saying why there is no path.
@@ -75,6 +75,28 @@ export interface ResolveInput {
    * who switches the setting back on mid-recording still get their paths.
    */
   disabled?: boolean;
+  /**
+   * How long this pass may spend, in milliseconds — `react.maxResolveMsPerFlow`.
+   *
+   * Read live by the caller rather than frozen, exactly like the `disabled`
+   * flag above it: this is a budget for work that runs *after* the click, and
+   * often after the recording has stopped, so "how long am I allowed to take"
+   * is a question about now. It is not in the flow's stamp for the same reason
+   * — a pass that ran out of time says so on the components themselves, which
+   * is a fact about them rather than about the recording.
+   *
+   * Omitted falls back to the compiled-in default, for the tests that drive
+   * this module directly.
+   */
+  budgetMs?: number;
+  /**
+   * The five Tier 2 numbers this pass works inside — see `ResolveLimits`.
+   *
+   * Live, like the budget: they are about what this machine is willing to spend
+   * now, not about what the recording captured, so they are not in the freeze
+   * and not in the flow's stamp. Omitted falls back to the shipped answer.
+   */
+  limits?: ResolveLimits;
 }
 
 export interface ResolveOutput {
@@ -105,16 +127,50 @@ export function clearResolverCaches(): void {
   mapCache.clear();
 }
 
+/**
+ * The five Tier 2 numbers this module works inside.
+ *
+ * Passed in on `ResolveInput` rather than imported at use, for the reason the
+ * budget above already gives: this module is bundled into a service worker that
+ * Chrome kills and restarts, and a value read at import would be the
+ * compiled-in default for every pass after that. Grouped rather than listed as
+ * five parameters because they travel together through four functions, and a
+ * call site that got their order wrong would still typecheck.
+ *
+ * The default is the shipped answer, for the tests that drive this module
+ * directly and for any caller with no settings in hand.
+ */
+export interface ResolveLimits {
+  /** `react.resolveConcurrency` — bundles fetched at once. */
+  concurrency: number;
+  /** `react.bundleCacheEntries` — bundle texts held at once. */
+  cacheEntries: number;
+  /** `react.bundleCacheBytes` — total size of those texts. */
+  cacheBytes: number;
+  /** `react.maxResourceBytes` — largest script fetched at all. */
+  resourceBytes: number;
+  /** `react.maxMapBytes` — largest source map fetched at all. */
+  mapBytes: number;
+}
+
+export const DEFAULT_RESOLVE_LIMITS: ResolveLimits = {
+  concurrency: RESOLVE_CONCURRENCY,
+  cacheEntries: BUNDLE_CACHE_ENTRIES,
+  cacheBytes: BUNDLE_CACHE_BYTES,
+  resourceBytes: MAX_RESOURCE_BYTES,
+  mapBytes: MAX_MAP_BYTES,
+};
+
 /** Evicts oldest-first until the cache is back inside both of its limits. */
-function trimBundleCache(): void {
+function trimBundleCache(limits: ResolveLimits): void {
   for (const [url, text] of bundleCache) {
-    if (bundleCache.size <= BUNDLE_CACHE_ENTRIES && bundleCacheBytes <= BUNDLE_CACHE_BYTES) return;
+    if (bundleCache.size <= limits.cacheEntries && bundleCacheBytes <= limits.cacheBytes) return;
     bundleCache.delete(url);
     bundleCacheBytes -= text.length;
   }
 }
 
-function loadBundle(url: string, deps: ResolveDeps): Promise<string | null> {
+function loadBundle(url: string, deps: ResolveDeps, limits: ResolveLimits): Promise<string | null> {
   const cached = bundleCache.get(url);
   if (cached !== undefined) return Promise.resolve(cached);
 
@@ -122,12 +178,12 @@ function loadBundle(url: string, deps: ResolveDeps): Promise<string | null> {
   if (pending) return pending;
 
   const promise = deps
-    .fetchText(url, MAX_RESOURCE_BYTES)
+    .fetchText(url, limits.resourceBytes)
     .then((result) => {
       if (!result.ok) return null;
       bundleCache.set(url, result.value);
       bundleCacheBytes += result.value.length;
-      trimBundleCache();
+      trimBundleCache(limits);
       return result.value;
     })
     .finally(() => bundleInflight.delete(url));
@@ -185,6 +241,7 @@ async function searchForNeedle(
   urls: string[],
   deps: ResolveDeps,
   deadline: number,
+  limits: ResolveLimits,
 ): Promise<SearchSuccess | SearchFailure> {
   let hit: SearchSuccess | null = null;
   let anyLoaded = false;
@@ -196,7 +253,7 @@ async function searchForNeedle(
       break;
     }
 
-    const content = await loadBundle(url, deps);
+    const content = await loadBundle(url, deps, limits);
     if (!content) continue;
     anyLoaded = true;
 
@@ -240,6 +297,7 @@ async function loadMap(
   bundleUrl: string,
   bundleContent: string,
   deps: ResolveDeps,
+  limits: ResolveLimits,
 ): Promise<PreparedMap | null> {
   const cached = mapCache.get(bundleUrl);
   if (cached !== undefined) return cached;
@@ -264,7 +322,7 @@ async function loadMap(
       throw new SourceMapError(`the sourceMappingURL "${annotation}" is not a resolvable URL`);
     }
 
-    const fetched = await deps.fetchText(mapUrl, MAX_MAP_BYTES);
+    const fetched = await deps.fetchText(mapUrl, limits.mapBytes);
     if (!fetched.ok) {
       throw new SourceMapError('its source map could not be fetched — it may be 404 or private');
     }
@@ -297,6 +355,7 @@ async function resolveOne(
   urls: string[],
   deps: ResolveDeps,
   deadline: number,
+  limits: ResolveLimits,
 ): Promise<ResolveOutcome> {
   const name = entry.name;
 
@@ -311,7 +370,7 @@ async function resolveOne(
     };
   }
 
-  const found = await searchForNeedle(needle, urls, deps, deadline);
+  const found = await searchForNeedle(needle, urls, deps, deadline, limits);
 
   if (found === 'budget-exhausted') {
     // Nothing was learned, so nothing is written down. Saying "not found in the
@@ -372,7 +431,7 @@ async function resolveOne(
 
   let map: PreparedMap | null;
   try {
-    map = await loadMap(found.url, found.content, deps);
+    map = await loadMap(found.url, found.content, deps, limits);
   } catch (error) {
     const reason = error instanceof SourceMapError ? error.message : 'its source map could not be read';
     return {
@@ -501,11 +560,12 @@ export async function resolvePending(
     return finish(components, needles, input, false);
   }
 
-  const deadline = deps.now() + MAX_RESOLVE_MS_PER_FLOW;
+  const deadline = deps.now() + (input.budgetMs ?? MAX_RESOLVE_MS_PER_FLOW);
+  const limits = input.limits ?? DEFAULT_RESOLVE_LIMITS;
   let changed = false;
   let next = 0;
 
-  const workers = Array.from({ length: Math.min(RESOLVE_CONCURRENCY, ids.length) }, async () => {
+  const workers = Array.from({ length: Math.min(limits.concurrency, ids.length) }, async () => {
     for (;;) {
       const index = next++;
       if (index >= ids.length) return;
@@ -520,7 +580,7 @@ export async function resolvePending(
 
       let outcome: ResolveOutcome;
       try {
-        outcome = await resolveOne(entry, needle, urls, deps, deadline);
+        outcome = await resolveOne(entry, needle, urls, deps, deadline, limits);
       } catch (error) {
         // A bug in here must cost one component its path, not the whole pass.
         outcome = {

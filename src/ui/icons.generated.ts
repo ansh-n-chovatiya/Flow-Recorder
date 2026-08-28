@@ -159,6 +159,18 @@ export const ICON_PATHS = {
   /** zoom in */
   'plus':
     '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  /** reset a setting to its default */
+  'rotate-ccw':
+    '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  /** a search that matched no setting */
+  'search-x':
+    '<path d="m13.5 8.5-5 5"/><path d="m8.5 8.5 5 5"/><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  /** import a settings file */
+  'upload':
+    '<path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>',
+  /** a selected option in a multi-select */
+  'check':
+    '<path d="M20 6 9 17l-5-5"/>',
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;

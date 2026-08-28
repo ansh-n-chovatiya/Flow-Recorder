@@ -14,6 +14,12 @@
  * Pure — see tests/send-view.test.ts.
  */
 
+import {
+  SEND_DEFAULT_IMAGES,
+  SEND_DEFAULT_LOGS,
+  SEND_DEFAULT_NETWORK,
+  SEND_DEFAULT_REACT,
+} from '../../shared/constants.js';
 import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
 import {
   INCLUDE_LABEL,
@@ -26,26 +32,22 @@ import {
 /**
  * What a send carries before anyone touches the switches.
  *
- * Screenshots on, the two text parts off — which is the opposite of what the
- * export dialog defaults to, and deliberately so. An image is the cheapest
- * thing here (the server writes it to disk; Claude pays only for the ones it
- * opens) and the most useful on its own. Network bodies and console logs are
- * the expensive half: they are read back with every step, and on a flow against
- * a chatty API they are most of the context. Someone debugging a failed request
- * knows to switch them on; someone showing Claude what they clicked should not
- * pay for them without asking.
+ * Not a second copy of the four booleans: they are `SEND_DEFAULT_*` in
+ * `shared/constants.ts`, which is where `export.send*` in the field table takes
+ * its own defaults from, and where the reasoning for the asymmetry with the
+ * export dialog is written down. Phase 4 made this a derivation rather than a
+ * literal — the dialog reads the *setting* now, and a second hardcoded answer
+ * here would be the one that disagreed with the Settings screen.
  *
- * Here rather than in the dialog so the default is a tested fact.
+ * Kept, rather than deleted with its last product caller, because the shipped
+ * default is worth being a tested fact in the module that documents what a send
+ * costs.
  */
 export const SEND_DEFAULTS: ExportOptions = {
-  images: true,
-  network: false,
-  logs: false,
-  // On, with the screenshots rather than with the bodies. It is the one part
-  // that makes the flow *actionable* — the assistant opens the file instead of
-  // searching for the component by name — and it is ids plus one table, which
-  // is a rounding error next to a single response body.
-  react: true,
+  images: SEND_DEFAULT_IMAGES,
+  network: SEND_DEFAULT_NETWORK,
+  logs: SEND_DEFAULT_LOGS,
+  react: SEND_DEFAULT_REACT,
 };
 
 export interface SendInput {

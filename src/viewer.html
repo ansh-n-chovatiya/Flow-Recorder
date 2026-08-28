@@ -359,6 +359,20 @@
           </div>
         </div>
 
+        <!--
+          Empty on purpose. The "not your defaults" banner is drawn into it by
+          `banner()` from src/ui/settings/components.ts — the same primitive the
+          Settings screen uses, so the two surfaces cannot drift. No class here:
+          a class would be this dialog's own styling of a shared control, which
+          is the fork the primitive exists to prevent.
+
+          Below the redaction warning, not above it: one of these is a safety
+          notice about what is in the file and the other is a note about which
+          switches are on, and when both are showing the first has to be read
+          first.
+        -->
+        <div id="export-defaults"></div>
+
         <div class="field">
           <label class="label" for="export-filename">Filename</label>
           <div class="filename">
@@ -436,6 +450,9 @@
             </p>
           </div>
         </div>
+
+        <!-- See the note on #export-defaults. -->
+        <div id="send-defaults"></div>
       </div>
 
       <div class="dialog__footer">

@@ -7,8 +7,88 @@
  * MAIN/ISOLATED boundary, which is why this uses messages rather than events.
  */
 
-import { AGENT_MESSAGE_SOURCE, BODY_CAP } from '../shared/constants.js';
+import {
+  AGENT_MESSAGE_SOURCE,
+  BODY_CAP,
+  CAPTURE_BODIES,
+  CAPTURE_UNCAUGHT,
+  CONSOLE_LEVELS,
+  LOG_ARG_CAP,
+  MAX_COMPONENT_CHAIN,
+  MAX_FIBER_WALK,
+  REACT_PREWARM_TTL_MS,
+  STACK_FRAMES,
+} from '../shared/constants.js';
+import type { AgentConfig } from '../shared/messages.js';
 import { redactUrl } from '../core/redact/index.js';
+
+/**
+ * What this agent has been told to do, and what it does until it is told.
+ *
+ * Mutable, and initialised to the compiled-in defaults. The MAIN world cannot
+ * read `chrome.storage`, so the content script pushes settings down the control
+ * channel — but this file runs at `document_start`, and a page can log, fetch
+ * and throw in the window between injection and the first message arriving.
+ * Starting from the defaults means that window behaves exactly as the extension
+ * did before settings existed, rather than capturing nothing or capturing with
+ * a zeroed cap.
+ *
+ * Every field is read at the point of use. Nothing in this file may copy one
+ * into a module-level `const` — that value would be the default forever, and a
+ * setting that appears to work while silently using the compiled-in value is
+ * precisely the failure this arrangement exists to avoid.
+ */
+const config: AgentConfig = {
+  captureBodies: CAPTURE_BODIES,
+  bodyCap: BODY_CAP,
+  consoleLevels: CONSOLE_LEVELS,
+  logArgCap: LOG_ARG_CAP,
+  stackFrames: STACK_FRAMES,
+  captureUncaught: CAPTURE_UNCAUGHT,
+  maxComponentChain: MAX_COMPONENT_CHAIN,
+  maxFiberWalk: MAX_FIBER_WALK,
+  prewarmTtlMs: REACT_PREWARM_TTL_MS,
+};
+
+/**
+ * Take what the content script sent, field by field, ignoring anything else.
+ *
+ * The channel is `window.postMessage`, which any script on the page can post to,
+ * so this treats the payload as untrusted input rather than as a config object:
+ * a field of the wrong type leaves the current value alone. The values were
+ * already clamped by `resolve()` on the other side; this is the second half of
+ * the same rule, applied where the first half cannot be trusted to have run.
+ */
+function applyConfig(next: Partial<AgentConfig> | undefined): void {
+  if (!next || typeof next !== 'object') return;
+
+  if (typeof next.captureBodies === 'boolean') config.captureBodies = next.captureBodies;
+  if (typeof next.bodyCap === 'number' && Number.isFinite(next.bodyCap)) {
+    config.bodyCap = Math.max(0, next.bodyCap);
+  }
+  if (Array.isArray(next.consoleLevels)) {
+    config.consoleLevels = CONSOLE_LEVELS.filter((level) => next.consoleLevels?.includes(level));
+  }
+  if (typeof next.logArgCap === 'number' && Number.isFinite(next.logArgCap)) {
+    config.logArgCap = Math.max(1, next.logArgCap);
+  }
+  if (typeof next.stackFrames === 'number' && Number.isFinite(next.stackFrames)) {
+    config.stackFrames = Math.max(0, next.stackFrames);
+  }
+  if (typeof next.captureUncaught === 'boolean') config.captureUncaught = next.captureUncaught;
+  if (typeof next.maxComponentChain === 'number' && Number.isFinite(next.maxComponentChain)) {
+    config.maxComponentChain = Math.max(1, next.maxComponentChain);
+  }
+  if (typeof next.prewarmTtlMs === 'number' && Number.isFinite(next.prewarmTtlMs)) {
+    config.prewarmTtlMs = Math.max(0, next.prewarmTtlMs);
+  }
+  if (typeof next.maxFiberWalk === 'number' && Number.isFinite(next.maxFiberWalk)) {
+    // Floored at one, not at the shipped default: a page can post here, and a
+    // walk ceiling of zero would end React capture for the session while
+    // looking exactly like a page with no React on it.
+    config.maxFiberWalk = Math.max(1, next.maxFiberWalk);
+  }
+}
 
 const SENSITIVE_HEADERS = /^(authorization|cookie|set-cookie|x-api-key)$/i;
 
@@ -48,10 +128,25 @@ function stated(body: string | null): CappedBody {
   return { body };
 }
 
+/**
+ * What stands in for a body when the user has switched body capture off.
+ *
+ * Nothing here may make a recording silently worse. A `null` body reads as
+ * *this POST sent nothing*, which is a claim about the page rather than about
+ * the recorder — and it is the claim a reader debugging a failed request acts
+ * on first. Saying so costs one short string per call and cannot be mistaken
+ * for data.
+ */
+const BODY_NOT_CAPTURED = '[body not captured — request/response bodies are switched off]';
+
 function capBody(body: string | null): CappedBody {
   if (typeof body !== 'string') return stated(body);
-  return body.length > BODY_CAP
-    ? { body: body.slice(0, BODY_CAP), truncated: true, bytes: body.length }
+  // Read here, never hoisted: see `config`. The switch is checked before the
+  // cap because a body that is not being captured has no size worth reporting.
+  if (!config.captureBodies) return stated(BODY_NOT_CAPTURED);
+  const cap = config.bodyCap;
+  return body.length > cap
+    ? { body: body.slice(0, cap), truncated: true, bytes: body.length }
     : { body };
 }
 
@@ -81,19 +176,15 @@ function serializeArg(arg: unknown): string {
   }
 }
 
-/**
- * Per-argument ceiling. A page that logs its whole store on every action was
- * attaching hundreds of kilobytes to each step, and every capture rewrites the
- * entire step array — so the cost is paid again on every step that follows.
- */
-const LOG_ARG_CAP = 4096;
-
 function serializeArgs(args: unknown[]): string[] {
+  // `config.logArgCap` — the per-argument ceiling, read per call. A page that
+  // logs its whole store on every action was attaching hundreds of kilobytes to
+  // each step, and every capture rewrites the entire step array, so the cost is
+  // paid again on every step that follows.
+  const cap = config.logArgCap;
   return args.map((arg) => {
     const text = serializeArg(arg);
-    return text.length > LOG_ARG_CAP
-      ? `${text.slice(0, LOG_ARG_CAP)}… [${text.length} chars total]`
-      : text;
+    return text.length > cap ? `${text.slice(0, cap)}… [${text.length} chars total]` : text;
   });
 }
 
@@ -102,13 +193,22 @@ function serializeArgs(args: unknown[]): string[] {
 // nothing useful to say about it.
 /* eslint-disable no-console */
 
-const LEVELS = ['log', 'warn', 'error', 'info', 'debug'] as const;
-
-for (const level of LEVELS) {
+/*
+ * All five levels are patched, always; only the emit is filtered.
+ *
+ * Patching is a one-shot side effect at `document_start` — it has to happen
+ * before the page logs anything, and it cannot be undone once another script has
+ * taken a reference to `console.log`. So `console.levels` cannot gate the patch
+ * without either missing the first lines of a page or leaving a level
+ * permanently uncapturable after the setting is turned back on. It gates the
+ * `emit` instead, which is read per call and can change mid-page.
+ */
+for (const level of CONSOLE_LEVELS) {
   const original = console[level].bind(console) as (...args: unknown[]) => void;
   console[level] = (...args: unknown[]) => {
     original(...args);
     try {
+      if (!config.consoleLevels.includes(level)) return;
       emit({ kind: 'log', level, args: serializeArgs(args), timestamp: Date.now() });
     } catch {
       // Never let instrumentation break the page's own logging.
@@ -143,12 +243,10 @@ for (const level of LEVELS) {
  * handlers, and Chrome's own reporting, see exactly what they saw before.
  */
 
-/** How much of a stack trace is worth keeping. Deeper frames are framework. */
-const STACK_FRAMES = 12;
-
 function describeThrown(value: unknown): string {
   if (value instanceof Error) {
-    const frames = (value.stack ?? '').split('\n').slice(1, STACK_FRAMES + 1);
+    // `config.stackFrames` — deeper frames are framework. Read per call.
+    const frames = (value.stack ?? '').split('\n').slice(1, config.stackFrames + 1);
     const trace = frames.map((frame) => frame.trim()).filter(Boolean).join('\n');
     // The name and message first, on their own line, so a reader that keeps only
     // the first line of an entry still gets the part that says what happened.
@@ -160,6 +258,11 @@ function describeThrown(value: unknown): string {
 }
 
 function reportUncaught(prefix: string, value: unknown, fallback?: string): void {
+  // The listeners are attached unconditionally, for the same reason the console
+  // patch is: they are passive, and attaching them later would miss the crash
+  // that happened while the setting was being read.
+  if (!config.captureUncaught) return;
+
   try {
     /*
      * `null` and `undefined` take the fallback rather than being described.
@@ -270,6 +373,11 @@ window.fetch = async function patchedFetch(
 
   if (init?.body != null) {
     requestBody = capBody(typeof init.body === 'string' ? init.body : '[non-string body]');
+  } else if (input instanceof Request && input.body !== null && !config.captureBodies) {
+    // Said, not read. Cloning a `Request` to describe a body we have been told
+    // not to keep is work the switch exists to avoid — and on a streamed upload
+    // the clone is the expensive half.
+    requestBody = stated(BODY_NOT_CAPTURED);
   } else if (input instanceof Request && input.body !== null) {
     try {
       const clone = input.clone();
@@ -356,11 +464,15 @@ window.fetch = async function patchedFetch(
    */
   const contentType = response.headers.get('content-type') ?? '';
   const declared = Number(response.headers.get('content-length') ?? '');
-  if (/text\/event-stream/i.test(contentType)) {
+  if (!config.captureBodies) {
+    // Before the clone, for the same reason as the request above: not reading
+    // the body is most of what switching bodies off is worth.
+    report(stated(BODY_NOT_CAPTURED));
+  } else if (/text\/event-stream/i.test(contentType)) {
     // Cloning tees the stream: every chunk the page reads would also be buffered
     // here, for a body that by definition never ends.
     report(stated('[streaming response — not captured]'));
-  } else if (Number.isFinite(declared) && declared > BODY_CAP * 4) {
+  } else if (Number.isFinite(declared) && declared > config.bodyCap * 4) {
     report(stated(`[body not captured — ${declared}b, over the capture limit]`));
   } else {
     void response
@@ -428,8 +540,9 @@ function PatchedXHR(this: unknown): XMLHttpRequest {
       // request at all.
       let responseBody: CappedBody;
       try {
-        responseBody =
-          xhr.responseType === '' || xhr.responseType === 'text'
+        responseBody = !config.captureBodies
+          ? stated(BODY_NOT_CAPTURED)
+          : xhr.responseType === '' || xhr.responseType === 'text'
             ? capBody(xhr.responseText || '')
             : stated(`[${xhr.responseType} response — not captured as text]`);
       } catch {
@@ -486,11 +599,7 @@ window.XMLHttpRequest = PatchedXHR as unknown as typeof XMLHttpRequest;
  * like everything else in here.
  */
 
-import {
-  CONTROL_MESSAGE_SOURCE,
-  REACT_PREWARM_TTL_MS,
-  REACT_PROBE_ATTEMPTS,
-} from '../shared/constants.js';
+import { CONTROL_MESSAGE_SOURCE, REACT_PROBE_ATTEMPTS } from '../shared/constants.js';
 import type { CapturedComponent, ControlMessage } from '../shared/messages.js';
 import {
   type ChainEntry,
@@ -662,10 +771,12 @@ function sendReactMeta(detected: boolean): void {
 }
 
 function chainFor(el: Element): ChainResult {
-  if (prewarm && prewarm.el === el && Date.now() - prewarm.at <= REACT_PREWARM_TTL_MS) {
+  // Read per call, like every other setting here — see `config` above.
+  if (prewarm && prewarm.el === el && Date.now() - prewarm.at <= config.prewarmTtlMs) {
     return prewarm.result;
   }
-  const result = collectChain(el);
+  // Read per call, like every other setting here — see `config` above.
+  const result = collectChain(el, config.maxComponentChain, config.maxFiberWalk);
   prewarm = { el, result, at: Date.now() };
   return result;
 }
@@ -751,6 +862,11 @@ window.addEventListener('message', (event: MessageEvent<ControlMessage>) => {
   const data = event.data;
   if (!data || data.__flowsnap_control__ !== CONTROL_MESSAGE_SOURCE) return;
   if (reactGaveUp) return;
+
+  // Applied before the recording check below returns early: a settings change
+  // during a recording still has to reach the agent, and `recording` has not
+  // changed in that case.
+  applyConfig(data.config);
 
   const wanted = Boolean(data.recording);
   if (wanted === reactActive) return;

@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exportFlow } from '../src/features/export/download.js';
+import { installChromeSync, type SyncFake } from './helpers/chrome-sync.js';
 import type { ExportOptions, Step } from '../src/shared/types.js';
 
 const OPTIONS: ExportOptions = { images: true, network: true, logs: true, react: true };
@@ -30,11 +31,23 @@ const step = (): Step => ({
 let created: Blob[];
 let revoked: string[];
 let clicks: number;
+let chromeFake: SyncFake;
 
 beforeEach(() => {
   created = [];
   revoked = [];
   clicks = 0;
+
+  /*
+   * An export reads settings now.
+   *
+   * `network.summariseBodies` and `network.schemaThreshold` are decided when a
+   * flow is handed over rather than when it is recorded, so `exportFlow` reads
+   * them live and stamps what it used — see `features/settings/stamp.ts`.
+   * Without a storage area to read, this file's two assertions would fail for a
+   * reason that has nothing to do with either of them.
+   */
+  chromeFake = installChromeSync();
 
   vi.useFakeTimers();
   vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
@@ -48,6 +61,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  chromeFake.restore();
 });
 
 describe('the object URL outlives the click', () => {

@@ -1,4 +1,12 @@
-/** Tunables shared across the worker, content script, injected agent and UI. */
+/** Tunables shared across the worker, content script, injected agent and UI.
+ *
+ * Some of these are settings and some never can be. A constant marked
+ * **Tier 3 — not configurable** carries the reason on the line after, and the
+ * reason is always the same shape: making it a setting would not give the user
+ * control, it would give them a way to corrupt data that still looks fine.
+ * This file is where the answer lives for anyone who arrives asking "why can't I
+ * change this".
+ */
 
 /**
  * Runaway guard, not a product limit — stopping a recording mid-task makes the
@@ -88,7 +96,16 @@ export const SPA_SETTLE_MS = 250;
  */
 export const RELOAD_TIMEOUT_MS = 10_000;
 
-/** Response and request bodies are truncated to this before leaving the page. */
+/**
+ * Response and request bodies are truncated to this before leaving the page.
+ *
+ * It bounds each body and not their number, which is the gap worth knowing
+ * about: a step that makes six hundred requests is held down only by the
+ * response budget on the far side, and that shrinks the document *after* the
+ * fact rather than capturing less in the first place. A per-step network cap
+ * would be an ordinary preference — Tier 1, next to the body cap — and no
+ * constant for it exists yet.
+ */
 export const BODY_CAP = 51_200;
 
 /** Bodies longer than this are replaced by an inferred schema in exports. */
@@ -105,6 +122,11 @@ export const DEFAULT_MCP_URL = 'http://127.0.0.1:7734/flows';
  * ship separately (the extension as a zip, the server to npm), so this is the
  * only thing that tells a server which shape it has been handed.
  */
+/**
+ * Tier 3 — not configurable. A wire contract between two things that ship
+ * separately. A user-set version is a user-set lie: the server would trust it
+ * and read fields by a shape the extension never wrote.
+ */
 export const FLOW_SCHEMA_VERSION = 1;
 
 /**
@@ -117,21 +139,48 @@ export const FLOW_SCHEMA_VERSION = 1;
 export const THEME_MIRROR_KEY = 'flowsnap.theme';
 
 /** Marks messages the injected agent posts to the content script. */
+/** Tier 3 — not configurable. A protocol identifier, not a preference. */
 export const AGENT_MESSAGE_SOURCE = 'page-injector';
 
 /** DOM id of the on-page recording indicator. */
+/** Tier 3 — not configurable. A DOM identifier, not a preference. */
 export const INDICATOR_ID = 'flowsnap-indicator';
 
-/** Badge colour while recording. */
+/**
+ * Badge colour while recording.
+ *
+ * Tier 3 — not configurable, ruled in Phase 3. Phase 0's inventory listed this
+ * as an open question because it is the same red as `ANNOTATION_STROKE`, which
+ * *is* Tier 1. They have different jobs. The annotation stroke is a mark the
+ * user makes on their own screenshot for their own reader; the badge is
+ * FlowSnap telling the user it is recording right now, on the only surface that
+ * is always visible. A colour somebody chose to match their theme is a colour
+ * that can be missed, and a recording nobody noticed starting is the most
+ * expensive thing this extension can do.
+ */
 export const BADGE_COLOR = '#FF3B30';
 
-/** Highlight box baked into screenshots. */
+/**
+ * Highlight box baked into screenshots.
+ *
+ * Tier 1, and in the field table as `annotation.stroke`. Red is invisible on a
+ * red error banner, which is the whole reason it is a setting.
+ *
+ * **There is no second constant for the fill, and that is the point.** Phase 0
+ * flagged the fill as a real gap rather than a judgement call — a stroke the
+ * user can set beside a wash they cannot gives a green box with a red middle —
+ * and Phase 3 ruled that the answer is derivation rather than a second colour
+ * control, which would let the two disagree deliberately. Phase 4 wired the
+ * setting and did the deriving in the same change: `fillFor()` in
+ * `background/annotator.ts` is the stroke at 8% alpha, computed from whatever
+ * the stroke is, and `ANNOTATION_FILL` no longer exists to drift from it.
+ */
 export const ANNOTATION_STROKE = '#FF3B30';
-export const ANNOTATION_FILL = 'rgba(255, 59, 48, 0.08)';
 
 // ── React source attribution ─────────────────────────────────────────────────
 
 /** Marks control messages the content script posts *to* the MAIN-world agent. */
+/** Tier 3 — not configurable. A protocol identifier, not a preference. */
 export const CONTROL_MESSAGE_SOURCE = 'flowsnap-control';
 
 /**
@@ -173,7 +222,13 @@ export const REACT_BUFFER_SIZE = 16;
  */
 export const REACT_BUFFER_TTL_MS = 5000;
 
-/** How long a chain computed on `pointerdown` may be reused by the `click`. */
+/**
+ * How long a chain computed on `pointerdown` may be reused by the `click`.
+ *
+ * Tier 2, ruled in Phase 3 and tabled by Phase 6 as `react.prewarmTtlMs` — it
+ * sits between `REACT_BUFFER_TTL_MS` and `REACT_CHAIN_TIMEOUT_MS`, which are
+ * both Tier 2, and it is the same kind of number.
+ */
 export const REACT_PREWARM_TTL_MS = 1000;
 
 /**
@@ -212,6 +267,14 @@ export const REACT_SETTING_DEFAULTS: {
 };
 
 /** Length of the high-specificity needle taken from the head of `fn.toString()`. */
+/**
+ * Tier 3 — not configurable, along with the two below.
+ *
+ * Resolution correctness. Shorten a needle and false positives dominate;
+ * lengthen it and a minifier's line break stops it matching. Either way the
+ * failure mode is a confident *wrong* file path in a flow, which is worse than
+ * no path at all because nobody re-checks it.
+ */
 export const NEEDLE_HEAD_LEN = 200;
 
 /** Length of the secondary needle taken from the function body. */
@@ -238,6 +301,7 @@ export const MAX_COMPONENTS_PER_FLOW = 128;
  * Above one the match is ambiguous and the path may be the wrong one; the exact
  * number past a handful changes nothing anybody would do about it.
  */
+/** Tier 3 — not configurable: see `NEEDLE_HEAD_LEN`. Resolution correctness. */
 export const MAX_MATCHES_TRACKED = 5;
 
 /** Scripts larger than this are assets or data, not code worth scanning. */
@@ -295,4 +359,168 @@ export const MAX_SCRIPTS_PER_ORIGIN = 200;
  * only covers the case where nothing ever launched — long enough that the
  * protocol prompt is not dismissed out from under the user while they read it.
  */
+/*
+ * Tier 2, ruled in Phase 3 and tabled by Phase 6 as `ui.launcherTimeoutMs`. It
+ * is user-visible — it is how long a blank tab sits there before giving up on
+ * an editor — which is what keeps it out of Tier 3, and it degrades nothing
+ * about a recording, which is what keeps it out of Tier 1.
+ */
 export const LAUNCHER_TAB_TIMEOUT_MS = 20_000;
+
+// ── Moved here so a setting has exactly one default ──────────────────────────
+//
+// Everything below was a module-private `const` in the file that used it. The
+// settings table (`features/settings/fields.ts`) imports its defaults rather
+// than retyping them, and a default it could not import would be a second copy
+// of the number — which is the failure the whole mechanism exists to avoid.
+// The rationale comments moved with the values, because they are the answer to
+// "what happens if I change this" that the Settings screen has to print.
+
+/**
+ * How long to let the page respond before reading the region back.
+ *
+ * Long enough for a click to have produced its visible result — a spinner, a
+ * banner, a disabled button — and short enough that it is still that click's
+ * result rather than the next thing the user did. Deliberately longer than
+ * `SETTLE_DELAY_MS`, which exists to get a good *photograph*: the screenshot is
+ * the moment the page reacted, and this is what it settled into.
+ */
+export const DOM_DELTA_MS = 700;
+
+/** Visible text worth keeping from one region. Two lines of prose, roughly. */
+export const CONTAINER_TEXT_CAP = 240;
+
+/**
+ * How much of a response body a *document* is worth, and how many console lines
+ * ride along with a step.
+ *
+ * The renderer's other two caps (`MAX_REQUEST_BODY`, `MAX_CONSOLE_MESSAGE`) stay
+ * local to `core/export/markdown.ts`: nothing outside that file has an opinion
+ * about them. These two do — they are the density of the walkthrough, which is
+ * a real preference — so they live where a setting can name them.
+ */
+export const MAX_RESPONSE_BODY = 800;
+export const MAX_CONSOLE_ENTRIES = 5;
+
+/**
+ * Per-argument ceiling on a captured console line.
+ *
+ * A page that logs its whole store on every action was attaching hundreds of
+ * kilobytes to each step, and every capture rewrites the entire step array — so
+ * the cost is paid again on every step that follows.
+ */
+export const LOG_ARG_CAP = 4096;
+
+/** How much of a stack trace is worth keeping. Deeper frames are framework. */
+export const STACK_FRAMES = 12;
+
+/** The five levels `console` is patched on, in the order Settings lists them. */
+export const CONSOLE_LEVELS = ['log', 'warn', 'error', 'info', 'debug'] as const;
+
+/** Matches `.flow-row__thumb` in viewer.css, at 2× for a HiDPI screen. */
+export const THUMBNAIL_WIDTH = 128;
+export const THUMBNAIL_HEIGHT = 80;
+
+/** Well under a kilobyte at this size, and it is never looked at closely. */
+export const THUMBNAIL_QUALITY = 0.5;
+
+/** How long to wait before calling a silent address unreachable. */
+export const SEND_TIMEOUT_MS = 10_000;
+export const HEALTH_TIMEOUT_MS = 4000;
+export const REMOTE_TIMEOUT_MS = 10_000;
+
+// ── The MCP server's own numbers, mirrored ───────────────────────────────────
+//
+// `mcp-server/server.js` is a separate npm package in a separate process; it
+// cannot import TypeScript, so it keeps its own literals and always will. These
+// are the extension's copy — what the Settings screen shows, what it clamps
+// against, and what it sends to `POST /config` in a later phase.
+//
+// A second copy of a number is exactly what the rest of this file exists to
+// prevent, so it is the one thing here with a test of its own:
+// `tests/settings-defaults.test.ts` parses `server.js` and fails if a value
+// drifts from the mirror below. That test is load-bearing — a silent drift here
+// would show the user one number while the server used another.
+
+/** Response budget for one MCP tool call, in tokens. `FLOWSNAP_MAX_TOKENS`. */
+export const MCP_MAX_TOKENS = 20_000;
+
+/** Screenshots returned by a single MCP call. */
+export const MCP_MAX_IMAGES = 3;
+
+/** Body characters included per request in MCP tool output. */
+export const MCP_BODY_LIMIT = 4096;
+
+/** Whether MCP tool calls include the underlying step data unless asked. */
+export const MCP_RAW_DEFAULT = false;
+
+/** Flows kept in `~/.flowsnap/flows` before the oldest is evicted. */
+export const MCP_MAX_FLOWS = 200;
+
+/** Total bytes kept in `~/.flowsnap/flows` before the oldest is evicted. */
+export const MCP_MAX_FLOW_BYTES = 2 * 1024 * 1024 * 1024;
+
+/** The loopback port the server listens on. `FLOWSNAP_PORT`. */
+export const MCP_PORT = 7734;
+
+// ── Export and send defaults ─────────────────────────────────────────────────
+//
+// The dialogs remember the last choice per surface (`exportOptions`,
+// `sendOptions` in local storage). These are the shipped answer to what to
+// offer when there is no memory — and, since Phase 4, the default the
+// `export.*` settings start from. The memory and the setting are two different
+// things and both are relied on; `features/export/defaults.ts` is the rule for
+// deciding between them.
+
+/** What an export includes before anyone has chosen otherwise. */
+export const EXPORT_DEFAULT_IMAGES = true;
+export const EXPORT_DEFAULT_NETWORK = true;
+export const EXPORT_DEFAULT_LOGS = true;
+export const EXPORT_DEFAULT_REACT = true;
+export const EXPORT_DEFAULT_FORMAT = 'zip';
+
+/**
+ * What a send includes before anyone has chosen otherwise.
+ *
+ * Narrower than an export on purpose, and the asymmetry is the whole reason
+ * these are eight constants and not four. An image is the cheapest thing on
+ * this wire and the most useful on its own — the server writes it to disk and
+ * Claude pays only for the ones it opens. Network bodies and console logs are
+ * the expensive half: they are read back with every step, and on a flow against
+ * a chatty API they are most of the context. Someone debugging a failed request
+ * knows to switch them on; someone showing Claude what they clicked should not
+ * pay for them without asking. The component table stays on, with the
+ * screenshots rather than with the bodies: it is what makes the flow
+ * *actionable* — the assistant opens the file instead of searching for the
+ * component by name — and it is ids plus one table, a rounding error next to a
+ * single response body.
+ */
+export const SEND_DEFAULT_IMAGES = true;
+export const SEND_DEFAULT_NETWORK = false;
+export const SEND_DEFAULT_LOGS = false;
+export const SEND_DEFAULT_REACT = true;
+
+// ── Capture switches that have never had one ─────────────────────────────────
+//
+// These are `true` in the code today because there is no way to say otherwise —
+// the behaviour is unconditional. The tiering makes each of
+// them a setting, and the default has to be the behaviour that ships now or the
+// migration is a behaviour change wearing a settings screen.
+
+/** Whether a step carries a screenshot at all. */
+export const CAPTURE_SCREENSHOTS = true;
+
+/** Whether request and response bodies are recorded. */
+export const CAPTURE_BODIES = true;
+
+/** Whether bodies over `SCHEMA_THRESHOLD` are replaced by an inferred schema. */
+export const SUMMARISE_BODIES = true;
+
+/** Whether uncaught errors and unhandled rejections become console entries. */
+export const CAPTURE_UNCAUGHT = true;
+
+/** Whether the region around an interaction is read back after `DOM_DELTA_MS`. */
+export const CAPTURE_DOM_DELTA = true;
+
+/** Whether pressing Stop collects the state the last interaction left behind. */
+export const CAPTURE_TRAILING_STEP = true;

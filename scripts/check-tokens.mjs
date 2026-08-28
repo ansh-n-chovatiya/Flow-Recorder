@@ -1,17 +1,5 @@
 /**
- * Enforce the design system's one hard rule: no colour outside tokens.css.
- *
- *   npm run lint:tokens
- *
- * A design system is only a system while nothing bypasses it. One `#2BB3A3`
- * pasted into a component is invisible in review, survives every test, and then
- * fails to change when the theme does — which is precisely how the build being
- * replaced ended up with a red that meant "record", "delete" and "failed" at
- * once.
- *
- * PENDING lists the files that predate the design system. They are exempt so the
- * rule can be enforced today rather than after the last screen is rebuilt; the
- * list is expected to reach empty, and shrinking it is the point.
+ * Enforces CSS design token usage across stylesheets and HTML files.
  */
 
 import { globSync, readFileSync } from 'node:fs';
@@ -20,29 +8,19 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** The one file allowed to name a colour. */
+/** Source token definitions file. */
 const TOKENS = 'src/ui/styles/tokens.css';
 
-/**
- * Injected into someone else's document, where tokens.css is not present and
- * `:root` belongs to the page. Its values are scoped to the indicator and
- * documented as copies; there is no way to import them.
- */
+/** Files with scoped or standalone styling exempt from token imports. */
 const SCOPED = ['public/content.css'];
 
-/**
- * Not rebuilt on the design system yet. Delete entries; never add them.
- *
- * Empty as of migration step 8 — every surface is on the tokens. It stays here
- * because the next surface to be added will be written before it is themed, and
- * the honest way to say so is a named exemption rather than a silent one.
- */
+/** Files pending design token migration. */
 const PENDING = [];
 
-/** Anything that names a colour directly. */
+/** Matches direct color literals (hex, rgb, hsl, oklch, lab, color-mix). */
 const COLOUR = /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|color-mix|oklch|lab)\(/gi;
 
-/** The arguments of a function call starting at `open`, respecting nesting. */
+/** Extracts balanced function call arguments starting at the given index. */
 function callArgs(text, open) {
   let depth = 0;
 
@@ -57,11 +35,7 @@ function callArgs(text, open) {
   return text.slice(open + 1);
 }
 
-/**
- * `color-mix(in srgb, var(--record) 40%, transparent)` is a token derivation,
- * not a new colour. A call is allowed exactly when it is built from tokens; a
- * literal channel value anywhere is a colour that a theme cannot reach.
- */
+/** Scans file content for un-tokenized color declarations. */
 function findings(source) {
   const found = [];
 
@@ -76,7 +50,11 @@ function findings(source) {
         if (args.includes('var(--')) continue;
       }
 
-      found.push({ line: index + 1, text: text.replace(/\($/, '()'), source: line.trim() });
+      found.push({
+        line: index + 1,
+        text: text.replace(/\($/, '()'),
+        source: line.trim(),
+      });
     }
   });
 
@@ -89,7 +67,10 @@ const files = [
   ...globSync('public/*.css', { cwd: root }),
 ]
   .map((file) => file.split('\\').join('/'))
-  .filter((file) => file !== TOKENS && !SCOPED.includes(file) && !PENDING.includes(file))
+  .filter(
+    (file) =>
+      file !== TOKENS && !SCOPED.includes(file) && !PENDING.includes(file),
+  )
   .sort();
 
 let failed = 0;
@@ -97,14 +78,18 @@ let failed = 0;
 for (const file of files) {
   const hits = findings(readFileSync(resolve(root, file), 'utf8'));
   for (const hit of hits) {
-    console.error(`${file}:${hit.line}  ${hit.text} — use a token from ${TOKENS}`);
+    console.error(
+      `${file}:${hit.line}  ${hit.text} — use a token from ${TOKENS}`,
+    );
     console.error(`    ${hit.source}`);
     failed++;
   }
 }
 
 if (failed > 0) {
-  console.error(`\n${failed} colour ${failed === 1 ? 'literal' : 'literals'} outside ${TOKENS}.`);
+  console.error(
+    `\n${failed} colour ${failed === 1 ? 'literal' : 'literals'} outside ${TOKENS}.`,
+  );
   process.exit(1);
 }
 

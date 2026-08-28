@@ -33,10 +33,16 @@ import { createRequire } from 'node:module';
 import {
   callFailed,
   compactBody,
+  DEFAULTS,
+  describeStamp,
   exportToMarkdown,
+  fieldFor,
+  flowRendering,
   formatSource,
+  MACHINE_KEYS,
   renderComponents,
   renderStep,
+  resolve as resolveSettings,
   urlPath,
 } from './core.js';
 
@@ -46,11 +52,15 @@ const HOME = process.env.FLOWSNAP_DIR
   ? path.resolve(process.env.FLOWSNAP_DIR)
   : path.join(os.homedir(), '.flowsnap');
 const FLOWS_DIR = path.join(HOME, 'flows');
-// 7734 is what the extension posts to by default; FLOWSNAP_PORT is for the rare
-// machine where something else already owns it, and must be changed on both sides.
-const HTTP_PORT = REMOTE ? Number(process.env.PORT) || 8080 : Number(process.env.FLOWSNAP_PORT) || 7734;
+// The port is `mcp.port`, and it is settled below, once the settings layer that
+// decides it exists — see `HTTP_PORT`.
 
 /** The highest `FLOW_SCHEMA_VERSION` this server knows how to read. */
+/*
+ * Tier 3 — deliberately not configurable. A wire contract
+ * between two packages that ship separately. A user-set version is a user-set
+ * lie: this server would then read fields by a shape the extension never wrote.
+ */
 const SUPPORTED_SCHEMA = 1;
 
 /**
@@ -59,8 +69,262 @@ const SUPPORTED_SCHEMA = 1;
  * The receiver listens on loopback and any page the user visits can reach it,
  * so the body is read into memory before anything has vouched for it. 500
  * screenshots at the extension's own limit come to well under this.
+ *
+ * Tier 3 — deliberately not configurable. It is the only
+ * thing bounding the unauthenticated POST that carries a flow. `POST /config`
+ * has its own, smaller ceiling below.
  */
 const MAX_BODY_BYTES = 512 * 1024 * 1024;
+
+/**
+ * Cap on a POSTed settings file.
+ *
+ * `POST /config` is on the same loopback port as the receiver and reachable by
+ * the same callers, so it needs the same kind of ceiling — and a far smaller
+ * one, because it is not carrying screenshots. The whole field table serialised
+ * with every key set is a few kilobytes; this is that with three orders of
+ * magnitude of room.
+ *
+ * Tier 3 — deliberately not configurable, for the same
+ * reason `MAX_BODY_BYTES` is not. It is one of the two things bounding an
+ * unauthenticated POST, and a bound a POST can raise is not a bound. It would
+ * also be self-defeating in a way the flow cap is not: this endpoint writes the
+ * very file the value would be read from.
+ */
+const MAX_CONFIG_BYTES = 64 * 1024;
+
+/**
+ * How long a directory with no readable `meta.json` is left alone.
+ *
+ * `meta.json` is written last, so its absence means either a save happening
+ * right now or one that failed part way. Waiting an hour tells those apart
+ * without a lock.
+ *
+ * Tier 3 — deliberately not configurable. Deletion safety:
+ * shorten it and a save in progress becomes a directory this server deletes.
+ */
+const ORPHAN_GRACE_MS = 60 * 60 * 1000;
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+
+/**
+ * How this server decides what a response looks like.
+ *
+ * The server's settings split in two,
+ * because two kinds of setting behave differently across a machine boundary.
+ *
+ *   - **Per-flow rendering** — the response budget, the `raw` default, images
+ *     per call, body length in tool output and the two walkthrough caps — is a
+ *     property of the *recording*. It travels inside the flow, in the same
+ *     `settings` stamp §6 already uses to say what a recording was made under,
+ *     and is persisted in `flow.json`. There is no other channel: the Settings
+ *     screen is in a browser and this is a Node process with no access to it.
+ *   - **Machine-wide** — retention and the port — is a property of *this
+ *     installation* and cannot sensibly be carried by one recording: a flow
+ *     arriving from another browser profile, or read a month after it was made,
+ *     has no business saying how much disk this machine keeps. That is
+ *     `~/.flowsnap/config.json`, which `POST /config` writes and this file
+ *     re-reads. The three keys are `machine: true` in the extension's field
+ *     table, and that flag is the endpoint's whole allow-list.
+ *
+ * ### Precedence: environment variable > config.json > per-flow > default
+ *
+ * Read as "the layer that knows most about *this run* wins". An environment
+ * variable is set by whoever launched the process, so it is the last word: a CI
+ * job or a headless run must not be steered by whatever a browser once synced
+ * into a flow it happens to be reading. `config.json` is this machine's standing
+ * answer. The flow's own stamp is the user's answer, made in the extension,
+ * travelling with the recording it was made for. The field table's default is
+ * what is left.
+ *
+ * ### One validator, not two
+ *
+ * The chain is four sparse override objects merged and handed to `resolve()` —
+ * *the extension's own* `resolve()`, bundled in through `core/mcp-bundle.ts`.
+ * The plan's standing rule is that `resolve` is the only validator, and a second
+ * one written here would clamp a hand-edited `config.json` by rules that drift
+ * from the ones the Settings screen enforces. It also matters more here than
+ * anywhere else: `flow.settings` arrives over an unauthenticated loopback POST
+ * that any page the user visits can reach, so every number below is clamped to
+ * the same range the form offers before anything acts on it.
+ */
+
+/** The settings file this installation may carry. Phase 5 writes it. */
+const CONFIG_FILE = path.join(HOME, 'config.json');
+
+/**
+ * Environment variables, and the setting each one sets.
+ *
+ * A table rather than a derivation from the key, so renaming a setting cannot
+ * silently move an environment variable somebody's launcher already sets.
+ * `FLOWSNAP_MAX_TOKENS` predates the mechanism and keeps its name.
+ *
+ * The last three are the machine-wide keys. They used to be read straight from
+ * `process.env` further up this file, which is why `config.json` naming one had
+ * to be announced and ignored; they come through the ordinary chain now, so a
+ * variable still beats the file and the file finally reaches something.
+ * `PORT` is not here: it belongs to remote mode, where the port is how MCP
+ * itself is served and no settings layer may move it.
+ */
+const ENV_SETTINGS = {
+  FLOWSNAP_MAX_TOKENS: 'mcp.maxTokens',
+  FLOWSNAP_RAW: 'mcp.raw',
+  FLOWSNAP_MAX_IMAGES: 'mcp.maxImages',
+  FLOWSNAP_BODY_LIMIT: 'mcp.bodyLimit',
+  FLOWSNAP_MAX_RESPONSE_BODY: 'mcp.maxResponseBody',
+  FLOWSNAP_MAX_CONSOLE_ENTRIES: 'mcp.maxConsoleEntries',
+  FLOWSNAP_PORT: 'mcp.port',
+  FLOWSNAP_MAX_FLOWS: 'mcp.maxFlows',
+  FLOWSNAP_MAX_BYTES: 'mcp.maxFlowBytes',
+};
+
+/**
+ * One environment string as the setting's own type, or `undefined` if it is not
+ * a usable answer.
+ *
+ * Booleans are the reason this exists. `resolveField` is deliberately strict —
+ * `'false'` is a string, and every truthiness test in JavaScript reads it as
+ * `true`, which is the most expensive coercion available to a settings file. So
+ * an environment variable is coerced *here*, where the value is known to be a
+ * string because the operating system has no other type, and anything that is
+ * not plainly one answer or the other is refused rather than guessed at.
+ */
+function coerceEnv(field, raw) {
+  if (!field) return undefined;
+  if (field.type === 'boolean') {
+    if (/^(1|true|yes|on)$/i.test(raw)) return true;
+    if (/^(0|false|no|off)$/i.test(raw)) return false;
+    return undefined;
+  }
+  if (field.type === 'number') {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return raw;
+}
+
+/**
+ * The environment layer.
+ *
+ * A variable that cannot be read is logged and dropped, never silently ignored:
+ * `FLOWSNAP_RAW=maybe` producing the default while looking set is exactly the
+ * "appears to work and quietly uses the compiled-in value" failure the whole
+ * mechanism is built against, and stderr is the only surface this process has.
+ * An out-of-range *number* is not dropped — `resolve` clamps it, and is logged
+ * below for the same reason.
+ */
+function envOverrides() {
+  const out = {};
+  for (const [name, key] of Object.entries(ENV_SETTINGS)) {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === '') continue;
+
+    const value = coerceEnv(fieldFor(key), raw);
+    if (value === undefined) {
+      log(`ignoring ${name}=${raw} — not a value ${key} can take`);
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * The config-file layer.
+ *
+ * Read at startup, and again after `POST /config` writes it — so a setting
+ * changed in the extension reaches the retention sweep without waiting for a
+ * restart. A file edited by hand still takes effect when the server next
+ * starts, which for a stdio MCP server is every session.
+ *
+ * Every failure reads as "no config": a missing file is the ordinary case, and
+ * a malformed one is announced and then ignored rather than taking the server
+ * down — the flows on disk are still readable, and a client that cannot start
+ * this server gets no error message at all.
+ */
+async function readConfigFile() {
+  let text;
+  try {
+    text = await fs.readFile(CONFIG_FILE, 'utf8');
+  } catch {
+    // The ordinary case, and not a problem: an installation that has never been
+    // configured has no file, and is not to be told it has a broken one.
+    return { ok: true, value: {} };
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, problem: `${CONFIG_FILE} is not a settings object` };
+    }
+    return { ok: true, value: parsed };
+  } catch (error) {
+    return { ok: false, problem: `${CONFIG_FILE} is not valid JSON (${error.message})` };
+  }
+}
+
+/** The file as settings, with every failure reading as "no config". */
+async function readConfig() {
+  const read = await readConfigFile();
+  if (read.ok) return read.value;
+  log(`${read.problem} — ignoring it`);
+  return {};
+}
+
+/**
+ * The two layers above the flow, and everything derived from them.
+ *
+ * `let` rather than `const` because `POST /config` re-reads the file it just
+ * wrote. The alternative — take effect on the next restart — is what the whole
+ * mechanism exists against: the user changes a retention cap, the extension
+ * reports success, and the number that is actually enforced is the old one,
+ * with nothing anywhere saying so.
+ *
+ * Env last, so env wins.
+ */
+let MACHINE_SETTINGS = {};
+let MACHINE_RESOLVED = resolveSettings({});
+/** What this installation renders under, before any flow has been opened. */
+let MACHINE_RENDERING = flowRendering(MACHINE_RESOLVED);
+
+/**
+ * Take a config file as the machine's standing answer, and say what it changed.
+ *
+ * A clamp is announced for the same reason an unreadable environment variable
+ * is: a number that quietly became a different number is what this is written
+ * against. Only for keys this build knows — an unknown key belongs to a newer
+ * FlowSnap and is not this server's to complain about.
+ */
+function applyMachineSettings(config) {
+  MACHINE_SETTINGS = { ...config, ...envOverrides() };
+  MACHINE_RESOLVED = resolveSettings(MACHINE_SETTINGS);
+  MACHINE_RENDERING = flowRendering(MACHINE_RESOLVED);
+
+  for (const [key, wanted] of Object.entries(MACHINE_SETTINGS)) {
+    if (!fieldFor(key)) continue;
+    if (MACHINE_RESOLVED[key] !== wanted) {
+      log(`${key}: ${wanted} is out of range — using ${MACHINE_RESOLVED[key]}`);
+    }
+  }
+}
+
+applyMachineSettings(await readConfig());
+
+/**
+ * The port this process listens on, decided once.
+ *
+ * `const`, alone among the machine-wide settings, and the exception is the
+ * point: a socket is bound before any request can arrive and cannot be moved
+ * under the connections already on it. So a later `POST /config` writes the new
+ * port to the file, where the next start will read it, and says in its reply
+ * that this process is still on the old one. Both sides then know the truth,
+ * which is the only outcome worse than no port setting at all — one side
+ * moving quietly — is ruled out by.
+ *
+ * Remote mode keeps `PORT`: there the port is how MCP itself is served, and a
+ * value synced out of somebody's browser has no business moving it.
+ */
+const HTTP_PORT = REMOTE ? Number(process.env.PORT) || 8080 : MACHINE_RESOLVED['mcp.port'];
 
 /**
  * How much recorded history to keep, oldest evicted first.
@@ -74,54 +338,82 @@ const MAX_BODY_BYTES = 512 * 1024 * 1024;
  *
  * Deliberately generous. This is a runaway guard, not a retention policy —
  * losing a recording someone still wanted is the worse failure, so the caps sit
- * far above any plausible working set and both are overridable.
+ * far above any plausible working set.
+ *
+ * Read through a function rather than captured in two constants, so a cap
+ * lowered through `POST /config` governs the very next save. A sweep is never
+ * run *because* the setting changed, though: eviction is deletion, and deleting
+ * recordings as the immediate effect of a settings write — over an endpoint a
+ * page can reach — is a much worse thing to be wrong about than a cap that
+ * takes effect when the next flow arrives.
  */
-const MAX_FLOWS = Number(process.env.FLOWSNAP_MAX_FLOWS) || 200;
-const MAX_FLOW_BYTES = Number(process.env.FLOWSNAP_MAX_BYTES) || 2 * 1024 * 1024 * 1024;
+function retention() {
+  return {
+    maxFlows: MACHINE_RESOLVED['mcp.maxFlows'],
+    maxFlowBytes: MACHINE_RESOLVED['mcp.maxFlowBytes'],
+  };
+}
 
 /**
- * How long a directory with no readable `meta.json` is left alone.
+ * The settings one flow is rendered under — the whole chain, in one expression.
  *
- * `meta.json` is written last, so its absence means either a save happening
- * right now or one that failed part way. Waiting an hour tells those apart
- * without a lock.
+ * Spread order *is* the precedence rule: later wins, so the flow's own stamp is
+ * overridden by this machine's config, which is overridden by the environment.
+ * `resolve` fills in every key none of them carried and clamps every key they
+ * did.
+ *
+ * ### What each of these decides
+ *
+ * `maxTokens` — what one tool response may weigh. Every MCP client caps tool
+ * output and applies the cap by *truncating the string*: a 24-step recording
+ * came to 93,000 tokens before compaction and still runs to tens of thousands
+ * after it on a busy app, so the document arrived with its last steps missing,
+ * its JSON block unterminated, and nothing anywhere saying a cut had happened.
+ * The model then answers questions about a recording it has only part of,
+ * confidently. So the server does the cutting, on a step boundary, and says so.
+ *
+ * `maxImages` — how many pictures one `get_flow_screenshots` call returns. A
+ * recorded screenshot costs on the order of 1,500 tokens of vision budget, and
+ * this tool is the fallback for readers that cannot open a file, not the way to
+ * look at a flow. The paths are free; the pictures are not.
+ *
+ * `bodyLimit` — how much of a request or response body goes into the step JSON.
+ * It matches the extension's own diagnostic limit and must not go below it: the
+ * extension compacts every body before it sends one, and a *failed* call keeps
+ * its body verbatim because that body is the diagnostic. Cutting shorter here
+ * spends that budget and then throws half of it away, taking the tail of exactly
+ * the stack traces `get_flow_errors` exists to surface. `get_flow_step` gets
+ * four times as much: it carries one step rather than tens of them, and it is
+ * reached because something already decided this is the step that matters.
+ *
+ * `raw` — whether a `get_flow` response carries the step JSON without being
+ * asked. Off by default because it repeats what the walkthrough already says
+ * and adds replay data that answers no question about what went wrong.
+ *
+ * `limits` — the body rules the sender already applied, and the walkthrough's
+ * own two caps. The `network.*` half is normally the *flow's* answer: the
+ * extension compacted the bodies on the way out under those rules, and
+ * re-summarising a body the sender deliberately kept verbatim would undo the
+ * setting from the far side of the wire.
+ *
+ * "Normally", not "always", and the difference is worth being exact about. The
+ * two `network.*` keys sit in the same chain as everything else, so a
+ * `config.json` or an environment that names one *does* override the flow. That
+ * is §3's rule applied uniformly, and it is the right answer — "this machine
+ * wants summaries" is a legitimate thing to say about every flow it reads. What
+ * it cannot do is undo a compaction: a body already summarised at capture is
+ * gone, and only `summarise: true` can be applied after the fact. `POST /config`
+ * writes the three machine-wide keys and nothing else, so these two reach this
+ * file by a hand edit or the environment, and by no other route.
  */
-const ORPHAN_GRACE_MS = 60 * 60 * 1000;
+function renderingFor(flow) {
+  const stamp = flow?.settings;
+  const perFlow = stamp && typeof stamp === 'object' && !Array.isArray(stamp) ? stamp : {};
+  return flowRendering(resolveSettings({ ...perFlow, ...MACHINE_SETTINGS }));
+}
 
-/**
- * How many images one `get_flow_screenshots` call will return.
- *
- * Three, not eight. A recorded screenshot costs on the order of 1,500 tokens of
- * vision budget, so the old ceiling was a single call worth more than the entire
- * rest of the recording — and this tool is the fallback for readers that cannot
- * open a file, not the way to look at a flow. The paths are free; the pictures
- * are not.
- */
-const MAX_IMAGES = 3;
-/**
- * Request and response bodies are cut to this in tool output.
- *
- * Matches the extension's `DIAGNOSTIC_LIMIT`, and must not go below it. The
- * extension compacts every body before it sends one — a successful call becomes
- * an inferred schema, a *failed* call keeps its body verbatim to 4096 characters
- * because that body is the diagnostic. Cutting at 2000 here spent that budget
- * and then threw half of it away, taking the tail of exactly the stack traces
- * `get_flow_errors` exists to surface. Flows recorded before that compaction
- * arrive uncompacted and are still cut here, which is what this limit is for.
- */
-const BODY_LIMIT = 4096;
-
-/**
- * The same, for `get_flow_step`.
- *
- * That tool is carrying one step rather than tens of them, and it is reached
- * because something already decided this is the step that matters — so it can
- * afford four times the body before it starts cutting. Bounded all the same:
- * `BODY_CAP` in the extension is 51,200 characters, which is 12,000 tokens of
- * one response body, and "you asked for detail" is not a reason to hand back
- * something the client will truncate.
- */
-const FULL_BODY_LIMIT = BODY_LIMIT * 4;
+/** The step JSON's body limit, which is four times larger in `full` mode. */
+const bodyLimitFor = (render, full) => (full ? render.bodyLimit * 4 : render.bodyLimit);
 
 await fs.mkdir(FLOWS_DIR, { recursive: true });
 
@@ -156,7 +448,7 @@ async function writeAtomic(file, contents) {
   }
 }
 
-function truncate(value, limit = BODY_LIMIT) {
+function truncate(value, limit) {
   if (typeof value !== 'string') return value;
   return value.length <= limit ? value : `${value.slice(0, limit)}… [${value.length} chars total]`;
 }
@@ -178,9 +470,9 @@ function truncate(value, limit = BODY_LIMIT) {
  * body is the error and a schema of it is the error with every word removed.
  * `truncate` still runs afterwards as the backstop that bounds the result.
  */
-function compactCall(body, meta, diagnostic, limit) {
+function compactCall(body, meta, diagnostic, limit, bodies) {
   if (!body) return body;
-  const compacted = compactBody(body, { ...meta, diagnostic }) ?? body;
+  const compacted = compactBody(body, { ...meta, diagnostic }, bodies) ?? body;
   return truncate(compacted, limit);
 }
 
@@ -213,6 +505,9 @@ function countFailures(steps) {
  * `get_flow`'s `screenshotPath` and `get_flow_screenshots` would between them
  * name, print and base64 any file the server can read. The id is already
  * validated by `flowDir`; this is the other half of the same rule.
+ *
+ * Tier 3 — deliberately not configurable. It is the
+ * path-traversal guard on a loopback port any visited page can reach.
  */
 const SCREENSHOT_FILE = /^step-\d{2,}\.(png|jpg)$/;
 
@@ -350,6 +645,11 @@ function generateMarkdown(flow, dir) {
     title: flow.name,
     images: { kind: 'file', names: flow.steps.map((step) => imageFor(dir, step)) },
     react: flow.react,
+    // The same lines the walkthrough header prints, from the same function —
+    // see `describeStamp`. The file on disk and the tool response describe one
+    // recording one way.
+    settings: describeStamp(flow.settings),
+    limits: renderingFor(flow).limits,
   });
 }
 
@@ -607,6 +907,23 @@ async function saveFlow(flow) {
     // data was never sent — and it reported both as "nothing failed", which is
     // the wrong answer to give someone debugging a failure.
     ...(omitted.length ? { omitted } : {}),
+    /*
+     * The settings the flow was made under — §6 of the configuration plan.
+     *
+     * Kept verbatim, and not validated against anything here: it is a sparse
+     * set of the *sender's* overrides, and a server that dropped a key it did
+     * not recognise would silently unlabel a flow recorded by a newer FlowSnap
+     * than itself, which `npx -y flowsnap-mcp` makes an ordinary situation
+     * rather than a corner case. `describeStamp` prints what it can name and
+     * prints the rest raw.
+     *
+     * In `meta.json` as well as `flow.json` because `list_flows` reads only the
+     * index, and "recorded with screenshots off" is exactly the kind of thing a
+     * caller wants before choosing which recording to open.
+     */
+    ...(flow.settings && typeof flow.settings === 'object' && !Array.isArray(flow.settings)
+      ? { settings: flow.settings }
+      : {}),
     schemaVersion: flow.schemaVersion ?? 1,
   };
 
@@ -763,13 +1080,17 @@ async function enforceRetention(keepId) {
   let count = keepId ? 1 : 0;
   let bytes = keptBytes;
 
+  // Read here rather than at import, so a cap changed through `POST /config`
+  // governs this sweep and not the one after the next restart.
+  const { maxFlows, maxFlowBytes } = retention();
+
   for (const flow of flows) {
     count += 1;
     bytes += flow.bytes;
-    if (count <= MAX_FLOWS && bytes <= MAX_FLOW_BYTES) continue;
+    if (count <= maxFlows && bytes <= maxFlowBytes) continue;
 
     await fs.rm(flow.dir, { recursive: true, force: true }).catch(() => {});
-    evicted.push({ id: flow.id, reason: count > MAX_FLOWS ? 'count' : 'size' });
+    evicted.push({ id: flow.id, reason: count > maxFlows ? 'count' : 'size' });
     count -= 1;
     bytes -= flow.bytes;
   }
@@ -879,6 +1200,204 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true, id }));
     } catch (error) {
       log(`error deleting flow: ${error.message}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+
+  /*
+   * The machine-wide settings channel — §3's second one, and the only path
+   * `mcp.port`, `mcp.maxFlows` and `mcp.maxFlowBytes` have.
+   *
+   * The other MCP settings travel inside a flow, because each of them describes
+   * one document a reader is about to be handed. These three describe the
+   * installation: which port this process binds, and how much of this machine's
+   * disk the recordings may take. A flow arriving from another browser profile,
+   * or read a month after it was made, cannot sensibly carry an answer to them —
+   * so they arrive here, and are kept in a file rather than in a recording.
+   *
+   * ## What bounds it
+   *
+   * This is a new unauthenticated endpoint on a loopback port that any page the
+   * user visits can reach, so it gets the same treatment the receiver already
+   * has, plus the two limits that are specific to writing a file.
+   *
+   *   - **Same caller rule.** `extensionOrigin`, exactly as `POST /flows` and
+   *     `DELETE /flows/:id`. A visited page's `fetch` always carries an `Origin`,
+   *     including a `no-cors` one, and no page can forge an extension origin —
+   *     which is what makes the check worth anything. It is the same guard that
+   *     already stands in front of a far more destructive endpoint.
+   *   - **Its own ceiling.** `MAX_CONFIG_BYTES`, three orders of magnitude below
+   *     the flow cap, because a settings file is a few kilobytes and the body is
+   *     read into memory before anything has vouched for it.
+   *   - **One path, and no part of it comes from the request.** `CONFIG_FILE` is
+   *     a module constant built from `HOME` at startup. Nothing in the body
+   *     participates in it — not a key, not a value, not a header — so there is
+   *     no traversal to guard against rather than a guard to get right. That is
+   *     deliberate and it is the whole answer: the `SCREENSHOT_FILE` regex
+   *     exists because a *flow* names files this server then opens, and the
+   *     lesson taken from it here is not to accept a name at all.
+   *   - **Three keys.** The body is filtered to the fields the extension's own
+   *     table marks `machine: true`. Everything else in it is reported back and
+   *     dropped — those settings already have a channel, and promoting one to
+   *     machine-wide would silently overrule every recording this machine reads,
+   *     including flows from browsers that never asked. It also means the worst
+   *     a caller who gets past the origin check can do is name a port for the
+   *     next restart and move two retention caps, both of which are clamped to
+   *     the range the Settings screen offers, by the Settings screen's own
+   *     `resolve`.
+   *
+   * ## What it writes
+   *
+   * The body is the *whole* machine-wide half of the user's overrides, sparse:
+   * a key that is absent is a key they have reset, and it is removed from the
+   * file rather than left at whatever was sent last. Every other key already in
+   * the file is preserved untouched — including keys this build has never heard
+   * of, per §5, and including the `mcp.*` rendering keys somebody may have set
+   * by hand.
+   *
+   * A file that cannot be parsed is not overwritten. The server is already
+   * ignoring it and saying so on stderr; replacing it here would throw away
+   * text a person wrote, to fix a problem they can see and this cannot.
+   */
+  if (req.method === 'POST' && req.url === '/config') {
+    // Remote mode listens on 0.0.0.0, where "no Origin" is a stranger rather
+    // than a local curl — and a deployment's port and disk budget are the
+    // launcher's business anyway. Refused before the body is read.
+    if (REMOTE) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error:
+            'This server is running in remote mode. Machine-wide settings there come from ' +
+            'the environment it was launched with (FLOWSNAP_PORT, FLOWSNAP_MAX_FLOWS, FLOWSNAP_MAX_BYTES).',
+        }),
+      );
+      return;
+    }
+
+    if (!extensionOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Settings may only be posted by the FlowSnap extension.' }));
+      return;
+    }
+
+    try {
+      let body = '';
+      let bytes = 0;
+      for await (const chunk of req) {
+        bytes += chunk.length;
+        if (bytes > MAX_CONFIG_BYTES) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: `A settings file may not exceed ${MAX_CONFIG_BYTES} bytes.`,
+            }),
+          );
+          req.destroy();
+          return;
+        }
+        body += chunk;
+      }
+
+      let sent;
+      try {
+        sent = JSON.parse(body);
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Not valid JSON: ${error.message}` }));
+        return;
+      }
+
+      if (!sent || typeof sent !== 'object' || Array.isArray(sent)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Expected a settings object of flat dotted keys.' }));
+        return;
+      }
+
+      const existing = await readConfigFile();
+      if (!existing.ok) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: `${existing.problem}. Fix it or remove it, and this will write it again.`,
+          }),
+        );
+        return;
+      }
+
+      // Null-prototype, because the keys being copied through came out of a
+      // file: `__proto__` is an own property on a parsed object and a plain
+      // assignment of it to an ordinary object would reach the prototype
+      // setter instead of the file.
+      const next = Object.create(null);
+      for (const [key, value] of Object.entries(existing.value)) {
+        if (!MACHINE_KEYS.includes(key)) next[key] = value;
+      }
+
+      const applied = {};
+      const ignored = [];
+      for (const [key, value] of Object.entries(sent)) {
+        if (!MACHINE_KEYS.includes(key)) {
+          ignored.push(key);
+          continue;
+        }
+        next[key] = value;
+        applied[key] = value;
+      }
+
+      await writeAtomic(CONFIG_FILE, `${JSON.stringify(next, null, 2)}\n`);
+      applyMachineSettings(await readConfig());
+
+      // What the file now says, and what this process is actually doing about
+      // it — which are two different things for exactly one setting.
+      const effective = {};
+      for (const key of MACHINE_KEYS) effective[key] = MACHINE_RESOLVED[key];
+
+      /*
+       * A setting that was stored and will nonetheless never be used, because
+       * the environment names it too and the environment is the last word.
+       *
+       * Reported for the same reason a clamp is announced: the write succeeded,
+       * the file says what the user asked for, and the value in force is
+       * somebody else's. Without this the Settings screen would report success
+       * and be wrong in the one way this mechanism exists to prevent — and the
+       * user would have no way to find out, because the variable is set on a
+       * process they did not start.
+       */
+      const fromEnv = envOverrides();
+      const overridden = Object.keys(applied)
+        .filter((key) => Object.hasOwn(fromEnv, key))
+        .map((key) => ({
+          key,
+          by: Object.keys(ENV_SETTINGS).find((name) => ENV_SETTINGS[name] === key),
+          using: MACHINE_RESOLVED[key],
+        }));
+
+      const restart =
+        MACHINE_RESOLVED['mcp.port'] === HTTP_PORT
+          ? null
+          : `This server is listening on ${HTTP_PORT} and cannot move a socket it has already bound. ` +
+            `It will use ${MACHINE_RESOLVED['mcp.port']} when it next starts.`;
+
+      const named = Object.keys(applied);
+      log(
+        `config.json written — ${named.length ? named.join(', ') : 'no machine-wide settings'}` +
+          `${ignored.length ? ` (ignored ${ignored.join(', ')})` : ''}`,
+      );
+      if (restart) log(restart);
+
+      for (const beaten of overridden) {
+        log(`${beaten.key} is set in this server's environment (${beaten.by}), which wins — using ${beaten.using}`);
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({ ok: true, file: CONFIG_FILE, applied, effective, ignored, overridden, restart }),
+      );
+    } catch (error) {
+      log(`error writing config: ${error.message}`);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message }));
     }
@@ -1036,8 +1555,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           raw: {
             type: 'boolean',
-            description:
-              'Also return the step JSON — selectors, xpath, bounding boxes, full network records. Off by default: it repeats what the walkthrough already says and adds replay data that answers no question about what went wrong. Use get_flow_step for one step in detail.',
+            description: `Also return the step JSON — selectors, xpath, bounding boxes, full network records. ${MACHINE_RENDERING.raw ? 'On by default here' : 'Off by default'}: it repeats what the walkthrough already says and adds replay data that answers no question about what went wrong. Pass it explicitly either way to override the default. Use get_flow_step for one step in detail.`,
           },
         },
         required: ['id'],
@@ -1046,7 +1564,7 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'get_flow_screenshots',
       description:
-        `Screenshots as base64 images, for at most ${MAX_IMAGES} steps per call. Only use this when you cannot read files from disk — otherwise read the screenshotPath values from get_flow, which costs nothing until you open one. Omit "steps" to list what is available without transferring any image data.`,
+        `Screenshots as base64 images, for at most ${MACHINE_RENDERING.maxImages} steps per call (a recording made under a different "screenshots per MCP call" setting carries its own limit). Only use this when you cannot read files from disk — otherwise read the screenshotPath values from get_flow, which costs nothing until you open one. Omit "steps" to list what is available without transferring any image data.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -1114,31 +1632,7 @@ const readFailure = (error, id) =>
  */
 const estimateTokens = (value) => Math.ceil(value.length / 4);
 
-/**
- * What one tool response may weigh.
- *
- * Every MCP client caps tool output — Claude Code's default is 25,000 tokens —
- * and the cap is applied by *truncating the string*. A 24-step recording came to
- * 93,000 tokens before compaction and still runs to tens of thousands after it
- * on a busy app, so the document arrived with its last steps missing, its JSON
- * block unterminated, and nothing anywhere saying a cut had happened. The model
- * then answers questions about a recording it has only part of, confidently.
- *
- * So the server does the cutting, on a step boundary, and says so. Below the
- * client's cap with room for the framing the client adds around a response.
- */
-const MAX_TOKENS = Number(process.env.FLOWSNAP_MAX_TOKENS) || 20_000;
 
-/**
- * A step as it goes into the JSON block: its stored fields, where its image is,
- * and every body cut to `BODY_LIMIT`.
- *
- * The extension compacts bodies before it sends them, so this usually changes
- * nothing. It is here for the two cases where nothing compacted them: a flow
- * recorded before that existed, and a POST from something that is not the
- * extension. `truncate` stamps what it removed, so a cut body cannot read as a
- * whole one.
- */
 /**
  * Fields kept in `flow.json` for replay but not worth a token to a reader.
  *
@@ -1157,18 +1651,27 @@ function leanElement(element) {
  * A step as it goes into the JSON block.
  *
  * Its stored fields, minus the replay-only ones, plus where its image is, with
- * every body cut to `BODY_LIMIT` and the clock expressed as a delta.
+ * every body cut to the flow's own `mcp.bodyLimit` and the clock expressed as a
+ * delta.
  *
  * `full` keeps everything — that is `get_flow_step`, which exists precisely to
- * be asked for one step in its entirety after a cheaper call named it.
+ * be asked for one step in its entirety after a cheaper call named it, and it
+ * gets four times the body for the same reason.
+ *
+ * The extension compacts bodies before it sends them, so the compaction below
+ * usually changes nothing. It is here for the two cases where nothing compacted
+ * them: a flow recorded before that existed, and a POST from something that is
+ * not the extension. `truncate` stamps what it removed, so a cut body cannot
+ * read as a whole one.
  */
-function stepJson(dir, step, origin, full = false) {
+function stepJson(dir, step, origin, full = false, render = MACHINE_RENDERING) {
   // `dpr` and `highlightBox` go even in full mode: they are the annotator's
   // coordinate bookkeeping, and there is no question about a recording that
   // either one answers.
   const { dpr: _dpr, highlightBox: _highlight, ...rest } = step;
   const out = { ...rest };
-  const bodyLimit = full ? FULL_BODY_LIMIT : BODY_LIMIT;
+  const bodyLimit = bodyLimitFor(render, full);
+  const bodies = render.limits;
 
   out.screenshotPath = screenshotPath(dir, step);
   // In full mode the element keeps its xpath and box: someone asking for one
@@ -1193,12 +1696,19 @@ function stepJson(dir, step, origin, full = false) {
       const diagnostic = callFailed(call);
       const next = {
         ...call,
-        requestBody: compactCall(call.requestBody, bodyMeta(call, 'request'), diagnostic, bodyLimit),
+        requestBody: compactCall(
+          call.requestBody,
+          bodyMeta(call, 'request'),
+          diagnostic,
+          bodyLimit,
+          bodies,
+        ),
         responseBody: compactCall(
           call.responseBody,
           bodyMeta(call, 'response'),
           diagnostic,
           bodyLimit,
+          bodies,
         ),
       };
       if (typeof origin === 'number' && typeof call.timestamp === 'number') {
@@ -1301,7 +1811,7 @@ function shrinkStep(step, measure, budget) {
  * rather than a limit — and returning it whole would blow the budget the page
  * exists to keep.
  */
-function fitSteps(flow, dir, start, budget, raw = false) {
+function fitSteps(flow, dir, start, budget, raw, render) {
   const chosen = [];
   const origin = flowOrigin(flow);
   let used = 0;
@@ -1333,12 +1843,13 @@ function fitSteps(flow, dir, start, budget, raw = false) {
         imageFor(dir, candidate),
         {},
         flow.react?.components ?? {},
+        render.limits,
       );
       const lines = omitted ? [...rendered.lines, `… ${omitted}`, ''] : rendered.lines;
       const md = lines.join('\n');
       const js = omitted
-        ? { ...stepJson(dir, candidate, origin), omittedNetworkCalls: omitted }
-        : stepJson(dir, candidate, origin);
+        ? { ...stepJson(dir, candidate, origin, false, render), omittedNetworkCalls: omitted }
+        : stepJson(dir, candidate, origin, false, render);
 
       return {
         md,
@@ -1374,9 +1885,37 @@ function fitSteps(flow, dir, start, budget, raw = false) {
  * repeated at the top and the bottom: a model that starts reading at the
  * beginning and one that skips to the end of a long block must both find it.
  */
-function flowPayload(dir, json, heading, from = 1, raw = false) {
+function flowPayload(dir, json, heading, from = 1, raw = undefined) {
   const total = json.steps.length;
+  /*
+   * The settings this flow is rendered under — the whole precedence chain, read
+   * once per response rather than per step. It is a fact about the recording,
+   * and re-deriving it three hundred times says nothing new.
+   */
+  const render = renderingFor(json);
+  /*
+   * `raw` is a *default*, so an explicit argument always wins.
+   *
+   * The tool takes a boolean and the setting decides what the absence of one
+   * means. A caller that passes `raw:false` on a machine configured for raw is
+   * asking for the walkthrough alone and gets it; only an omitted argument
+   * falls through to the configuration.
+   */
+  const withData = typeof raw === 'boolean' ? raw : render.raw;
+
   const start = Math.min(Math.max(1, Math.trunc(Number(from) || 1)), Math.max(1, total)) - 1;
+
+  /*
+   * §6: a flow records the settings it was made under, and the walkthrough
+   * header shows the non-default ones.
+   *
+   * Above the failure summary and below the step count, because it changes what
+   * every line beneath it means: a reader who learns at the top that
+   * screenshots were off does not spend the rest of the response deciding
+   * whether this recording is broken. Absent for a flow recorded at the
+   * defaults, which is almost all of them, so it costs nothing to have.
+   */
+  const settings = describeStamp(json.settings);
 
   const header = [
     `# ${json.name}`,
@@ -1384,6 +1923,7 @@ function flowPayload(dir, json, heading, from = 1, raw = false) {
     `**Recorded:** ${new Date(json.timestamp).toLocaleString()}  `,
     `**Steps:** ${total}  `,
     json.startUrl ? `**Start URL:** ${json.startUrl}  ` : null,
+    settings.length ? `**Recorded with non-default settings:** ${settings.join(' · ')}  ` : null,
     json.errorCount ? `**Steps with failures:** ${json.errorCount}  ` : null,
     json.errorCount ? `**What broke:** ${failureSummary(json) ?? '—'}  ` : null,
     '',
@@ -1411,13 +1951,13 @@ function flowPayload(dir, json, heading, from = 1, raw = false) {
       [heading, ...header, ...(json.react ? renderComponents(json.react, json.steps) : [])].join('\n'),
     ) +
     // The flow's own fields wrap the step array, and only in raw mode.
-    (raw ? estimateTokens(JSON.stringify({ ...json, steps: [] })) : 0) +
+    (withData ? estimateTokens(JSON.stringify({ ...json, steps: [] })) : 0) +
     estimateTokens(path.join(dir, 'screenshots')) +
     // Two copies of a continuation line that has not been written yet, plus the
     // fences and the "Step data" heading.
     120;
 
-  const chosen = fitSteps(json, dir, start, Math.max(500, MAX_TOKENS - framing), raw);
+  const chosen = fitSteps(json, dir, start, Math.max(500, render.maxTokens - framing), withData, render);
   const last = start + chosen.length;
   const more = last < total;
 
@@ -1471,7 +2011,7 @@ function flowPayload(dir, json, heading, from = 1, raw = false) {
    */
   const content = [{ type: 'text', text: `${heading}\n\n${markdown}\n\n${shots}` }];
 
-  if (raw) {
+  if (withData) {
     content.push({
       type: 'text',
       // Not pretty-printed: indentation is roughly 7% of this block and no
@@ -1542,6 +2082,8 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         return readFailure(error, args.id);
       }
 
+      const render = renderingFor(flow.json);
+
       const broken = flow.json.steps
         .map((step, i) => ({ step, number: i + 1 }))
         .filter(({ step }) => consoleErrors(step).length > 0 || failedCalls(step).length > 0)
@@ -1563,15 +2105,36 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
             componentWithin: within?.name ?? undefined,
             componentWithinSource: within ? (formatSource(within) ?? undefined) : undefined,
             screenshotPath: screenshotPath(flow.dir, step),
-            consoleErrors: consoleErrors(step).map((entry) => truncate(entry.args.join(' '))),
+            consoleErrors: consoleErrors(step).map((entry) =>
+              truncate(entry.args.join(' '), render.bodyLimit),
+            ),
             failedCalls: failedCalls(step).map((call) => ({
               method: call.method,
               url: call.url,
               status: call.status,
               durationMs: call.durationMs,
-              // Diagnostic: these are the calls that broke, so the body stays.
-              requestBody: compactCall(call.requestBody, bodyMeta(call, 'request'), true),
-              responseBody: compactCall(call.responseBody, bodyMeta(call, 'response'), true),
+              /*
+               * Diagnostic: these are the calls that broke, so the body stays.
+               *
+               * `render.limits` was missing here and is not decoration — this
+               * tool renders bodies like every other one, and a flow sent with
+               * summarising switched off had it switched back on for the one
+               * tool a reader debugging a failure calls first.
+               */
+              requestBody: compactCall(
+                call.requestBody,
+                bodyMeta(call, 'request'),
+                true,
+                render.bodyLimit,
+                render.limits,
+              ),
+              responseBody: compactCall(
+                call.responseBody,
+                bodyMeta(call, 'response'),
+                true,
+                render.bodyLimit,
+                render.limits,
+              ),
             })),
           };
         });
@@ -1596,7 +2159,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       let used = 0;
       for (const entry of broken) {
         const cost = estimateTokens(JSON.stringify(entry));
-        if (shown.length > 0 && used + cost > MAX_TOKENS) break;
+        if (shown.length > 0 && used + cost > render.maxTokens) break;
         shown.push(entry);
         used += cost;
       }
@@ -1624,6 +2187,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         return readFailure(error, args.id);
       }
 
+      const render = renderingFor(flow.json);
       const total = flow.json.steps.length;
       const number = Math.trunc(Number(args.step));
       const step = Number.isFinite(number) ? flow.json.steps[number - 1] : undefined;
@@ -1645,6 +2209,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         imageFor(flow.dir, step),
         {},
         flow.json.react?.components ?? {},
+        render.limits,
       );
 
       /*
@@ -1652,7 +2217,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
        * because it is carrying tens of steps; this one is carrying one, and it
        * exists because something already decided this is the step that matters.
        */
-      const detail = stepJson(flow.dir, step, flowOrigin(flow.json), true);
+      const detail = stepJson(flow.dir, step, flowOrigin(flow.json), true, render);
 
       return text(
         `## Step ${number} of ${total} — ${flow.json.name}\n\n${lines.join('\n')}\n\n` +
@@ -1663,7 +2228,10 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'get_flow': {
       try {
         const { dir, json } = await readFlow(args.id);
-        return flowPayload(dir, json, '## Walkthrough', args.from, args.raw === true);
+        // `args.raw` verbatim, not `=== true`: an omitted argument has to stay
+        // undefined so `mcp.raw` can answer for it. Coercing here would make the
+        // setting unreachable while looking wired.
+        return flowPayload(dir, json, '## Walkthrough', args.from, args.raw);
       } catch (error) {
         return readFailure(error, args.id);
       }
@@ -1698,7 +2266,25 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
       }
 
-      const chosen = wanted.slice(0, MAX_IMAGES);
+      /*
+       * The flow's own limit, not this installation's.
+       *
+       * A recording made by someone who set "screenshots per MCP call" to eight
+       * carries that answer in its stamp, and the tool description above can
+       * only name one number — this machine's — because it is written once, at
+       * startup, for every flow at once. So the description says what this
+       * installation does and the response says what it actually did.
+       */
+      const maxImages = renderingFor(flow.json).maxImages;
+      const chosen = wanted.slice(0, maxImages);
+
+      if (chosen.length === 0) {
+        return text(
+          `Screenshots are switched off for this call — "screenshots per MCP call" is ${maxImages}. ` +
+            `Read them from disk instead:\n\n${wanted.map((entry) => `- Step ${entry.number}: ${entry.file}`).join('\n')}`,
+        );
+      }
+
       const content = [];
       for (const entry of chosen) {
         const bytes = await fs.readFile(entry.file).catch(() => null);
@@ -1714,7 +2300,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (wanted.length > chosen.length) {
         content.push({
           type: 'text',
-          text: `Returned ${chosen.length} of ${wanted.length} requested — ${MAX_IMAGES} is the per-call limit. Ask for the rest in another call, or read them from disk.`,
+          text: `Returned ${chosen.length} of ${wanted.length} requested — ${maxImages} is the per-call limit. Ask for the rest in another call, or read them from disk.`,
         });
       }
 
@@ -1746,7 +2332,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!flows.length) return text('No flows recorded yet.');
       try {
         const { dir, json } = await readFlow(flows[0].id);
-        return flowPayload(dir, json, `## Latest flow: ${flows[0].name}`, args.from, args.raw === true);
+        return flowPayload(dir, json, `## Latest flow: ${flows[0].name}`, args.from, args.raw);
       } catch (error) {
         return error instanceof UnsupportedFlow
           ? failure(error.message)

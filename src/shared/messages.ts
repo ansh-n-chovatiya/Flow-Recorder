@@ -360,6 +360,52 @@ export type AgentMessage =
 export interface ControlMessage {
   __flowsnap_control__: string;
   recording: boolean;
+  /**
+   * The settings the agent needs, pushed rather than read.
+   *
+   * The MAIN world has no `chrome.*` at all, so this channel is the only path a
+   * user's choice can take to reach the code that observes `console` and
+   * `fetch`. Optional because a page can forge this message and an older content
+   * script would not send it; the agent keeps its compiled-in defaults when it
+   * is absent, which is also what it uses between injection at `document_start`
+   * and the first message arriving.
+   */
+  config?: Partial<AgentConfig>;
+}
+
+/**
+ * The settings the MAIN-world agent reads.
+ *
+ * A deliberately small subset. Everything here is read *per call* — on each
+ * `console` line, each request, each thrown error — never at module scope,
+ * because a value read at import time would be the compiled-in default forever
+ * and would look exactly like a setting that works. `tests/settings-module-
+ * scope.test.ts` is what holds that line.
+ *
+ * Kept in this file rather than in `features/settings` so the agent bundle can
+ * name the type without importing the field table: the table carries every
+ * description and every default in the product, and none of it belongs in a
+ * script injected into someone else's page.
+ */
+export interface AgentConfig {
+  /** `network.captureBodies` — off means method, URL and status but no payload. */
+  captureBodies: boolean;
+  /** `network.bodyCap` — characters kept from a request or response body. */
+  bodyCap: number;
+  /** `console.levels` — the levels that are emitted. Patching is unconditional. */
+  consoleLevels: readonly string[];
+  /** `console.logArgCap` — characters kept per console argument. */
+  logArgCap: number;
+  /** `console.stackFrames` — stack frames kept from a thrown error. */
+  stackFrames: number;
+  /** `console.captureUncaught` — whether crashes become console entries. */
+  captureUncaught: boolean;
+  /** `react.maxComponentChain` — components kept above the element, nearest first. */
+  maxComponentChain: number;
+  /** `react.maxFiberWalk` — fibers stepped through before the walk gives up. */
+  maxFiberWalk: number;
+  /** `react.prewarmTtlMs` — how long a chain walked on pointerdown stays usable. */
+  prewarmTtlMs: number;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

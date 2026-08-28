@@ -164,6 +164,21 @@ export interface ConsoleEntry {
 export type StepType = 'click' | 'input' | 'navigate' | 'note';
 
 /**
+ * A sparse set of settings overrides: flat dotted keys, only what was changed.
+ *
+ * Declared here rather than in `features/settings/fields.ts` — which re-exports
+ * it — because it is a *stored* and *sent* shape before it is a settings shape:
+ * it is what `chrome.storage.sync` holds, what a recording freezes in
+ * `chrome.storage.local`, and what travels on `FlowPayload.settings` to a
+ * separate process that has no settings table of its own.
+ *
+ * `unknown`, not a union of the value types, on purpose: a key from a newer
+ * FlowSnap can hold anything at all, and `resolve()` is the only thing allowed
+ * to decide what it means.
+ */
+export type Overrides = Readonly<Record<string, unknown>>;
+
+/**
  * Fields every step carries. `element` and `value` sit here rather than on the
  * variants because the viewer renders steps generically; the variants below
  * still require whichever of them they cannot exist without.
@@ -191,6 +206,25 @@ interface StepBase {
    * unchanged.
    */
   screenshotImported?: boolean;
+  /**
+   * Why this step has no image, in the words a reader needs.
+   *
+   * Nothing in Tier 1 may make a recording silently worse. A step with no
+   * screenshot because the user turned screenshots off looks exactly like a
+   * step whose capture failed, which looks exactly like a page that rendered
+   * nothing — and a reader with no way to tell picks the worst of the three.
+   * So the step says which it was, and the exports print it where the image
+   * would have been.
+   *
+   * Set for a capture that failed as well as for one that was never attempted:
+   * the failure was already invisible in the flow, and only visible in the
+   * popup's error strip minutes before anybody read the recording.
+   *
+   * Absent means the step has an image, or is a kind of step that never has one
+   * — the trailing note deliberately carries no picture and says so in its own
+   * text.
+   */
+  screenshotOmitted?: string;
   highlightBox?: BoundingBox | null;
   dpr?: number;
   title?: string;
@@ -263,8 +297,29 @@ export interface FlowMeta {
   thumbnail?: string | null;
   /** How many steps of each type, for the list row's chips. */
   counts?: Partial<Record<StepType, number>>;
-  /** Steps carrying a console error or a 4xx/5xx response. */
+  /**
+   * Steps carrying a console error or a 4xx/5xx response.
+   *
+   * Misnamed: it counts *steps*, not failures. `failureCount` was added beside
+   * it rather than renaming this, because the name is written into every
+   * `meta.json` already on disk and a rename would orphan them. Fold the two
+   * together the next time the schema version is bumped for some other reason —
+   * not on its own account, which would be a migration bought for a word.
+   */
   errorCount?: number;
+  /**
+   * The settings this flow was recorded under, sparse — see
+   * `features/settings/recording.ts`.
+   *
+   * In the index rather than beside the steps because it is what the library
+   * row and the export both need before opening anything, and because it is
+   * empty for almost every flow: a recording made at the defaults stamps `{}`,
+   * which costs two characters.
+   *
+   * Absent on a flow archived before this existed, which reads correctly as
+   * "the defaults of the build that made it".
+   */
+  settings?: Overrides;
 }
 
 /**
@@ -298,6 +353,28 @@ export interface FlowPayload {
    * answering a debugging question with a confident wrong answer.
    */
   omitted?: string[];
+  /**
+   * The settings the flow was made under, sparse and flat-dotted.
+   *
+   * This is the single most important part of making FlowSnap configurable: a
+   * flow recorded at quality 20 with bodies off is indistinguishable from a
+   * flow where capture failed, and a reader with no way to tell concludes the
+   * latter. With it, the walkthrough opens by saying what was in force.
+   *
+   * Overrides only, never the resolved object — for the same reason storage
+   * holds overrides: a flow recorded at today's defaults should read as
+   * "defaults", not as sixteen numbers that happen to match, and a default
+   * improved in a later version should not be frozen into every flow ever
+   * recorded.
+   *
+   * Two kinds of entry, in one object because they are one claim about the
+   * document in hand: what was frozen when the recording started, and what was
+   * in force when this payload was built. `Common.recorded` and
+   * `Common.rendered` in `features/settings/fields.ts` say which is which.
+   *
+   * Additive, like `react` and `omitted`: a server that predates it ignores it.
+   */
+  settings?: Overrides;
 }
 
 /** Which parts of a flow an export includes. */
@@ -345,6 +422,17 @@ export interface LocalStorageShape {
    * nothing to over-pack, and a flow in a model's context costs tokens.
    */
   sendOptions: ExportOptions;
+  /**
+   * What `export.*` said when the memory above was written.
+   *
+   * The dialog's memory and the configured default are two different things and
+   * both are relied on — see `features/export/defaults.ts`. Deciding which is
+   * the more recent statement of intent needs to know what the default *was*
+   * when the memory was made, and this is that. Absent on a machine whose
+   * memory predates Phase 4, which reads correctly as "nothing was recorded".
+   */
+  exportOptionsAgainst: ExportOptions;
+  sendOptionsAgainst: ExportOptions;
   savedFlowsMeta: FlowMeta[];
   lastMcpFlowId: string;
   /**
@@ -379,6 +467,16 @@ export interface LocalStorageShape {
   reactScripts: Record<string, string[]>;
   /** The most recent failure, so the UI can show what went wrong. */
   lastError: StoredError | null;
+  /**
+   * The settings the live recording was started under, sparse.
+   *
+   * Settings are frozen for the duration of a recording. This key is the
+   * freeze — written in the same batch as `recordingActive: true`, read by the
+   * worker and the content script instead of `load()` for anything that shapes
+   * what is captured, and copied onto the flow as its stamp. See
+   * `features/settings/recording.ts`, which owns every read and write of it.
+   */
+  recordingSettings: Overrides;
 }
 
 /**

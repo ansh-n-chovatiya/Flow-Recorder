@@ -8,8 +8,13 @@
  * whether to draw is pure, and it is all of the wrongness.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { highlightRect, type Rect } from '../src/background/annotator.js';
+import { fillFor, highlightRect, type Rect } from '../src/background/annotator.js';
+import { ANNOTATION_STROKE } from '../src/shared/constants.js';
+import { DEFAULTS, resolve } from '../src/features/settings/index.js';
 import type { BoundingBox } from '../src/shared/types.js';
 
 const IMAGE: Rect = { x: 0, y: 0, w: 1000, h: 800 };
@@ -106,5 +111,81 @@ describe('boxes that only partly fit', () => {
     expect(rect).toEqual({ x: 896, y: 746, w: 104, h: 54 });
     expect(rect!.x + rect!.w).toBeLessThanOrEqual(IMAGE.w);
     expect(rect!.y + rect!.h).toBeLessThanOrEqual(IMAGE.h);
+  });
+});
+
+
+/**
+ * The wash inside the box is the stroke, and cannot be anything else.
+ *
+ * The stroke is a setting because red is invisible on a red error banner.
+ * Phase 0 called the fill a real gap rather than a judgement call: a fill that
+ * stayed red while the stroke went green is a green box with a red middle, and
+ * a *second* colour control would let somebody produce that on purpose by
+ * accident. Phase 3 ruled that the answer is derivation, and this is the test
+ * that the derivation actually happens — the only place the two colours could
+ * ever come apart is gone, so what is left to check is that the arithmetic is
+ * right and that the parse is total over what `resolve` can hand it.
+ */
+describe('the highlight fill is the stroke, at 8% alpha', () => {
+  it('is the colour that used to be the hardcoded ANNOTATION_FILL', () => {
+    // The literal this replaced, character for character. Wiring the setting
+    // must not have moved the default recording's appearance by one shade.
+    expect(fillFor(ANNOTATION_STROKE)).toBe('rgba(255, 59, 48, 0.08)');
+  });
+
+  it('follows the stroke wherever it goes', () => {
+    expect(fillFor('#00FF00')).toBe('rgba(0, 255, 0, 0.08)');
+    expect(fillFor('#000000')).toBe('rgba(0, 0, 0, 0.08)');
+    expect(fillFor('#ffffff')).toBe('rgba(255, 255, 255, 0.08)');
+  });
+
+  it('is total over every value the setting can actually hold', () => {
+    // `resolve` is the only thing that reaches this, and the field carries
+    // `/^#[0-9a-fA-F]{6}$/` — so anything that is not six hex digits has already
+    // become the default before it gets here. Both branches, so the claim is
+    // checked rather than assumed.
+    for (const attempt of ['#12ab34', '#ABCDEF', 'rebeccapurple', '#fff', '', null, 42]) {
+      const held = resolve({ 'annotation.stroke': attempt })['annotation.stroke'];
+      expect(fillFor(held)).toMatch(/^rgba\(\d{1,3}, \d{1,3}, \d{1,3}, 0\.08\)$/);
+    }
+  });
+
+  it('leaves a value that is not a colour at the shipped red', () => {
+    expect(resolve({ 'annotation.stroke': 'green' })['annotation.stroke']).toBe(
+      DEFAULTS['annotation.stroke'],
+    );
+  });
+});
+
+
+/**
+ * The annotator names no colour of its own.
+ *
+ * `fillFor` is pure and tested above, but the line that *calls* it sits inside
+ * `annotateScreenshot`, which needs `OffscreenCanvas` and so cannot be driven
+ * here at all. The failure that matters is not the arithmetic — it is somebody
+ * putting a literal back, next to the derivation, where it would look
+ * deliberate and render a green box with a red middle on every screenshot.
+ *
+ * Structural, in the spirit of `react-server-guard.test.ts`: the guarantee is
+ * about what this file never contains, and the only two colours it is allowed
+ * to know are the ones it is handed.
+ */
+describe('every colour in the annotator arrives as an argument', () => {
+  const source = readFileSync(
+    resolvePath(dirname(fileURLToPath(import.meta.url)), '../src/background/annotator.ts'),
+    'utf8',
+  )
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  it('declares no hex colour', () => {
+    expect(source).not.toMatch(/['"`]#[0-9a-fA-F]{3,8}['"`]/);
+  });
+
+  it('declares no literal rgb or rgba', () => {
+    // `fillFor` builds one from `${r}, ${g}, ${b}` — a template, never digits.
+    expect(source).not.toMatch(/rgba?\(\s*\d/);
   });
 });

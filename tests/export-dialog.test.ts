@@ -43,6 +43,10 @@ vi.mock('../src/features/export/download.js', () => ({
 vi.mock('../src/chrome/storage.js', () => ({
   getLocal: () => Promise.resolve({ ok: false as const, error: null }),
   setLocal: () => Promise.resolve({ ok: true as const, value: undefined }),
+  // The dialog reads `export.*` on open — an empty sync area resolves to the
+  // shipped defaults, which is what these tests have always assumed.
+  getSync: () => Promise.resolve({ ok: true as const, value: {} }),
+  setSync: () => Promise.resolve({ ok: true as const, value: undefined }),
 }));
 
 vi.mock('../src/ui/toast.js', () => ({

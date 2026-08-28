@@ -46,7 +46,7 @@ const step = (over: Partial<Step> = {}): Step =>
 
 function input(over: Partial<ReviewInput> = {}): ReviewInput {
   return {
-    flow: { id: 'flow_1', name: 'Checkout', steps: [step()], createdAt: NOW - 60_000, react: null },
+    flow: { id: 'flow_1', name: 'Checkout', steps: [step()], createdAt: NOW - 60_000, react: null, settings: null },
     missing: false,
     filter: 'all',
     activeIndex: null,
@@ -75,7 +75,7 @@ describe('the states before there are steps', () => {
 
   it('keeps the header and the filters on an empty flow', () => {
     const view = deriveReviewView(
-      input({ flow: { id: 'flow_1', name: 'Checkout', steps: [], createdAt: NOW, react: null } }),
+      input({ flow: { id: 'flow_1', name: 'Checkout', steps: [], createdAt: NOW, react: null, settings: null } }),
     );
 
     expect(view.body).toBe('empty');
@@ -103,7 +103,7 @@ describe('the header', () => {
   it('will not offer to rename the live recording, which has no stored name', () => {
     const view = deriveReviewView(
       input({
-        flow: { id: null, name: 'Current recording', steps: [step()], createdAt: NOW, react: null },
+        flow: { id: null, name: 'Current recording', steps: [step()], createdAt: NOW, react: null, settings: null },
       }),
     );
 
@@ -113,7 +113,7 @@ describe('the header', () => {
   });
 
   it('marks the flow live only while the recorder is actually running', () => {
-    const live = { id: null, name: 'Current recording', steps: [step()], createdAt: NOW, react: null };
+    const live = { id: null, name: 'Current recording', steps: [step()], createdAt: NOW, react: null, settings: null };
 
     expect(deriveReviewView(input({ flow: live, recording: 'recording' })).live).toBe(true);
     expect(deriveReviewView(input({ flow: live, recording: 'paused' })).live).toBe(true);
@@ -139,7 +139,7 @@ describe('the step card', () => {
       step({ url: 'https://example.com/b' }),
     ];
     const view = deriveReviewView(
-      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null } }),
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null, settings: null } }),
     );
 
     // A URL repeated on thirty cards is noise; a URL that changed is the story.
@@ -154,7 +154,7 @@ describe('the step card', () => {
       }),
     ];
     const [card] = deriveReviewView(
-      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null } }),
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null, settings: null } }),
     ).steps;
 
     expect(card.network).toEqual({ count: 2, worst: '5xx' });
@@ -164,7 +164,7 @@ describe('the step card', () => {
   it('has no selectors row for a step with no element', () => {
     const steps = [step({ type: 'navigate', title: 'Home', element: undefined })];
     const [card] = deriveReviewView(
-      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null } }),
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null, settings: null } }),
     ).steps;
 
     expect(card.selectors).toBeNull();
@@ -186,7 +186,7 @@ describe('elapsed time', () => {
     ];
 
     const all = deriveReviewView(
-      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null } }),
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null, settings: null } }),
     );
     expect(all.steps.map((card) => card.delta)).toEqual([null, '+1.0s', '+1m 29s']);
 
@@ -195,7 +195,7 @@ describe('elapsed time', () => {
     // way to catch.
     const errors = deriveReviewView(
       input({
-        flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null },
+        flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null, settings: null },
         filter: 'errors',
       }),
     );
@@ -212,7 +212,7 @@ describe('filters', () => {
     step({ type: 'click', networkCalls: [call({ status: 500 })] }),
     step({ type: 'input', value: 'ada@' }),
   ];
-  const flow = { id: 'f', name: 'n', steps, createdAt: NOW, react: null };
+  const flow = { id: 'f', name: 'n', steps, createdAt: NOW, react: null, settings: null };
 
   it('counts every filter, whichever one is active', () => {
     const view = deriveReviewView(input({ flow }));
@@ -267,7 +267,7 @@ describe('the active step', () => {
     const steps = [step(), step({ type: 'input', value: 'x' })];
     const view = deriveReviewView(
       input({
-        flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null },
+        flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: null, settings: null },
         activeIndex: 1,
       }),
     );
@@ -297,7 +297,7 @@ describe('the React component on a step', () => {
 
   const view = (steps: Step[], components: Record<string, ComponentSource>) =>
     deriveReviewView(
-      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: react(components) } }),
+      input({ flow: { id: 'f', name: 'n', steps, createdAt: NOW, react: react(components), settings: null } }),
     );
 
   it('names the feature component behind a shared primitive', () => {
@@ -317,7 +317,7 @@ describe('the React component on a step', () => {
   });
 
   it('is null on every card when the flow carries no components', () => {
-    const plain = deriveReviewView(input({ flow: { id: 'f', name: 'n', steps: [chained(['cart'])], createdAt: NOW, react: null } }));
+    const plain = deriveReviewView(input({ flow: { id: 'f', name: 'n', steps: [chained(['cart'])], createdAt: NOW, react: null, settings: null } }));
     expect(plain.steps[0].component).toBeNull();
   });
 
@@ -349,6 +349,7 @@ describe('the React component on a step', () => {
           react: react({
             cart: { name: 'AddToCartButton', status: 'resolved', source: 'src/Cart.tsx', line: 34 },
           }),
+          settings: null,
         },
         editor: { projectRoot: '/Users/me/shop', template: 'vscode://file/{path}:{line1}:{col1}' },
       }),
@@ -367,6 +368,7 @@ describe('the React component on a step', () => {
           steps: [chained(['lazy'])],
           createdAt: NOW,
           react: react({ lazy: { name: 'LazyModal', status: 'not-found' } }),
+          settings: null,
         },
         editor: { projectRoot: '/Users/me/shop', template: 'vscode://file/{path}:{line1}:{col1}' },
       }),

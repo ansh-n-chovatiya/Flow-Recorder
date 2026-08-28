@@ -22,15 +22,19 @@ import {
   AGENT_MESSAGE_SOURCE,
   CONTROL_MESSAGE_SOURCE,
   INDICATOR_ID,
-  INPUT_DEBOUNCE_MS,
-  PAINT_TIMEOUT_MS,
   REACT_BUFFER_SIZE,
   REACT_BUFFER_TTL_MS,
   REACT_CHAIN_TIMEOUT_MS,
   REACT_SETTING_DEFAULTS,
-  SPA_SETTLE_MS,
 } from '../shared/constants.js';
 import { createChainBuffer } from '../core/react/chains.js';
+import { load, subscribe } from '../features/settings/index.js';
+import {
+  RECORDING_DEFAULTS,
+  loadRecordingSettings,
+} from '../features/settings/recording.js';
+import type { RecordingSettings } from '../features/settings/fields.js';
+import { toAgentConfig } from '../features/settings/agent.js';
 import { stepKey } from '../core/flow/index.js';
 import {
   sendToWorker,
@@ -55,12 +59,36 @@ function clearBuffers(): void {
 
 // ── React component chains ───────────────────────────────────────────────────
 
-/** See `core/react/chains.ts` for why chains are keyed rather than buffered. */
+/**
+ * See `core/react/chains.ts` for why chains are keyed rather than buffered.
+ *
+ * Built at the compiled-in defaults and reconfigured from the frozen settings
+ * when a recording starts — `refreshFrozen` below. It has to exist before the
+ * snapshot has been read, because the agent can deliver a chain for a click
+ * that happened in the same tick as the page loaded.
+ */
 const reactChains = createChainBuffer<{ chain: CapturedComponent[]; truncated: boolean }>({
   size: REACT_BUFFER_SIZE,
   ttlMs: REACT_BUFFER_TTL_MS,
   timeoutMs: REACT_CHAIN_TIMEOUT_MS,
 });
+
+/**
+ * The settings this recording is frozen at, assumed to be the defaults until
+ * storage answers.
+ *
+ * The read is asynchronous and a page can be interacted with before it lands, so
+ * this starts where the agent starts — at the compiled-in defaults — rather than
+ * at nothing. Kept in a `let` and re-read when a recording *starts*; nothing
+ * copies a field out of it into a module-level constant.
+ *
+ * The values here do not move while a recording runs. Changing the typing
+ * debounce halfway through would leave a flow whose early steps were split one
+ * way and whose later ones another, with nothing recording that. The Settings
+ * screen says as much while a recording is live, and the flow carries the stamp
+ * this object was resolved from.
+ */
+let frozen: RecordingSettings = RECORDING_DEFAULTS;
 
 /**
  * The master capture setting. Assumed on until the read below says otherwise:
@@ -69,9 +97,28 @@ const reactChains = createChainBuffer<{ chain: CapturedComponent[]; truncated: b
  */
 let captureReact = REACT_SETTING_DEFAULTS.reactCapture;
 
-/** Tell the agent whether to watch for interactions at all. */
+/**
+ * Tell the agent whether to watch for interactions, and what to capture.
+ *
+ * The config rides on every control message rather than on a message of its
+ * own: the agent has no storage to read from, so the only guarantee worth having
+ * is that it cannot be watching without also having been told the current
+ * settings. One message makes that true by construction.
+ */
 function postControl(recording: boolean): void {
-  window.postMessage({ __flowsnap_control__: CONTROL_MESSAGE_SOURCE, recording }, '*');
+  window.postMessage(
+    {
+      __flowsnap_control__: CONTROL_MESSAGE_SOURCE,
+      recording,
+      // Built from the *frozen* settings, so the MAIN world cannot be told a
+      // body cap the recording it is capturing for was not started under. It is
+      // the one path a setting has into the page's realm, and the one that
+      // would otherwise make the freeze a half-truth: the worker's half frozen,
+      // the agent's half live.
+      config: toAgentConfig(frozen),
+    },
+    '*',
+  );
 }
 
 /** What the agent should be doing right now: recording, live, and switched on. */
@@ -149,7 +196,7 @@ chrome.runtime.onMessage.addListener((message: ContentRequest, _sender, sendResp
       return true;
 
     case 'START_RECORDING':
-      applyState(true, false);
+      void applyState(true, false);
       break;
 
     /*
@@ -171,15 +218,15 @@ chrome.runtime.onMessage.addListener((message: ContentRequest, _sender, sendResp
       break;
 
     case 'STOP_RECORDING':
-      applyState(false, false);
+      void applyState(false, false);
       break;
 
     case 'PAUSE_RECORDING':
-      applyState(true, true);
+      void applyState(true, true);
       break;
 
     case 'RESUME_RECORDING':
-      applyState(true, false);
+      void applyState(true, false);
       break;
 
     case 'CLEAR_STEPS':
@@ -196,10 +243,24 @@ chrome.runtime.onMessage.addListener((message: ContentRequest, _sender, sendResp
   return;
 });
 
-function applyState(recording: boolean, paused: boolean): void {
+async function applyState(recording: boolean, paused: boolean): Promise<void> {
   isRecording = recording;
   isPaused = paused;
   if (!recording || paused) clearBuffers();
+
+  /*
+   * A recording starting is the moment this page adopts its frozen settings.
+   *
+   * Every tab in the browser runs this script, and a tab the user switches to
+   * mid-recording joins one that is already running — so the snapshot is read
+   * here rather than at injection, and the whole recording, across every tab it
+   * touches, is capturing under one answer.
+   *
+   * Awaited before `syncAgent`, so the push that follows carries the new
+   * recording's config rather than the previous one's.
+   */
+  if (recording) await refreshFrozen();
+
   // Paused counts as not watching: the agent should not walk fibers for
   // interactions that will never become steps.
   syncAgent();
@@ -219,11 +280,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (!('recordingActive' in changes) && !('recordingPaused' in changes)) return;
 
-  void chrome.storage.local.get(['recordingActive', 'recordingPaused']).then((state) => {
+  void chrome.storage.local.get(['recordingActive', 'recordingPaused']).then(async (state) => {
     const active = Boolean(state.recordingActive);
     const paused = Boolean(state.recordingPaused);
     const wasRecording = isRecording && !isPaused;
-    applyState(active, paused);
+    // Awaited: the navigation step below is the recording's first, and it must
+    // be captured under the settings the recording was started with.
+    await applyState(active, paused);
 
     // A finished recording releases the tab to log itself again in the next one.
     if (!active) loggedNavigation = false;
@@ -258,34 +321,66 @@ function applyCaptureSetting(enabled: boolean, initial = false): void {
   if (!enabled && !initial) void sendToWorker({ type: 'REACT_PURGE' });
 }
 
-void chrome.storage.sync
-  .get({ reactCapture: REACT_SETTING_DEFAULTS.reactCapture })
-  .then((stored) => {
-    applyCaptureSetting(stored.reactCapture !== false, true);
-  })
-  .catch(() => {
-    // Sync storage is unavailable in some profiles. The default is on, which is
-    // what `captureReact` already holds.
+/**
+ * Re-read the recording's frozen settings and push them to the agent.
+ *
+ * Called when a recording *starts* — not when a setting changes. The values
+ * a recording captures under are decided once, at `START_RECORDING`, and a page
+ * that joins a recording already in progress reads the same snapshot every
+ * other page in it is using.
+ *
+ * `frozen()` resolves whatever the snapshot holds against the field table, so a
+ * missing key, a value from a newer version and a hand-edited number out of
+ * range all arrive here as something usable.
+ */
+async function refreshFrozen(): Promise<void> {
+  frozen = await loadRecordingSettings();
+  // The buffer is a module-level object built before storage could answer, so
+  // it is told rather than asked — the alternative is a `const` holding the
+  // compiled-in default for the life of the page, which is the exact failure
+  // `settings-module-scope.test.ts` exists to prevent.
+  reactChains.configure({
+    size: frozen['react.bufferSize'],
+    ttlMs: frozen['react.bufferTtlMs'],
+    timeoutMs: frozen['react.chainTimeoutMs'],
   });
+  // The agent has no storage of its own, so this push is the only way the new
+  // recording's caps, console levels and walk limits reach the page's realm.
+  syncAgent();
+}
 
 /**
- * The toggle takes effect immediately, including part-way through a recording.
+ * `reactCapture` is the one setting that still applies mid-recording, and the
+ * asymmetry is deliberate on both sides.
  *
- * A setting that only applied to the next recording would leave someone who has
- * just switched capture off watching components keep being recorded, with
- * nothing on screen to explain why.
+ * Everything else in the freeze changes what a *future* step looks like, so
+ * applying it late would leave one flow describing two rules. This one changes
+ * what has already been collected: switching it off purges the component table
+ * and strips the ids from the steps that carry them. "Do not record this"
+ * cannot honestly mean "from the next recording onwards" when the data is on
+ * disk now, so it takes effect at the keystroke — and the frozen copy is
+ * updated with it, so the flow's stamp and the flow agree.
+ *
+ * Do not fold this back into the freeze. See `features/settings/recording.ts`.
  */
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'sync' || !('reactCapture' in changes)) return;
-  // A cleared key reads as undefined, which means "back to the default".
-  applyCaptureSetting(changes.reactCapture.newValue !== false);
+subscribe((next) => {
+  frozen = { ...frozen, reactCapture: next.reactCapture };
+  applyCaptureSetting(next.reactCapture);
 });
+
+void (async () => {
+  await refreshFrozen();
+  // The initial read is not somebody switching capture off — it is the setting
+  // already having been off — so it must not purge a recording running in
+  // another tab.
+  applyCaptureSetting((await load()).reactCapture, true);
+})();
 
 // ── Resume after a navigation ────────────────────────────────────────────────
 
-void chrome.storage.local.get(['recordingActive', 'recordingPaused']).then((state) => {
+void chrome.storage.local.get(['recordingActive', 'recordingPaused']).then(async (state) => {
   if (!state.recordingActive) return;
-  applyState(true, Boolean(state.recordingPaused));
+  await applyState(true, Boolean(state.recordingPaused));
   // Gated on visibility for the same reason as the storage listener below: a
   // page that loads in a background tab — a middle-click, a `target=_blank`, a
   // prerender Chrome started on its own — has not been navigated to yet. It
@@ -361,7 +456,7 @@ function captureRouteChange(): void {
   setTimeout(() => {
     if (!isRecording || isPaused || !isOnScreen()) return;
     captureNavigationStep();
-  }, SPA_SETTLE_MS);
+  }, frozen['recording.spaSettleMs']);
 }
 
 /**
@@ -514,7 +609,7 @@ document.addEventListener(
           eventTime,
           el,
         );
-      }, INPUT_DEBOUNCE_MS),
+      }, frozen['recording.inputDebounceMs']),
     });
   },
   true,
@@ -559,17 +654,6 @@ document.addEventListener(
 );
 
 /**
- * How long to let the page respond before reading the region back.
- *
- * Long enough for a click to have produced its visible result — a spinner, a
- * banner, a disabled button — and short enough that it is still that click's
- * result rather than the next thing the user did. Deliberately longer than
- * `SETTLE_DELAY_MS`, which exists to get a good *photograph*: the screenshot is
- * the moment the page reacted, and this is what it settled into.
- */
-const DOM_DELTA_MS = 700;
-
-/**
  * Watch what the interaction did to the region around the element.
  *
  * Sent as its own message rather than held onto, because the step is written
@@ -580,8 +664,14 @@ const DOM_DELTA_MS = 700;
  * Nothing is sent when the text did not change, which is most steps.
  */
 function watchDomDelta(el: Element, key: string): void {
+  // Refusable, like the trailing step: it is worth a switch, and a flow whose
+  // stamp says the feature was off cannot be misread as one where nothing on
+  // the page ever changed.
+  if (!frozen['recording.domDelta']) return;
+
+  const cap = frozen['recording.containerTextCap'];
   const container = nearestContainer(el);
-  const before = containerText(container);
+  const before = containerText(container, cap);
 
   setTimeout(() => {
     if (!isRecording || isPaused) return;
@@ -589,11 +679,15 @@ function watchDomDelta(el: Element, key: string): void {
     // Re-read from the container captured at interaction time. Re-finding it
     // would follow the page's *current* DOM, and on a re-render that is a
     // different node — which reads as "everything changed" on every step.
-    const after = containerText(container);
+    //
+    // The same cap on both reads, taken once: reading the cap again here would
+    // let a change made in between turn "the text is the same" into "the text
+    // changed", and record a delta the page never produced.
+    const after = containerText(container, cap);
     if (after === before) return;
 
     void sendToWorker({ type: 'STEP_DOM_DELTA', key, before, after });
-  }, DOM_DELTA_MS);
+  }, frozen['recording.domDeltaMs']);
 }
 
 /**
@@ -668,7 +762,10 @@ function afterPaint(): Promise<void> {
     new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     ),
-    new Promise<void>((resolve) => setTimeout(resolve, PAINT_TIMEOUT_MS)),
+    // Frozen, and read per capture: the indicator is hidden for the length of
+    // this race, so a value taken once would outlive the recording it was read
+    // for.
+    new Promise<void>((resolve) => setTimeout(resolve, frozen['screenshots.paintTimeoutMs'])),
   ]);
 }
 

@@ -7,7 +7,7 @@
  */
 
 import { flowError } from '../shared/errors.js';
-import { CAPTURE_MIN_INTERVAL_MS, SCREENSHOT_QUALITY } from '../shared/constants.js';
+import { CAPTURE_MIN_INTERVAL_MS } from '../shared/constants.js';
 import { err, ok, type Result } from '../shared/result.js';
 
 /**
@@ -109,18 +109,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function captureNow(windowId: number | undefined): Promise<Result<string>> {
-  const wait = CAPTURE_MIN_INTERVAL_MS - (Date.now() - lastCaptureAt);
+async function captureNow(
+  windowId: number | undefined,
+  quality: number,
+  minIntervalMs: number,
+): Promise<Result<string>> {
+  const wait = minIntervalMs - (Date.now() - lastCaptureAt);
   if (wait > 0) await sleep(wait);
 
   try {
     const dataUrl =
       windowId == null
-        ? await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality: SCREENSHOT_QUALITY })
-        : await chrome.tabs.captureVisibleTab(windowId, {
-            format: 'jpeg',
-            quality: SCREENSHOT_QUALITY,
-          });
+        ? await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality })
+        : await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality });
     lastCaptureAt = Date.now();
     return ok(dataUrl);
   } catch (error) {
@@ -138,11 +139,21 @@ async function captureNow(windowId: number | undefined): Promise<Result<string>>
  * service worker has no meaningful current window, so the old call captured
  * whichever window last had focus, which is not necessarily the one the step
  * came from.
+ *
+ * `quality` and `minIntervalMs` are required, and are the frozen
+ * `screenshots.quality` and `screenshots.minIntervalMs` of the recording this
+ * capture belongs to — passed in rather than read here because this module is
+ * called from the worker at capture time and a value read at import would be
+ * the compiled-in default forever. See `features/settings/recording.ts`.
  */
-export function captureVisibleTab(windowId: number | undefined): Promise<Result<string>> {
+export function captureVisibleTab(
+  windowId: number | undefined,
+  quality: number,
+  minIntervalMs = CAPTURE_MIN_INTERVAL_MS,
+): Promise<Result<string>> {
   // Serialise: two concurrent captures would both see the same `lastCaptureAt`
   // and neither would wait.
-  const next = captureChain.then(() => captureNow(windowId));
+  const next = captureChain.then(() => captureNow(windowId, quality, minIntervalMs));
   captureChain = next.catch(() => undefined);
   return next;
 }

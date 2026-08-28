@@ -9,17 +9,18 @@
 
 import { callFailed, renumber, startUrl } from '../../core/flow/index.js';
 import { attributeSteps, pruneComponents, stripReactRef } from '../../core/react/attribution.js';
-import { compactBody } from '../../core/schema/index.js';
-import { getSync } from '../../chrome/storage.js';
+import { compactBody, type BodyLimits } from '../../core/schema/index.js';
+import { renderLimits, type RenderLimits } from '../settings/render.js';
+import { load as loadSettings, resolve } from '../settings/index.js';
+import { readRecordingStamp, renderedOverrides } from '../settings/recording.js';
 import { readCurrentReact } from '../flows/store.js';
 import { sendToWorker } from '../../shared/messages.js';
-import { DEFAULT_MCP_URL, FLOW_SCHEMA_VERSION } from '../../shared/constants.js';
+import {
+  FLOW_SCHEMA_VERSION,
+} from '../../shared/constants.js';
 import { flowError } from '../../shared/errors.js';
 import { err, ok, type Result } from '../../shared/result.js';
-import type { ExportOptions, FlowPayload, FlowReact, Step } from '../../shared/types.js';
-
-/** How long to wait before calling a silent address unreachable. */
-const TIMEOUT_MS = 10_000;
+import type { ExportOptions, FlowPayload, FlowReact, Overrides, Step } from '../../shared/types.js';
 
 /**
  * What a send carries when nobody has chosen otherwise.
@@ -115,7 +116,7 @@ function keepHeaders(headers: Record<string, string> | undefined): Record<string
  * The extension's own storage is untouched: the viewer still shows every header
  * and offers "Show raw" on every body. This is what leaves the machine.
  */
-export function leanCalls(step: Step): Step {
+export function leanCalls(step: Step, bodies?: BodyLimits): Step {
   if (!step.networkCalls?.length) return step;
 
   return {
@@ -129,18 +130,26 @@ export function leanCalls(step: Step): Step {
         // The truncation flags travel with the body, so a body the capture cut
         // short is read as truncated JSON rather than mislabelled non-JSON.
         requestBody: call.requestBody
-          ? (compactBody(call.requestBody, {
-              truncated: call.requestBodyTruncated,
-              bytes: call.requestBodyBytes,
-              diagnostic: failed,
-            }) ?? null)
+          ? (compactBody(
+              call.requestBody,
+              {
+                truncated: call.requestBodyTruncated,
+                bytes: call.requestBodyBytes,
+                diagnostic: failed,
+              },
+              bodies,
+            ) ?? null)
           : call.requestBody,
         responseBody: call.responseBody
-          ? (compactBody(call.responseBody, {
-              truncated: call.responseBodyTruncated,
-              bytes: call.responseBodyBytes,
-              diagnostic: failed,
-            }) ?? null)
+          ? (compactBody(
+              call.responseBody,
+              {
+                truncated: call.responseBodyTruncated,
+                bytes: call.responseBodyBytes,
+                diagnostic: failed,
+              },
+              bodies,
+            ) ?? null)
           : call.responseBody,
       };
     }),
@@ -175,6 +184,12 @@ export function buildPayload(
   at: number,
   react?: FlowReact | null,
   include: ExportOptions = SEND_EVERYTHING,
+  /**
+   * The flow's settings stamp — the "a flow records the settings it was made
+   * under". Sparse; `{}` for a recording made entirely at the defaults, and
+   * then absent from the payload rather than sent as an empty object.
+   */
+  settings: Overrides = {},
 ): FlowPayload {
   const components = react ? pruneComponents(steps, react.components) : {};
   const carries = react !== null && react !== undefined && Object.keys(components).length > 0;
@@ -191,11 +206,37 @@ export function buildPayload(
     timestamp: at,
     startUrl: startUrl(steps),
     ...(omitted.length ? { omitted } : {}),
+    // Absent when there is nothing to say, for the same reason `react` and
+    // `omitted` are: a flow recorded at the defaults should read as one, and an
+    // empty object in every payload is a field readers learn to skip.
+    ...(Object.keys(settings).length ? { settings } : {}),
     // Last, so it sees whatever the steps ended up being. `pruneSteps` may have
     // deleted `networkCalls` outright, in which case this is a no-op.
-    steps: attributed.map(leanCalls),
+    //
+    // The compaction rules come from the stamp rather than from this build's
+    // constants, so the document says what was done to it: `network.*` in the
+    // stamp is what shaped the bodies below.
+    steps: attributed.map((step) => leanCalls(step, bodyLimits(settings))),
     ...(carries ? { react: { ...react, components } } : {}),
   };
+}
+
+/**
+ * The rules a stamp names, as the renderers want them.
+ *
+ * A stamp holds overrides only, so `resolve()` supplies this build's default
+ * for every key it does not carry — which is the ordinary case, since a flow
+ * recorded and rendered at the defaults carries no keys at all. Going through
+ * `resolve` rather than reading the two fields directly is what makes a
+ * hand-edited `flow.json` harmless: this path is reached for archived flows and
+ * for anything that arrived over the wire.
+ *
+ * Phase 4 widened it from two `network.*` keys to four, because the walkthrough
+ * caps travel in the same stamp and are applied by the same renderer. The name
+ * followed. See `features/settings/render.ts`.
+ */
+export function bodyLimits(settings: Overrides): RenderLimits {
+  return renderLimits(resolve(settings));
 }
 
 /** What to paste into Claude. Pure, so the wording is one place. */
@@ -217,6 +258,9 @@ export async function sendFlow(
   /** When the flow was *recorded*. Defaults to now, which is only right for the
    *  live recording — an archived flow has its own, older, `createdAt`. */
   recordedAt?: number,
+  /** An archived flow's frozen stamp. Omitted for the live recording, whose
+   *  stamp is read back here — the same split as `archivedReact`. */
+  archivedSettings?: Overrides | null,
 ): Promise<Result<SendResult>> {
   if (steps.length === 0) return err(flowError('MCP_UNREACHABLE', 'nothing to send'));
 
@@ -233,8 +277,23 @@ export async function sendFlow(
   // away would be the one cost the switch exists to avoid.
   if (include.react) await sendToWorker({ type: 'RESOLVE_COMPONENTS', final: true });
 
-  const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL });
-  const url = settings.ok ? settings.value.mcpServerUrl : DEFAULT_MCP_URL;
+  const settings = await loadSettings();
+  const url = settings.mcpServerUrl;
+
+  /*
+   * The stamp: what the recording was frozen at, plus what this hand-over is
+   * being rendered under.
+   *
+   * Two moments, one object, because they are one claim about the document the
+   * reader ends up with. `recorded` was decided when Record was pressed and
+   * cannot change; `rendered` is decided now, which is why somebody who
+   * switches summarising off can re-send a week-old flow and get the bytes.
+   * `features/settings/fields.ts` says which keys are which.
+   */
+  const stamp: Overrides = {
+    ...(archivedSettings ?? (await readRecordingStamp())),
+    ...renderedOverrides(settings),
+  };
 
   // Renumbered first, so `stepNumber` agrees with the position the server files
   // the step at. A flow with a step deleted in the review tab was sent carrying
@@ -251,11 +310,21 @@ export async function sendFlow(
   // prints this as "Recorded" and orders `list_flows` by it, so stamping now
   // dated a week-old flow to this afternoon and pushed it above the recording
   // the user actually just made.
-  const payload = buildPayload(id, name, sending, recordedAt ?? Date.now(), react, include);
+  const payload = buildPayload(
+    id,
+    name,
+    sending,
+    recordedAt ?? Date.now(),
+    react,
+    include,
+    stamp,
+  );
   const first = payload.startUrl;
 
   const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
+  // The setting, from the same `load()` the address came from — a send of a
+  // long recording legitimately takes seconds, and how many is a preference.
+  const timer = setTimeout(() => abort.abort(), settings['mcp.sendTimeoutMs']);
 
   try {
     const response = await fetch(url, {

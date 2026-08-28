@@ -13,21 +13,25 @@
  */
 
 import { sendFlow, type SendResult } from '../../features/mcp/send.js';
+import { openingOptions, sendDefaults } from '../../features/export/defaults.js';
+import { load as loadSettings } from '../../features/settings/index.js';
 import { getLocal, setLocal } from '../../chrome/storage.js';
+import { banner } from '../settings/components.js';
 import { flowHost } from '../../core/flow/index.js';
-import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowReact, Overrides, Step } from '../../shared/types.js';
 import { formatBytes, formatTokens } from '../format.js';
 import { setIcon } from '../icons.js';
 import { showToast } from '../toast.js';
 import { clone, el, find, show } from './dom.js';
-import type { IncludeRow } from './export-view.js';
-import { deriveSendView, SEND_DEFAULTS } from './send-view.js';
+import { driftFromDefaults, type IncludeRow } from './export-view.js';
+import { deriveSendView } from './send-view.js';
 
 const dom = {
   dialog: el<HTMLDialogElement>('send-dialog'),
   subtitle: el('send-subtitle'),
   close: el<HTMLButtonElement>('send-close'),
   includes: el('send-includes'),
+  defaults: el('send-defaults'),
   note: el('send-note'),
   warning: el('send-warning'),
   context: el('send-context'),
@@ -49,9 +53,17 @@ interface Session {
   react: FlowReact | undefined;
   /** When the flow was recorded, so a re-send is not dated to the re-send. */
   recordedAt: number | undefined;
+  /** An archived flow's stamp; `undefined` for the live recording, whose stamp
+   *  `sendFlow` reads from storage. */
+  settings: Overrides | undefined;
+  /** What `export.send*` says this dialog opens on — see the export dialog. */
+  configured: ExportOptions;
 }
 
 let session: Session | null = null;
+
+/** What `export.send*` said when this dialog's memory was written. */
+const AGAINST_KEY = 'sendOptionsAgainst';
 
 function paint(): void {
   if (!session) return;
@@ -72,6 +84,7 @@ function paint(): void {
     .join(' · ');
 
   dom.includes.replaceChildren(...view.includes.map(buildInclude));
+  paintDefaults();
 
   show(dom.note, view.note !== null);
   dom.note.textContent = view.note ?? '';
@@ -85,6 +98,39 @@ function paint(): void {
   dom.runLabel.textContent = view.busy ? 'Sending…' : 'Send';
   setIcon(dom.runIcon, view.busy ? 'loader-circle' : 'sparkles');
   dom.cancel.disabled = view.busy;
+}
+
+/**
+ * "Not your defaults", and the way back — the export dialog's own, verbatim.
+ *
+ * Same primitive, same wording function, same action. The two dialogs ask the
+ * same question about the same four switches, and answering it two ways in two
+ * places is precisely the drift the shared primitives exist to stop.
+ */
+function paintDefaults(): void {
+  if (!session) return;
+
+  const drift = driftFromDefaults(session.options, session.configured);
+
+  if (drift === null || session.busy) {
+    dom.defaults.replaceChildren();
+    return;
+  }
+
+  dom.defaults.replaceChildren(
+    banner('info', drift, {
+      action: { label: 'Use my defaults', onClick: () => void useDefaults() },
+    }),
+  );
+}
+
+async function useDefaults(): Promise<void> {
+  const active = session;
+  if (!active || active.busy) return;
+
+  active.options = { ...active.configured };
+  await setLocal({ sendOptions: active.options, [AGAINST_KEY]: active.configured });
+  if (session === active) paint();
 }
 
 /**
@@ -125,7 +171,9 @@ function buildInclude(row: IncludeRow): HTMLElement {
   input.addEventListener('change', () => {
     if (!session) return;
     session.options = { ...session.options, [row.id]: input.checked };
-    void setLocal({ sendOptions: session.options });
+    // The choice and the defaults it was made against, in one write — see the
+    // export dialog.
+    void setLocal({ sendOptions: session.options, [AGAINST_KEY]: session.configured });
     paint();
   });
 
@@ -161,6 +209,7 @@ async function run(): Promise<void> {
     session.options,
     session.react,
     session.recordedAt,
+    session.settings,
   );
 
   session.busy = false;
@@ -194,29 +243,37 @@ export interface OpenSendOptions {
   react?: FlowReact | null;
   /** The flow's own recording time. The server prints it and orders by it. */
   recordedAt?: number | null;
+  /** An archived flow's settings stamp. Absent for the live recording. */
+  settings?: Overrides | null;
 }
 
-export function openSend({ steps, name, id, react, recordedAt }: OpenSendOptions): void {
+export function openSend({ steps, name, id, react, recordedAt, settings }: OpenSendOptions): void {
   if (steps.length === 0) {
     showToast({ message: 'There is nothing to send yet.' });
     return;
   }
 
   void (async () => {
-    const stored = await getLocal('sendOptions');
-    const options =
-      stored.ok && stored.value.sendOptions
-        ? { ...SEND_DEFAULTS, ...stored.value.sendOptions }
-        : SEND_DEFAULTS;
+    const [stored, settingsNow] = await Promise.all([
+      getLocal(['sendOptions', AGAINST_KEY]),
+      loadSettings(),
+    ]);
+    const configured = sendDefaults(settingsNow);
 
     session = {
       steps,
       name,
       id,
-      options,
+      configured,
+      options: openingOptions(
+        configured,
+        stored.ok ? stored.value.sendOptions : undefined,
+        stored.ok ? stored.value.sendOptionsAgainst : undefined,
+      ),
       busy: false,
       react: react ?? undefined,
       recordedAt: recordedAt ?? undefined,
+      settings: settings ?? undefined,
     };
 
     paint();

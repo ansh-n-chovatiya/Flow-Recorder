@@ -9,15 +9,23 @@
  */
 
 import { exportFlow, suggestFilename } from '../../features/export/download.js';
+import {
+  exportDefaults,
+  exportFormat as configuredFormat,
+  openingOptions,
+} from '../../features/export/defaults.js';
+import { load as loadSettings } from '../../features/settings/index.js';
 import { getLocal, setLocal } from '../../chrome/storage.js';
+import { banner } from '../settings/components.js';
 import { flowHost } from '../../core/flow/index.js';
-import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
+import type { ExportOptions, FlowReact, Overrides, Step } from '../../shared/types.js';
 import { formatBytes } from '../format.js';
 import { hydrateIcons, setIcon } from '../icons.js';
 import { showToast } from '../toast.js';
 import { clone, el, find, show } from './dom.js';
 import {
   deriveExportView,
+  driftFromDefaults,
   type ExportFormat,
   type FormatCard,
   type IncludeRow,
@@ -29,6 +37,7 @@ const dom = {
   close: el<HTMLButtonElement>('export-close'),
   formats: el('export-formats'),
   includes: el('export-includes'),
+  defaults: el('export-defaults'),
   warning: el('export-warning'),
   filename: el<HTMLInputElement>('export-filename'),
   extension: el('export-ext'),
@@ -52,17 +61,33 @@ interface Session {
   progress: { done: number; total: number } | null;
   /** The component table, so the Markdown and JSON in the archive carry it. */
   react: FlowReact | undefined;
+  /** The flow's settings stamp, so both halves of the archive say what was in
+   *  force. `undefined` for a flow archived before stamps existed. */
+  settings: Overrides | undefined;
+  /**
+   * What `export.*` says this dialog should open on, read when it opened.
+   *
+   * Held for the life of the dialog rather than re-read, so the "not your
+   * defaults" line beside the switches is measured against the same answer the
+   * switches were set from. Re-reading would let the two disagree if Settings
+   * were saved in another tab mid-export, which is a banner that contradicts
+   * the controls above it.
+   */
+  configured: ExportOptions;
+  configuredFormat: ExportFormat;
 }
 
 let session: Session | null = null;
 
-/** The include choices persist; the format and filename are per-export. */
-const DEFAULT_OPTIONS: ExportOptions = {
-  images: true,
-  network: true,
-  logs: true,
-  react: true,
-};
+/**
+ * `exportOptionsAgainst` — what `export.*` said when this dialog's memory was
+ * written.
+ *
+ * Stored beside the memory rather than inside it, so a memory written by a
+ * build before Phase 4 reads as "nothing recorded", which is exactly what it
+ * is. See `features/export/defaults.ts` for what the pair is for.
+ */
+const AGAINST_KEY = 'exportOptionsAgainst';
 
 function paint(): void {
   if (!session) return;
@@ -87,6 +112,7 @@ function paint(): void {
 
   dom.formats.replaceChildren(...view.formats.map(buildFormat));
   dom.includes.replaceChildren(...view.includes.map(buildInclude));
+  paintDefaults();
 
   show(dom.warning, view.warnBodies);
 
@@ -121,6 +147,55 @@ function paintProgress(progress: { done: number; total: number }): void {
   const ratio = progress.total === 0 ? 1 : progress.done / progress.total;
   dom.progressFill.style.width = `${Math.round(ratio * 100)}%`;
   dom.caption.textContent = `Packaging screenshot ${progress.done} of ${progress.total}`;
+}
+
+/**
+ * "Not your defaults", and the way back.
+ *
+ * `banner` is the Settings screen's own primitive, imported rather than
+ * reimplemented — the classes it uses live in the shared stylesheet both
+ * surfaces load, so this is the same control here as it is there. A local copy
+ * would be a control that looks like a setting in one surface and slightly
+ * different in another, which is the drift the primitive exists to prevent.
+ */
+function paintDefaults(): void {
+  if (!session) return;
+
+  const drift = driftFromDefaults(session.options, session.configured, {
+    chosen: session.format,
+    configured: session.configuredFormat,
+  });
+
+  if (drift === null || session.busy) {
+    dom.defaults.replaceChildren();
+    return;
+  }
+
+  dom.defaults.replaceChildren(
+    banner('info', drift, {
+      action: { label: 'Use my defaults', onClick: () => void useDefaults() },
+    }),
+  );
+}
+
+/**
+ * Back to the configured defaults, and forget the deviation.
+ *
+ * The memory is written, not cleared: `openingOptions` reads "remembered, and
+ * what it was remembered against", and a memory equal to the default it was
+ * made against is the honest record of what just happened. Clearing the key
+ * would work today and stop working the moment the user changes the setting,
+ * because the absent memory would then take the *new* default silently rather
+ * than being compared to the old one.
+ */
+async function useDefaults(): Promise<void> {
+  const active = session;
+  if (!active || active.busy) return;
+
+  active.options = { ...active.configured };
+  active.format = active.configuredFormat;
+  await setLocal({ exportOptions: active.options, [AGAINST_KEY]: active.configured });
+  if (session === active) paint();
 }
 
 function buildFormat(card: FormatCard): HTMLElement {
@@ -164,7 +239,10 @@ function buildInclude(row: IncludeRow): HTMLElement {
   input.addEventListener('change', () => {
     if (!session) return;
     session.options = { ...session.options, [row.id]: input.checked };
-    void setLocal({ exportOptions: session.options });
+    // The choice *and* the defaults it was made against, in one write. Two
+    // writes would leave a window in which the memory claims to have been made
+    // against something it was not, and the pair is only meaningful together.
+    void setLocal({ exportOptions: session.options, [AGAINST_KEY]: session.configured });
     paint();
   });
 
@@ -219,6 +297,7 @@ async function run(): Promise<void> {
     options: active.options,
     filename: view.filename,
     react: active.react,
+    settings: active.settings,
     onProgress: (done, total) => {
       if (session !== active) return;
       active.progress = { done, total };
@@ -253,27 +332,47 @@ export interface OpenExportOptions {
   title: string;
   /** The flow's component table, absent when the page was not React. */
   react?: FlowReact | null;
+  /** The flow's settings stamp. Absent on a flow archived before stamps. */
+  settings?: Overrides | null;
 }
 
-export function openExport({ steps, title, react }: OpenExportOptions): void {
+export function openExport({ steps, title, react, settings }: OpenExportOptions): void {
   if (steps.length === 0) {
     showToast({ message: 'There is nothing to export yet.' });
     return;
   }
 
   void (async () => {
-    const stored = await getLocal('exportOptions');
-    const options =
-      stored.ok && stored.value.exportOptions
-        ? { ...DEFAULT_OPTIONS, ...stored.value.exportOptions }
-        : DEFAULT_OPTIONS;
+    /*
+     * The configured default and the dialog's memory, together.
+     *
+     * Both are read, neither wins outright, and `openingOptions` decides per
+     * switch by asking which of the two was stated more recently — see
+     * `features/export/defaults.ts`. Read here rather than at module scope for
+     * the reason `settings-module-scope.test.ts` exists: a default resolved once
+     * when the viewer loaded would be the value the user had before they opened
+     * Settings in the next tab.
+     */
+    const [stored, settingsNow] = await Promise.all([
+      getLocal(['exportOptions', AGAINST_KEY]),
+      loadSettings(),
+    ]);
+    const configured = exportDefaults(settingsNow);
+    const remembered = stored.ok ? stored.value.exportOptions : undefined;
+    const against = stored.ok ? stored.value.exportOptionsAgainst : undefined;
 
     session = {
       steps,
       title,
       react: react ?? undefined,
-      format: 'zip',
-      options,
+      settings: settings ?? undefined,
+      // Per-export, not remembered: the shipped dialog opened on ZIP every time
+      // and nothing stored a format, so there is no memory here for a default to
+      // be weighed against. `export.format` is now what it opens on.
+      format: configuredFormat(settingsNow),
+      configuredFormat: configuredFormat(settingsNow),
+      configured,
+      options: openingOptions(configured, remembered, against),
       filename: suggestFilename(steps),
       busy: false,
       progress: null,

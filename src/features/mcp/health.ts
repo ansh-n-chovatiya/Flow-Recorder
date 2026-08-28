@@ -6,6 +6,7 @@
  * trusting it is part of making that opt-in meaningful.
  */
 
+import { HEALTH_TIMEOUT_MS as TIMEOUT_MS } from '../../shared/constants.js';
 import { flowError } from '../../shared/errors.js';
 import { err, ok, type Result } from '../../shared/result.js';
 
@@ -28,17 +29,23 @@ export interface McpHealth {
   mode: string;
 }
 
-/** How long to wait before calling a silent address unreachable. */
-const TIMEOUT_MS = 4000;
-
-export async function checkMcp(flowsUrl: string): Promise<Result<McpHealth>> {
+export async function checkMcp(
+  flowsUrl: string,
+  /**
+   * `mcp.healthTimeoutMs`, passed in by the Settings screen, which has the
+   * resolved settings in hand. Defaulted rather than read here so this module
+   * stays free of storage — it is driven directly by its own tests, and a read
+   * at import would be the compiled-in default whatever the user had chosen.
+   */
+  timeoutMs = TIMEOUT_MS,
+): Promise<Result<McpHealth>> {
   const url = healthUrl(flowsUrl);
   if (!url) return err(flowError('MCP_UNREACHABLE', `not a URL: ${flowsUrl}`));
 
   // A server that accepts the connection and then never answers would otherwise
   // leave "Checking…" on screen forever.
   const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
 
   try {
     const response = await fetch(url, { signal: abort.signal });

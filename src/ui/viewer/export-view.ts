@@ -202,6 +202,41 @@ export const INCLUDE_LABEL: Record<keyof ExportOptions, string> = {
   react: 'React components & source',
 };
 
+/**
+ * What this dialog is doing differently from the configured defaults, in words.
+ *
+ * `null` when nothing differs, which is the ordinary case and draws nothing.
+ *
+ * The point of saying it at all is that the dialog's memory and the Settings
+ * default are two different things — see `features/export/defaults.ts` — and a
+ * user whose dialog remembers a deviation they made three weeks ago has no way
+ * to know that is what they are looking at. It is also where the way back
+ * lives: the banner carries the action that puts the defaults back.
+ *
+ * Deliberately lists *what* differs rather than counting. "2 settings differ" is
+ * a number somebody has to take on trust, and the one that matters is always
+ * the one they had forgotten about — the same argument that is made for the import
+ * diff.
+ */
+export function driftFromDefaults(
+  options: ExportOptions,
+  configured: ExportOptions,
+  format?: { chosen: ExportFormat; configured: ExportFormat },
+): string | null {
+  const parts: string[] = [];
+
+  if (format && format.chosen !== format.configured) {
+    parts.push(`${FORMAT_NAME[format.chosen]} rather than ${FORMAT_NAME[format.configured]}`);
+  }
+
+  for (const key of ['images', 'network', 'logs', 'react'] as const) {
+    if (options[key] === configured[key]) continue;
+    parts.push(`${INCLUDE_LABEL[key].toLowerCase()} ${options[key] ? 'on' : 'off'}`);
+  }
+
+  return parts.length === 0 ? null : `Not your defaults: ${parts.join(', ')}.`;
+}
+
 export function deriveExportView(input: ExportInput): ExportView {
   const { steps, format, options, busy, progress } = input;
   const parts = measure(steps, input.react);

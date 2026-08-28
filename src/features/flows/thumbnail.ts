@@ -8,14 +8,33 @@
  * image is redrawn once, at save time, at the size the row actually shows.
  */
 
+import {
+  THUMBNAIL_HEIGHT,
+  THUMBNAIL_QUALITY,
+  THUMBNAIL_WIDTH,
+} from '../../shared/constants.js';
 import type { Step } from '../../shared/types.js';
 
-/** Matches `.flow-row__thumb` in viewer.css, at 2× for a HiDPI screen. */
-const WIDTH = 128;
-const HEIGHT = 80;
+/**
+ * The size and quality one thumbnail is drawn at — `thumbnails.width`,
+ * `thumbnails.height` and `thumbnails.quality`.
+ *
+ * Passed in rather than read here: this module runs wherever a flow is saved,
+ * it is driven directly by its tests, and a value read at import would be the
+ * compiled-in default however the settings were changed. Defaulted to the
+ * shipped answer so every existing call site keeps working unchanged.
+ */
+export interface ThumbnailSize {
+  width: number;
+  height: number;
+  quality: number;
+}
 
-/** Well under a kilobyte at this size, and it is never looked at closely. */
-const QUALITY = 0.5;
+export const DEFAULT_THUMBNAIL: ThumbnailSize = {
+  width: THUMBNAIL_WIDTH,
+  height: THUMBNAIL_HEIGHT,
+  quality: THUMBNAIL_QUALITY,
+};
 
 /**
  * The picture a flow's thumbnail is made of: the first step that has one.
@@ -37,7 +56,11 @@ export function thumbnailSource(steps: Step[]): string | null {
  * cannot be thumbnailed is still a flow worth saving, and the library falls back
  * to a placeholder tile.
  */
-export function makeThumbnail(steps: Step[]): Promise<string | null> {
+export function makeThumbnail(
+  steps: Step[],
+  size: ThumbnailSize = DEFAULT_THUMBNAIL,
+): Promise<string | null> {
+  const { width: WIDTH, height: HEIGHT, quality: QUALITY } = size;
   const source = thumbnailSource(steps);
   if (!source) return Promise.resolve(null);
 

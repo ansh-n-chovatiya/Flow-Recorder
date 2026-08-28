@@ -1,18 +1,5 @@
 /**
- * Generate the extension's PNG icons from the FlowSnap mark.
- *
- *   npm run build:mark
- *
- * The mark is one shape — a rounded square with a bolt cut into it — and it is
- * already drawn as inline SVG in the popup, the viewer and the settings page.
- * This renders the *same* geometry to the PNGs Chrome needs for the toolbar, the
- * extensions page and the tab favicon, so there is one mark rather than one per
- * place it appears. The icons it replaces were a red circle with a white slash,
- * unrelated to anything else in the product.
- *
- * No dependencies: a supersampling rasteriser and a minimal PNG encoder, in the
- * spirit of the ZIP writer in core/export. Chrome will not load an SVG here —
- * `manifest.icons` is raster only.
+ * Generates extension PNG icons from the FlowSnap mark geometry.
  */
 
 import { deflateSync } from 'node:zlib';
@@ -23,15 +10,11 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = resolve(root, 'public/icons');
 
-/** The mark's own coordinate space, matching `viewBox="0 0 20 20"`. */
+/** Coordinate viewport size and corner radius. */
 const VIEW = 20;
 const RADIUS = 6;
 
-/**
- * The bolt, as the `d` attribute resolves to.
- *
- *   M11.4 3.4 · L5.9 11 · h3.2 · l-.5 5.6 · L14.1 9 · h-3.2 · z
- */
+/** Polygon vertices representing the central bolt mark. */
 const BOLT = [
   [11.4, 3.4],
   [5.9, 11],
@@ -41,17 +24,11 @@ const BOLT = [
   [10.9, 9],
 ];
 
-/**
- * The dark theme's accent and its contrast colour.
- *
- * A toolbar icon sits in Chrome's own chrome, not in ours, so it cannot follow
- * the theme — one pair has to read on both. The brighter teal is the one that
- * survives a light toolbar as well as a dark one.
- */
+/** Plate and bolt RGB colors for toolbar contrast. */
 const PLATE = [0x2b, 0xb3, 0xa3];
 const BOLT_COLOUR = [0x04, 0x21, 0x1e];
 
-/** Subsamples per axis. 4 is 16 samples a pixel — smooth at 16px. */
+/** Subsamples per axis for anti-aliasing. */
 const SS = 4;
 
 function insideRoundedRect(x, y) {
@@ -60,12 +37,11 @@ function insideRoundedRect(x, y) {
   const dy = near(y);
   if (dx < 0 || dy < 0) return false;
 
-  // Only the corner squares need the circle test.
   if (dx >= RADIUS || dy >= RADIUS) return true;
   return (RADIUS - dx) ** 2 + (RADIUS - dy) ** 2 <= RADIUS ** 2;
 }
 
-/** Even-odd crossing test. The bolt is a simple closed polygon. */
+/** Point-in-polygon test for bolt geometry. */
 function insidePolygon(points, x, y) {
   let inside = false;
 
@@ -79,7 +55,7 @@ function insidePolygon(points, x, y) {
   return inside;
 }
 
-/** RGBA rows, straight (un-premultiplied) alpha, as PNG wants them. */
+/** Rasterizes the icon at the specified size with anti-aliasing. */
 function render(size) {
   const pixels = Buffer.alloc(size * size * 4);
   const scale = VIEW / (size * SS);
@@ -109,8 +85,6 @@ function render(size) {
       const at = (py * size + px) * 4;
       if (hits === 0) continue;
 
-      // Averaged over the covered samples only, so an edge pixel keeps the
-      // colour of the shape rather than fading towards black.
       pixels[at] = Math.round(r / hits);
       pixels[at + 1] = Math.round(g / hits);
       pixels[at + 2] = Math.round(b / hits);
@@ -121,7 +95,7 @@ function render(size) {
   return pixels;
 }
 
-// ── PNG ──────────────────────────────────────────────────────────────────────
+/* --- PNG Encoding --- */
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -150,16 +124,14 @@ function chunk(type, data) {
   return Buffer.concat([length, body, crc]);
 }
 
+/** Encodes raw RGBA pixel data into a PNG buffer. */
 function encodePng(size, pixels) {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(size, 0);
   header.writeUInt32BE(size, 4);
-  header[8] = 8; // bit depth
-  header[9] = 6; // colour type: RGBA
-  // 10–12: deflate, adaptive filtering, no interlace — all zero.
+  header[8] = 8; // 8-bit depth
+  header[9] = 6; // RGBA color type
 
-  // Filter type 0 on every scanline. The image is tiny and mostly flat; a
-  // smarter filter would save bytes nobody would notice.
   const raw = Buffer.alloc(size * (size * 4 + 1));
   for (let y = 0; y < size; y++) {
     const from = y * size * 4;
@@ -175,11 +147,11 @@ function encodePng(size, pixels) {
   ]);
 }
 
-// ── Write ────────────────────────────────────────────────────────────────────
+/* --- File Output --- */
 
 mkdirSync(outDir, { recursive: true });
 
-/** 32 is what Chrome asks for on a HiDPI toolbar; without it, 48 is downscaled. */
+/** Target icon dimensions in pixels. */
 const SIZES = [16, 32, 48, 128];
 
 for (const size of SIZES) {

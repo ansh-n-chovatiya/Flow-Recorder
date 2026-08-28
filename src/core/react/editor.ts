@@ -5,7 +5,7 @@
  * `EDITORS` table, `toAbsolutePath` and `buildEditorUrl`. Divergences:
  *
  *   - **Lines arrive 1-based.** `ComponentSource.line` was converted once at
- *     the source-map edge (plan §4.4), so `{line1}` is the number as stored and
+ *     the source-map edge, so `{line1}` is the number as stored and
  *     `{line}` is one less. Upstream takes 0-based positions and adds. Getting
  *     this backwards opens the file one line off, every time, silently.
  *   - **No `managed` policy layer.** Upstream lets an administrator push an

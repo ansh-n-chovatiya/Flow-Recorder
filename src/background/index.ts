@@ -7,20 +7,23 @@
  */
 
 import { annotateScreenshot } from './annotator.js';
-import { getLocal, getSync, setLocal } from '../chrome/storage.js';
+import { getLocal, setLocal } from '../chrome/storage.js';
+import { load as loadSettings } from '../features/settings/index.js';
+import {
+  loadRecordingSettings,
+  readRecordingStamp,
+  renderedOverrides,
+} from '../features/settings/recording.js';
+import { applyPending } from '../features/settings/pending.js';
+import { isMachineKey } from '../features/settings/fields.js';
+import { deliverMachineSettings } from '../features/mcp/machine.js';
+import type { RecordingSettings } from '../features/settings/fields.js';
 import { shotPatch, sweep as sweepShots, withoutImages } from '../features/flows/shots.js';
 import { captureVisibleTab, sendToTab } from '../chrome/tabs.js';
 import type { OpenEditorResponse, WorkerRequest } from '../shared/messages.js';
 import { isEditorScheme } from '../core/react/editor.js';
 import {
   BADGE_COLOR,
-  DEFAULT_MCP_URL,
-  LAUNCHER_TAB_TIMEOUT_MS,
-  MAX_STEPS,
-  PRECAPTURE_TTL_MS,
-  REACT_SETTING_DEFAULTS,
-  RESOLVE_DEBOUNCE_MS,
-  SETTLE_DELAY_MS,
 } from '../shared/constants.js';
 import { flowError, type FlowError } from '../shared/errors.js';
 import type { BoundingBox, DraftStep, Step } from '../shared/types.js';
@@ -59,13 +62,19 @@ async function reportError(error: FlowError): Promise<void> {
   await setLocal({ lastError: { ...error, at: Date.now() } });
 }
 
-/** Take the pre-capture for a tab if one is fresh enough to still be true. */
-function claimPrecapture(tabId: number | undefined): string | null {
+/**
+ * Take the pre-capture for a tab if one is fresh enough to still be true.
+ *
+ * `ttlMs` is the recording's frozen `screenshots.precaptureTtlMs`, passed in by
+ * the one caller — which has the snapshot in hand anyway, and which is the only
+ * place that knows *which* recording this frame belongs to.
+ */
+function claimPrecapture(tabId: number | undefined, ttlMs: number): string | null {
   if (tabId == null) return null;
   const held = precaptures.get(tabId);
   if (!held) return null;
   precaptures.delete(tabId);
-  return Date.now() - held.at <= PRECAPTURE_TTL_MS ? held.dataUrl : null;
+  return Date.now() - held.at <= ttlMs ? held.dataUrl : null;
 }
 
 /** Capture, annotate and persist one step, enforcing the step limit. */
@@ -79,6 +88,24 @@ async function captureAndSave(
   /** Where the page was scrolled when `elementBox` was measured. */
   measuredScroll?: { x: number; y: number },
 ): Promise<void> {
+  /*
+   * The settings this recording was frozen at, not the ones in force now.
+   *
+   * Settings are frozen for the duration of a recording, so a capture that
+   * lands after the user has changed the quality still uses the quality the
+   * flow's first step used — and the flow's stamp is true of every step in it.
+   * Read here, per capture, rather than into a module-level constant: the
+   * worker is killed and restarted at Chrome's discretion, and a value taken at
+   * import would be the compiled-in default for every recording thereafter.
+   *
+   * Read *before* the pre-capture is claimed, because the claim now needs the
+   * recording's own TTL. The claim is a map lookup either way; the only thing
+   * the extra await can change is that a pointerdown arriving in the gap
+   * replaces the held frame with a newer one of the same tab, which is the
+   * better frame anyway.
+   */
+  const recording = await loadRecordingSettings();
+
   // A pre-capture is already the right frame — waiting would only let the page
   // navigate further away from the moment being described.
   //
@@ -87,8 +114,12 @@ async function captureAndSave(
   // element — leaves it in the map for its full TTL. Any step at all could
   // claim it, so a navigation or a debounced keystroke seconds later was filed
   // with a photograph of a moment it had nothing to do with.
-  const preShot = step.type === 'click' ? claimPrecapture(sender.tab?.id) : null;
-  if (!preShot) await delay(SETTLE_DELAY_MS);
+  const preShot =
+    step.type === 'click'
+      ? claimPrecapture(sender.tab?.id, recording['screenshots.precaptureTtlMs'])
+      : null;
+
+  if (!preShot) await delay(recording['screenshots.settleDelayMs']);
 
   const stored = await getLocal([
     'recordedSteps',
@@ -101,21 +132,22 @@ async function captureAndSave(
     return;
   }
 
+  const maxSteps = recording['recording.maxSteps'];
   const recordedSteps = (stored.value.recordedSteps ?? []);
   const recordingActive = Boolean(stored.value.recordingActive);
 
   // Bail if recording stopped while this capture sat in the queue. Without this,
-  // every queued capture sees length >= MAX_STEPS and pushes its own duplicate
+  // every queued capture sees length >= maxSteps and pushes its own duplicate
   // "limit reached" note.
   if (!recordingActive) return;
 
-  if (recordedSteps.length >= MAX_STEPS) {
+  if (recordedSteps.length >= maxSteps) {
     recordedSteps.push({
       type: 'note',
       url: step.url,
       timestamp: Date.now(),
       action: 'limit-reached',
-      value: `Recording stopped at ${MAX_STEPS} steps, FlowSnap's safety limit. Every step up to here was saved.`,
+      value: `Recording stopped at ${maxSteps} steps, FlowSnap's safety limit. Every step up to here was saved.`,
       screenshot: null,
       stepNumber: recordedSteps.length + 1,
     });
@@ -126,6 +158,18 @@ async function captureAndSave(
   }
 
   let dataUrl: string | null = preShot;
+
+  /*
+   * Why this step has no picture, in the flow rather than only in the log.
+   *
+   * Nothing in Tier 1 may make a recording silently worse. Screenshots
+   * switched off, a capture Chrome refused and a tab that was not on screen all
+   * produce the same missing image, and a reader who cannot tell them apart
+   * reads every one of them as a page that rendered nothing. Whichever it was
+   * travels with the step — see `screenshotOmitted` in `shared/types.ts`.
+   */
+  let omitted: string | null = null;
+
   // `captureVisibleTab` photographs the window's *visible* tab, whichever tab
   // asked. A step from a tab that is not on screen — a debounced input that
   // fires after the user switches away, a background tab acting on its own —
@@ -133,14 +177,23 @@ async function captureAndSave(
   // picture: it reads as evidence. The step keeps its selectors, timing and
   // network either way.
   const senderVisible = sender.tab?.active !== false;
-  if (!dataUrl && senderVisible) {
-    const captured = await captureVisibleTab(sender.tab?.windowId);
+  if (!dataUrl && !recording['screenshots.capture']) {
+    omitted = 'Screenshots are switched off in FlowSnap settings for this recording.';
+  } else if (!dataUrl && !senderVisible) {
+    omitted = 'The tab was not on screen when this step was captured, so no screenshot was taken.';
+  } else if (!dataUrl) {
+    const captured = await captureVisibleTab(
+      sender.tab?.windowId,
+      recording['screenshots.quality'],
+      recording['screenshots.minIntervalMs'],
+    );
     if (captured.ok) {
       dataUrl = captured.value;
     } else {
       // A step with no image still carries its selectors, timing and network —
       // losing the whole step because the screenshot failed would be worse.
       await reportError(captured.error);
+      omitted = `The screenshot could not be taken (${captured.error.code}).`;
     }
   }
 
@@ -172,7 +225,14 @@ async function captureAndSave(
   let screenshotOriginal: string | null = null;
 
   if (dataUrl) {
-    screenshot = await annotateScreenshot(dataUrl, elementBox, dpr, scrollDelta);
+    screenshot = await annotateScreenshot(
+      dataUrl,
+      elementBox,
+      dpr,
+      recording['screenshots.quality'],
+      recording['annotation.stroke'],
+      scrollDelta,
+    );
     // Only when annotating changed the image — otherwise the two are identical
     // and every capture rewrites both. Readers resolve null as `?? screenshot`.
     // Compared, not inferred from `elementBox`: the annotator also returns the
@@ -194,6 +254,9 @@ async function captureAndSave(
     highlightBox: capturedBox,
     dpr: dpr || 1,
     screenshot,
+    // Absent when there is an image, so a flow full of ordinary steps carries
+    // nothing extra and an older reader sees exactly what it saw before.
+    ...(omitted ? { screenshotOmitted: omitted } : {}),
     stepNumber: recordedSteps.length + 1,
   } as Step;
 
@@ -205,6 +268,11 @@ async function captureAndSave(
         componentsPageUrl ?? step.url,
         stored.value.reactComponents ?? {},
         stored.value.reactNeedles ?? {},
+        // Frozen: the cap decides what this *recording* collected, and a table
+        // whose first half was gathered under one ceiling and second half under
+        // another is a table nothing describes. The `__capped__` row already
+        // says the number it stopped at.
+        recording['react.maxComponentsPerFlow'],
       )
     : null;
 
@@ -273,7 +341,7 @@ async function finishRecording(): Promise<void> {
     await drained;
   } while (drained !== captureQueue);
 
-  await flushTrailing();
+  await flushTrailing(await loadRecordingSettings());
 
   const written = await setLocal({
     recordingActive: false,
@@ -300,7 +368,13 @@ async function finishRecording(): Promise<void> {
  * The step is a `note`, and says what it is. It is not an interaction and must
  * not read as one — nobody clicked anything here.
  */
-async function flushTrailing(): Promise<void> {
+async function flushTrailing(recording: RecordingSettings): Promise<void> {
+  // Refusable, and the setting says so: this is new behaviour, and a user who
+  // does not want a synthesised step at the end of every recording turns it
+  // off. Nothing is lost silently — the buffers are dropped with the page, and
+  // the flow's stamp says the trailing step was not collected.
+  if (!recording['recording.trailingStep']) return;
+
   const tabs = await new Promise<chrome.tabs.Tab[]>((resolve) => {
     chrome.tabs.query({}, (found) => resolve(chrome.runtime.lastError ? [] : found));
   });
@@ -325,7 +399,7 @@ async function flushTrailing(): Promise<void> {
   const recordedSteps = stored.value.recordedSteps ?? [];
   // Nothing to append to, and nothing this could mean: a recording with no steps
   // has no "after the last one".
-  if (recordedSteps.length === 0 || recordedSteps.length >= MAX_STEPS) return;
+  if (recordedSteps.length === 0 || recordedSteps.length >= recording['recording.maxSteps']) return;
 
   const last = recordedSteps[recordedSteps.length - 1];
 
@@ -354,6 +428,8 @@ async function flushTrailing(): Promise<void> {
 /** Serialises passes, so two never write the component table at once. */
 let resolveQueue: Promise<void> = Promise.resolve();
 let resolveTimer: ReturnType<typeof setTimeout> | null = null;
+/** Which `scheduleResolve` call owns the next timer — see the note there. */
+let resolveScheduleToken = 0;
 
 /**
  * Resolves whatever is pending, and writes back only what the resolver owns.
@@ -386,16 +462,31 @@ async function runResolve(requestedFinal: boolean): Promise<void> {
   if (Object.keys(needles).length === 0 && !final) return;
 
   // A failed read leaves resolution on, matching the setting's own default: a
-  // storage hiccup should not quietly switch a feature off.
-  const settings = await getSync({ reactResolve: REACT_SETTING_DEFAULTS.reactResolve });
-  const disabled = settings.ok && !settings.value.reactResolve;
+  // storage hiccup should not quietly switch a feature off. `load()` guarantees
+  // that — it resolves an unreadable area to the defaults.
+  //
+  // Live, not frozen, and the budget alongside it for the same reason: this
+  // pass runs after the click and often after the recording has stopped, so
+  // both "am I allowed to do this" and "for how long" are questions about now.
+  const settings = await loadSettings();
 
   const result = await resolvePending({
     components,
     needles,
     scripts: stored.value.reactScripts ?? {},
     final,
-    disabled,
+    disabled: !settings.reactResolve,
+    budgetMs: settings['react.maxResolveMsPerFlow'],
+    // The five Tier 2 numbers, from the same live read as the budget. Built
+    // here rather than inside the resolver so that module keeps knowing nothing
+    // about the field table — it is driven directly by its own tests.
+    limits: {
+      concurrency: settings['react.resolveConcurrency'],
+      cacheEntries: settings['react.bundleCacheEntries'],
+      cacheBytes: settings['react.bundleCacheBytes'],
+      resourceBytes: settings['react.maxResourceBytes'],
+      mapBytes: settings['react.maxMapBytes'],
+    },
   });
 
   if (!result.changed) return;
@@ -473,10 +564,31 @@ async function purgeReact(): Promise<void> {
  */
 function scheduleResolve(): void {
   if (resolveTimer !== null) clearTimeout(resolveTimer);
-  resolveTimer = setTimeout(() => {
-    resolveTimer = null;
-    void enqueueResolve(false);
-  }, RESOLVE_DEBOUNCE_MS);
+
+  /*
+   * The debounce is read per schedule, and that read is asynchronous.
+   *
+   * Live rather than frozen, like the resolution pass it schedules: this runs
+   * after the click and often after the recording has stopped, so "how long
+   * counts as quiet" is a question about now. It cannot be read into a
+   * module-level value — the worker is killed and restarted at Chrome's
+   * discretion, and the value taken at import would be the compiled-in default
+   * for every recording after that.
+   *
+   * Which leaves an await between the debounce being restarted and the timer
+   * existing, and two schedules can be inside it at once. The token is what
+   * makes the last caller win: without it the earlier read would arm a second
+   * timer that nothing clears, and a burst of clicks would resolve as many
+   * times as it had settings reads.
+   */
+  const token = ++resolveScheduleToken;
+  void loadSettings().then((settings) => {
+    if (token !== resolveScheduleToken) return;
+    resolveTimer = setTimeout(() => {
+      resolveTimer = null;
+      void enqueueResolve(false);
+    }, settings['react.resolveDebounceMs']);
+  });
 }
 
 // ── Opening a file in an editor ──────────────────────────────────────────────
@@ -493,9 +605,13 @@ function scheduleResolve(): void {
 async function openEditor(url: string): Promise<OpenEditorResponse> {
   if (!isEditorScheme(url)) return { ok: false, error: 'Not an editor link.' };
 
+  // Live: opening a source link is something the user is doing now, and has
+  // nothing to do with what any recording captured.
+  const settings = await loadSettings();
+
   try {
     const tab = await chrome.tabs.create({ url, active: true });
-    if (tab.id !== undefined) closeWhenLaunched(tab.id);
+    if (tab.id !== undefined) closeWhenLaunched(tab.id, settings['ui.launcherTimeoutMs']);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -512,7 +628,7 @@ async function openEditor(url: string): Promise<OpenEditorResponse> {
  * took over, which is the signal. The timeout only covers a launch that never
  * happened at all.
  */
-function closeWhenLaunched(tabId: number): void {
+function closeWhenLaunched(tabId: number, timeoutMs: number): void {
   let closed = false;
 
   const close = (): void => {
@@ -530,34 +646,61 @@ function closeWhenLaunched(tabId: number): void {
   };
 
   chrome.windows.onFocusChanged.addListener(onFocusChanged);
-  const timer = setTimeout(close, LAUNCHER_TAB_TIMEOUT_MS);
+  const timer = setTimeout(close, timeoutMs);
 }
 
 // ── MCP auto-export ──────────────────────────────────────────────────────────
 
 async function autoExportToMcp(steps: Step[]): Promise<void> {
-  const settings = await getSync({ mcpServerUrl: DEFAULT_MCP_URL, mcpAutoSend: false });
-  if (!settings.ok || !settings.value.mcpAutoSend) return;
+  const settings = await loadSettings();
+  if (!settings.mcpAutoSend) return;
+
+  /*
+   * The same stamp the Send dialog builds.
+   *
+   * This path exists precisely for the user who never presses Send, so it is
+   * the path where an unexplained flow is *most* likely to be read: nobody was
+   * in the loop when it was made. A flow that arrives here with no screenshots
+   * and no stamp is the exact failure the stamp exists to prevent.
+   */
+  const stamp = { ...(await readRecordingStamp()), ...renderedOverrides(settings) };
 
   const payload = JSON.stringify({
     id: `flow-${Date.now()}`,
     name: `Flow ${new Date().toLocaleString()}`,
     timestamp: Date.now(),
     startUrl: steps[0]?.url,
+    ...(Object.keys(stamp).length ? { settings: stamp } : {}),
     steps,
   });
 
+  /*
+   * The same timeout the Send dialog uses, which this path did not have at all.
+   *
+   * Auto-send fires with nobody watching, at a `mcpServerUrl` that may be a
+   * host that accepts the connection and never answers — and an unabandoned
+   * `fetch` in a service worker holds the worker alive for as long as Chrome
+   * lets it. Nothing reported a failure because nothing ever concluded there
+   * had been one. Found while wiring `mcp.sendTimeoutMs`, which claimed to
+   * govern "a send" and governed only one of the two.
+   */
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), settings['mcp.sendTimeoutMs']);
+
   try {
-    const res = await fetch(settings.value.mcpServerUrl, {
+    const res = await fetch(settings.mcpServerUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
+      signal: abort.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { id } = (await res.json()) as { id: string };
     await setLocal({ lastMcpFlowId: id });
   } catch (error) {
     await reportError(flowError('MCP_UNREACHABLE', error instanceof Error ? error.message : error));
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -571,6 +714,41 @@ chrome.storage.onChanged.addListener((changes, area) => {
     void chrome.action.setBadgeBackgroundColor({ color: BADGE_COLOR });
     return;
   }
+
+  /*
+   * An import made during a recording was parked rather than applied, and
+   * this is the moment it was parked for.
+   *
+   * Before the clearing check, not after: a cleared recording is still a
+   * recording that has ended, and the settings are no longer frozen either way.
+   * Making the user press Stop *and* not press Clear to get the file they
+   * already confirmed would be a promise kept only on one of two paths.
+   */
+  void applyPending().then(async (applied) => {
+    if (!applied.ok) {
+      void reportError(applied.error);
+      return;
+    }
+
+    /*
+     * A parked file can carry the three machine-wide settings, and storing them
+     * is not delivering them — the port and the retention caps live in a Node
+     * process this extension can only reach over HTTP. The Settings screen does
+     * this itself when a row changes; an import applied *here*, minutes later
+     * and with nobody on that screen, has no other path.
+     *
+     * Only when the file actually named one. A push for an import that touched
+     * none of the three would overwrite a hand-edited `~/.flowsnap/config.json`
+     * for nothing.
+     */
+    if (applied.value === null) return;
+    if (!Object.keys(applied.value.overrides).some(isMachineKey)) return;
+
+    const delivery = await deliverMachineSettings();
+    // Not fatal, and not silent: the server is usually not running, and the
+    // Settings screen offers the retry beside the row.
+    if (!delivery.push.ok) void reportError(delivery.push.error);
+  });
 
   // Clearing also sets recordingActive false, in the same batch as an empty
   // recordedSteps — that is a clear, not a finished recording.
@@ -611,11 +789,28 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
         sendResponse({ ok: false });
         return true;
       }
-      void captureVisibleTab(sender.tab?.windowId).then((captured) => {
-        if (captured.ok) precaptures.set(tabId, { dataUrl: captured.value, at: Date.now() });
-        // Respond either way: the page is holding its recording indicator hidden
-        // until this resolves.
-        sendResponse({ ok: captured.ok });
+      // The recording's frozen quality, and its screenshot switch: a
+      // pre-capture is a screenshot taken early, so it obeys the same answer
+      // the step's own capture would have. Spending a rate-limited capture on a
+      // recording that will not use it is the one cost switching screenshots
+      // off is for.
+      void loadRecordingSettings().then((recording) => {
+        if (!recording['screenshots.capture']) {
+          sendResponse({ ok: false });
+          return;
+        }
+        void captureVisibleTab(
+          sender.tab?.windowId,
+          recording['screenshots.quality'],
+          recording['screenshots.minIntervalMs'],
+        ).then(
+          (captured) => {
+            if (captured.ok) precaptures.set(tabId, { dataUrl: captured.value, at: Date.now() });
+            // Respond either way: the page is holding its recording indicator
+            // hidden until this resolves.
+            sendResponse({ ok: captured.ok });
+          },
+        );
       });
       return true;
     }
@@ -668,8 +863,16 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
       // `sender.url` is Chrome's word for where the message came from; the
       // page's own claim is only the fallback for a frame that has none.
       const pageUrl = sender.url ?? message.pageUrl;
-      void getLocal('reactScripts').then((stored) => {
-        const merged = mergeScripts(stored.ok ? (stored.value.reactScripts ?? {}) : {}, pageUrl, message.urls);
+      // The inventory is a worker-side resource rather than part of a
+      // recording, so the limit is read live — the same answer `enqueueResolve`
+      // gives for the budgets it spends.
+      void Promise.all([getLocal('reactScripts'), loadSettings()]).then(([stored, settings]) => {
+        const merged = mergeScripts(
+          stored.ok ? (stored.value.reactScripts ?? {}) : {},
+          pageUrl,
+          message.urls,
+          settings['react.maxScriptsPerOrigin'],
+        );
         if (!merged.changed) {
           sendResponse({ ok: true });
           return;
@@ -700,7 +903,24 @@ chrome.runtime.onMessage.addListener((message: WorkerRequest, sender, sendRespon
 
     case 'ANNOTATE_SCREENSHOT': {
       const { screenshot, box, dpr } = message;
-      annotateScreenshot(screenshot, box, dpr || 1)
+      /*
+       * The live setting, not the recording's frozen one.
+       *
+       * This is the viewer re-drawing a highlight on a picture the user is
+       * editing now, which is a thing being done now — the freeze is about what
+       * a recording captured, and this is not capture. Loaded per message for
+       * the same reason everything else here is.
+       */
+      loadSettings()
+        .then((settings) =>
+          annotateScreenshot(
+            screenshot,
+            box,
+            dpr || 1,
+            settings['screenshots.quality'],
+            settings['annotation.stroke'],
+          ),
+        )
         .then((annotated) => sendResponse({ screenshot: annotated }))
         .catch(() => sendResponse({ screenshot: null }));
       return true;

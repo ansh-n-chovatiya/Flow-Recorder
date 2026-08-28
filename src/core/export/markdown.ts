@@ -7,7 +7,7 @@
  */
 
 import { isStableSelector } from '../selector/index.js';
-import { compactBody } from '../schema/index.js';
+import { compactBody, type BodyLimits } from '../schema/index.js';
 import { flowHost, urlPath } from '../flow/index.js';
 import {
   formatSource,
@@ -17,6 +17,7 @@ import {
 } from '../react/attribution.js';
 import { CAPPED_ID } from '../react/table.js';
 import type { ComponentSource, ExportOptions, FlowReact, Step } from '../../shared/types.js';
+import { MAX_CONSOLE_ENTRIES, MAX_RESPONSE_BODY } from '../../shared/constants.js';
 
 /**
  * How a step's screenshot is referenced.
@@ -30,17 +31,46 @@ export type ImageStrategy =
   | { kind: 'file'; names: (string | null)[] }
   | { kind: 'none' };
 
+/**
+ * The limits one document is rendered under.
+ *
+ * `BodyLimits` is what `compactBody` reads — whether a body is summarised, and
+ * above what size. The two added here are the walkthrough's own density: how
+ * much of a response body it quotes, and how many console entries one step
+ * prints. They travel together because they are one answer to one question —
+ * *how much of this recording ends up in front of a reader* — and because they
+ * arrive together: all four are keys in a flow's own `settings` stamp, and both
+ * the extension's export and the MCP server derive this object from it.
+ *
+ * Every field is optional and every reader falls back to the constant beside
+ * it. A flow recorded and rendered at the defaults carries no stamp at all, and
+ * `undefined` has to mean "the shipped answer" rather than "nothing".
+ *
+ * `core/` still knows nothing about the field table: `features/settings/
+ * render.ts` builds this from resolved settings, on both sides of the wire.
+ */
+export interface RenderLimits extends BodyLimits {
+  /** `mcp.maxResponseBody` — how much of one response body the walkthrough quotes. */
+  readonly responseBody?: number;
+  /** `mcp.maxConsoleEntries` — how many errors and warnings one step prints. */
+  readonly consoleEntries?: number;
+}
+
 /*
  * How much page-derived text each slot is worth.
  *
- * Local rather than in `shared/constants`: nothing outside this renderer has an
- * opinion about how long a response body may be in a *document*, and the JSON
- * export deliberately keeps the full one.
+ * These two stay local: nothing outside this renderer has an opinion about how
+ * long a *request* body may be in a document, or how much of one console line is
+ * worth quoting, and the JSON export deliberately keeps the full one.
  */
 const MAX_REQUEST_BODY = 150;
-const MAX_RESPONSE_BODY = 800;
 const MAX_CONSOLE_MESSAGE = 200;
-const MAX_CONSOLE_ENTRIES = 5;
+
+/*
+ * The other two are settings — the walkthrough's density is a real preference,
+ * so they live in `shared/constants` where `features/settings/fields.ts` can
+ * import them as its defaults instead of retyping the numbers.
+ */
 
 /**
  * Cut to `limit`, and say so.
@@ -134,6 +164,7 @@ function appendStep(
   image: string | null,
   opts: Partial<ExportOptions>,
   components: Record<string, ComponentSource>,
+  limits: RenderLimits | undefined,
 ): string {
   /*
    * `action` is page text: `accessibleName()` is `innerText.trim().slice(0,80)`,
@@ -209,6 +240,18 @@ function appendStep(
    */
   if (image) {
     lines.push(`![${step.screenshotImported ? `${n} — added by hand` : n}](${image})`);
+  } else if (step.screenshotOmitted) {
+    /*
+     * Nothing may make a recording silently worse.
+     *
+     * A step with no image is otherwise indistinguishable from a step whose
+     * image was left out of this export, and both are indistinguishable from a
+     * page that rendered nothing. The recorder wrote down which it was; this is
+     * where a reader finds out. `inlineCode` because the reason is written by
+     * the recorder but travels through storage, and a document's structure must
+     * not depend on a string that could be edited.
+     */
+    lines.push(`🚫 no screenshot — ${inlineCode(step.screenshotOmitted)}`);
   }
 
   if (step.networkCalls?.length && opts.network !== false) {
@@ -220,10 +263,11 @@ function appendStep(
       if (call.requestBody) {
         const body = truncate(
           flatten(
-            compactBody(call.requestBody, {
-              truncated: call.requestBodyTruncated,
-              bytes: call.requestBodyBytes,
-            }) ?? '',
+            compactBody(
+              call.requestBody,
+              { truncated: call.requestBodyTruncated, bytes: call.requestBodyBytes },
+              limits,
+            ) ?? '',
           ),
           MAX_REQUEST_BODY,
         );
@@ -235,11 +279,12 @@ function appendStep(
         // characters of its own content per line to the indent. The indent is
         // gone as well — it is what let an interior ``` line up as a closer.
         const body = truncate(
-          compactBody(call.responseBody, {
-            truncated: call.responseBodyTruncated,
-            bytes: call.responseBodyBytes,
-          }) ?? '',
-          MAX_RESPONSE_BODY,
+          compactBody(
+            call.responseBody,
+            { truncated: call.responseBodyTruncated, bytes: call.responseBodyBytes },
+            limits,
+          ) ?? '',
+          limits?.responseBody ?? MAX_RESPONSE_BODY,
         );
         const fence = fenceFor(body);
         lines.push('  ↳ res:');
@@ -253,15 +298,24 @@ function appendStep(
   // Console: only errors and warnings. `log`/`info` are noise for an AI.
   if (step.consoleLogs?.length && opts.logs !== false) {
     const all = step.consoleLogs.filter((log) => log.level === 'error' || log.level === 'warn');
-    const notable = all.slice(0, MAX_CONSOLE_ENTRIES);
-    if (notable.length) {
+    const notable = all.slice(0, limits?.consoleEntries ?? MAX_CONSOLE_ENTRIES);
+    if (all.length) {
       lines.push('');
       for (const log of notable) {
         const text = truncate(flatten(log.args.join(' ')), MAX_CONSOLE_MESSAGE);
         lines.push(`⚠ \`[${log.level}]\` ${inlineCode(text)}`);
       }
-      // Six errors on one step reading as five is a different story about the
-      // page than six is, so the cap says what it swallowed.
+      /*
+       * Six errors on one step reading as five is a different story about the
+       * page than six is, so the cap says what it swallowed.
+       *
+       * The guard above is on `all`, not `notable`, because the cap is a
+       * setting now. At the shipped 5 the two are the same test; at 0 they are
+       * not, and guarding on `notable` made a step with seven errors print
+       * nothing at all — a clean-looking step, which is the one thing a
+       * setting may never quietly produce. The header names the cap; this line
+       * is what says the cap bit *here*.
+       */
       if (all.length > notable.length) lines.push(`⚠ … +${all.length - notable.length} more`);
     }
   }
@@ -337,9 +391,11 @@ export function renderStep(
   image: string | null,
   options: Pick<Partial<ExportOptions>, 'network' | 'logs'> = {},
   components: Record<string, ComponentSource> = {},
+  /** What this document is rendered under — see `RenderLimits`. */
+  limits?: RenderLimits,
 ): { lines: string[]; path: string } {
   const lines: string[] = [];
-  const path = appendStep(lines, step, n, prevPath, image, options, components);
+  const path = appendStep(lines, step, n, prevPath, image, options, components, limits);
   return { lines, path };
 }
 
@@ -365,6 +421,25 @@ export interface MarkdownOptions extends Omit<Partial<ExportOptions>, 'images' |
    * the per-step ids are unreadable without it. The caller decides; this renders.
    */
   react?: FlowReact;
+  /**
+   * The body rules and walkthrough caps this document is built under — see
+   * `RenderLimits`.
+   */
+  limits?: RenderLimits;
+  /**
+   * The flow's settings stamp, already turned into sentences.
+   *
+   * Lines, not the stamp itself: this module is bundled into the MCP server and
+   * knows nothing about the field table, so the caller — which does — describes
+   * the stamp and hands over the words. `features/settings/stamp.ts` is where
+   * that wording lives, and it is the only place it lives, so the walkthrough a
+   * tool returns and the `flow.md` beside it cannot describe one recording two
+   * different ways.
+   *
+   * Empty or absent means the flow was recorded at the defaults, and the header
+   * says nothing — which is the honest reading and the cheap one.
+   */
+  settings?: readonly string[];
 }
 
 /** Render a flow as Markdown. */
@@ -401,6 +476,19 @@ export function exportToMarkdown(steps: Step[], options: MarkdownOptions = {}): 
       .filter(Boolean)
       .join(' · '),
   );
+  /*
+   * A flow records the settings it was made under.
+   *
+   * Directly under the date and the step count, because it is the same kind of
+   * fact — *what this document is* — and because a reader who meets a flow with
+   * no screenshots needs it before the first step, not after it. Absent for a
+   * recording made at the defaults, which is almost all of them.
+   */
+  if (options.settings?.length) {
+    lines.push('');
+    lines.push(`Recorded with non-default settings: ${options.settings.join(' · ')}`);
+  }
+
   lines.push('');
   lines.push(
     strategy.kind === 'file'
@@ -416,7 +504,7 @@ export function exportToMarkdown(steps: Step[], options: MarkdownOptions = {}): 
   const components = options.react?.components ?? {};
   list.forEach((step, i) => {
     const image = imageRef(step, i, strategy);
-    prevPath = appendStep(lines, step, i + 1, prevPath, image, opts, components);
+    prevPath = appendStep(lines, step, i + 1, prevPath, image, opts, components, options.limits);
   });
 
   if (options.react) appendComponents(lines, options.react, list);

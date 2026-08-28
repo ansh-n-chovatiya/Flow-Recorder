@@ -6,7 +6,6 @@
  * tests/popup-view.test.ts, so `main.ts` is left with nothing but rendering.
  */
 
-import { ERROR_TTL_MS, WARN_STEPS } from '../../shared/constants.js';
 import type { Preflight } from '../../features/recording/preflight.js';
 import type { RecordingState, Step, StoredError } from '../../shared/types.js';
 
@@ -24,6 +23,25 @@ export interface PopupInput {
   usedBytes: number | null;
   lastError: StoredError | null;
   now: number;
+  /**
+   * The step count this recording warns at — the frozen `recording.warnSteps`,
+   * passed in rather than read here.
+   *
+   * Settings are frozen for the duration of a recording, and this number is
+   * advice *about the recording in progress*: a threshold that moved under a
+   * running recording would tell the user their flow had become long because
+   * they had opened Settings, not because they had recorded anything.
+   */
+  warnSteps: number;
+  /**
+   * `ui.errorTtlMs` — how recent a stored failure has to be to interrupt.
+   *
+   * An input rather than an import, for the reason `warnSteps` is one: this
+   * module is pure and is driven directly by its tests, and a value read here
+   * would be the compiled-in default whatever the user had chosen. Live, not
+   * frozen — "is this failure still worth mentioning" is a question about now.
+   */
+  errorTtlMs: number;
 }
 
 export interface NoticeView {
@@ -44,7 +62,7 @@ export interface LiveView {
   /** `null` when the start time is unknown — an older recording, or a reload. */
   elapsedMs: number | null;
   count: number;
-  /** Past WARN_STEPS: advice about export weight, not a countdown to a cap. */
+  /** Past `warnSteps`: advice about export weight, not a countdown to a cap. */
   long: boolean;
   lastAction: string | null;
   lastAgoMs: number | null;
@@ -87,8 +105,8 @@ export interface PopupView {
  * A stored failure outranks everything else the popup could say — it is usually
  * why the user opened it — but only while it is recent.
  */
-function errorNotice(error: StoredError | null, now: number): NoticeView | null {
-  if (!error || now - error.at > ERROR_TTL_MS) return null;
+function errorNotice(error: StoredError | null, now: number, ttlMs: number): NoticeView | null {
+  if (!error || now - error.at > ttlMs) return null;
   return {
     tone: error.code === 'STORAGE_QUOTA' ? 'danger' : 'warn',
     title: error.code === 'STORAGE_QUOTA' ? 'The disk is full' : "That didn't save",
@@ -117,14 +135,14 @@ function flowView(steps: Step[]): FlowView | null {
 }
 
 function liveView(input: PopupInput): LiveView {
-  const { steps, now, startedAt, recording } = input;
+  const { steps, now, startedAt, recording, warnSteps } = input;
   const last = steps[steps.length - 1];
 
   return {
     paused: recording === 'paused',
     elapsedMs: startedAt == null ? null : Math.max(0, now - startedAt),
     count: steps.length,
-    long: steps.length >= WARN_STEPS,
+    long: steps.length >= warnSteps,
     lastAction: last?.action ?? null,
     lastAgoMs: last ? Math.max(0, now - last.timestamp) : null,
   };
@@ -147,7 +165,7 @@ export function derivePopupView(input: PopupInput): PopupView {
   const { preflight, recording, steps, lastError, now, usedBytes } = input;
 
   const storage = storageView(usedBytes);
-  const error = errorNotice(lastError, now);
+  const error = errorNotice(lastError, now, input.errorTtlMs);
 
   // A live recording follows the user across tabs, so it outranks whatever the
   // active tab happens to be — including a chrome:// page they just switched to.

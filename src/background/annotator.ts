@@ -6,7 +6,6 @@
  * runtime with an error that looks nothing like the cause.
  */
 
-import { ANNOTATION_FILL, ANNOTATION_STROKE, SCREENSHOT_QUALITY } from '../shared/constants.js';
 import type { BoundingBox } from '../shared/types.js';
 
 /** Chunk size for base64 encoding; larger blows the argument limit of `apply`. */
@@ -14,6 +13,29 @@ const CHUNK = 0x8000;
 
 /** Padding around the highlight box, in CSS pixels. */
 const BOX_PAD = 4;
+
+/** How much of the stroke colour the wash inside the box is worth. */
+const FILL_ALPHA = 0.08;
+
+/**
+ * The wash inside the highlight box: the stroke colour, at 8% alpha.
+ *
+ * Derived, never configured. The *stroke* is a setting because red is
+ * invisible on a red error banner; a fill that stayed red while the stroke went
+ * green would be a green box with a red middle, and a second colour control
+ * would only let somebody produce that on purpose by accident. Phase 3 ruled
+ * this explicitly and asked whoever wired `annotation.stroke` to derive the
+ * fill in the same change. This is that.
+ *
+ * `resolve()` guarantees `#RRGGBB` — the field carries the pattern, and a value
+ * that fails it falls back to the default rather than reaching here — so the
+ * parse is total. The `?? 0` is for a caller outside the mechanism, which is a
+ * thing only a test can be.
+ */
+export function fillFor(stroke: string): string {
+  const [r, g, b] = [1, 3, 5].map((at) => Number.parseInt(stroke.slice(at, at + 2), 16) || 0);
+  return `rgba(${r}, ${g}, ${b}, ${FILL_ALPHA})`;
+}
 
 async function blobToDataUrl(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -106,6 +128,19 @@ export async function annotateScreenshot(
   dataUrl: string,
   box: BoundingBox | null,
   dpr: number,
+  /**
+   * The JPEG quality to re-encode at — the same the capture was taken at, so
+   * annotating cannot quietly cost or add quality the recording never chose.
+   * Required, and passed by the caller: a value read at import time here would
+   * be the compiled-in default forever, whatever the user had set.
+   */
+  quality: number,
+  /**
+   * The highlight colour — `annotation.stroke`, and the fill is derived from
+   * it. Passed for the same reason `quality` is: a value read at import time
+   * would be the compiled-in red forever, whatever the user had set.
+   */
+  stroke: string,
   scroll?: ScrollDelta | null,
 ): Promise<string> {
   if (!box) return dataUrl;
@@ -148,20 +183,17 @@ export async function annotateScreenshot(
     ctx.drawImage(img, 0, 0);
     img.close();
 
-    ctx.fillStyle = ANNOTATION_FILL;
+    ctx.fillStyle = fillFor(stroke);
     ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
 
-    ctx.strokeStyle = ANNOTATION_STROKE;
+    ctx.strokeStyle = stroke;
     ctx.lineWidth = 3 * scale;
     ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
 
     // The same quality the capture itself was taken at. Hardcoding 0.6 here
     // meant re-encoding at a quality the rest of the extension did not agree
     // with, and drifted the moment the constant was tuned.
-    const out = await canvas.convertToBlob({
-      type: 'image/jpeg',
-      quality: SCREENSHOT_QUALITY / 100,
-    });
+    const out = await canvas.convertToBlob({ type: 'image/jpeg', quality: quality / 100 });
     return await blobToDataUrl(out);
   } catch (error) {
     console.warn('FlowSnap: could not annotate the capture', error);

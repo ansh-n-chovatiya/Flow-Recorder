@@ -24,9 +24,22 @@ import {
   savedFlowReactKey,
   type FlowMeta,
   type FlowReact,
+  type Overrides,
   type Step,
 } from '../../shared/types.js';
-import { makeThumbnail, thumbnailSource } from './thumbnail.js';
+import { readRecordingStamp } from '../settings/recording.js';
+import { makeThumbnail, thumbnailSource, type ThumbnailSize } from './thumbnail.js';
+import { load as loadSettings } from '../settings/index.js';
+import type { Settings } from '../settings/fields.js';
+
+/** The three `thumbnails.*` settings, as the drawing function wants them. */
+function thumbnailSize(settings: Settings): ThumbnailSize {
+  return {
+    width: settings['thumbnails.width'],
+    height: settings['thumbnails.height'],
+    quality: settings['thumbnails.quality'],
+  };
+}
 import { dehydrate, hydrate } from './shots.js';
 
 /** A flow and its steps, whether it is the live recording or an archived one. */
@@ -274,6 +287,17 @@ export async function describeFlow(
    * somebody leaves a textarea is work with nothing to show for it.
    */
   thumbnail?: string | null,
+  /**
+   * The settings the recording was frozen at — the stamp.
+   *
+   * Passed in rather than read here, because the two callers mean different
+   * things by it: archiving stamps the recording that has just finished, and
+   * editing a saved flow must carry forward the stamp that flow already has.
+   * Reading the live snapshot in both places would relabel a month-old flow
+   * with the settings of whatever was recorded most recently, which is the one
+   * thing a stamp must never do.
+   */
+  settings?: Overrides,
 ): Promise<FlowMeta> {
   return {
     id,
@@ -282,9 +306,18 @@ export async function describeFlow(
     stepCount: steps.length,
     host: flowHost(steps),
     bytes: approximateBytes(steps),
-    thumbnail: thumbnail === undefined ? await makeThumbnail(steps) : thumbnail,
+    thumbnail:
+      thumbnail === undefined
+        ? // Live, and read per save: a thumbnail is drawn when a flow is
+          // archived, not while it is being recorded, so it is not part of what
+          // the recording was made under.
+          await makeThumbnail(steps, thumbnailSize(await loadSettings()))
+        : thumbnail,
     counts: countByType(steps),
     errorCount: countFailures(steps),
+    // Absent when the recording used the defaults, which is what a reader
+    // should see: nothing to say rather than an empty object.
+    ...(settings && Object.keys(settings).length ? { settings } : {}),
   };
 }
 
@@ -320,7 +353,18 @@ export async function saveAsFlow(name: string, steps: Step[]): Promise<Result<Fl
 
   const id = `flow_${Date.now()}`;
   const numbered = renumber(steps);
-  const meta = await describeFlow(id, name, numbered, Date.now());
+  // The recording's own snapshot, read before anything else can start a new
+  // one. It is still in local storage: stopping a recording does not clear it,
+  // precisely so archiving — which happens afterwards, from the review tab —
+  // can still say what the flow was made under.
+  const meta = await describeFlow(
+    id,
+    name,
+    numbered,
+    Date.now(),
+    undefined,
+    await readRecordingStamp(),
+  );
 
   await sendToWorker({ type: 'RESOLVE_COMPONENTS', final: true });
   const react = await readCurrentReact(numbered);
@@ -414,6 +458,10 @@ export async function updateFlowSteps(id: string, steps: Step[]): Promise<Result
     numbered,
     existing.createdAt,
     structural ? undefined : (existing.thumbnail ?? null),
+    // Carried forward, never re-read: an edit does not change what the flow was
+    // recorded under. A flow archived before stamps existed keeps none, which
+    // reads correctly as "the defaults of the build that made it".
+    existing.settings,
   );
 
   // The name comes from the fresh entry, not from the snapshot this call opened

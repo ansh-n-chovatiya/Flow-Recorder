@@ -30,6 +30,12 @@ const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const CHAR_TO_INT = new Int16Array(128).fill(-1);
 for (let i = 0; i < B64.length; i++) CHAR_TO_INT[B64.charCodeAt(i)] = i;
 
+/*
+ * Tier 3 — deliberately not configurable. These are the VLQ
+ * encoding defined by the source-map spec, not a tuning choice. A different
+ * mask does not decode maps differently; it decodes them wrongly, and the
+ * result is a plausible file and line that point somewhere else.
+ */
 const VLQ_CONTINUATION = 0b100000;
 const VLQ_VALUE_MASK = 0b011111;
 

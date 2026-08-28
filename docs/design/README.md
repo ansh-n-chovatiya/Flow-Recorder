@@ -1,7 +1,9 @@
 # The design system, and the decisions behind it
 
-`src/ui/styles/tokens.css` is the only authority on colour, type and shape. It is
-authored from [`../DESIGN-BRIEF.md`](../DESIGN-BRIEF.md) §3.
+`src/ui/styles/tokens.css` is the only authority on colour, type and shape. The
+redesign brief it was authored from has since served its purpose and been
+removed, so the palette below is a reading of `tokens.css` rather than a second
+source for it: where the two disagree, the stylesheet wins.
 
 The screens were composed in a Google Stitch export, which has since served its
 purpose and been removed. Two rules survive it, because both were things the

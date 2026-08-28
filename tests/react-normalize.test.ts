@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { normalizeSourcePath } from '../src/core/react/sourcemap.js';
 
 describe('normalizeSourcePath', () => {
-  /** Every row of plan §6.4 — what the bundlers people actually use emit. */
+  /** Every case — what the bundlers people actually use emit. */
   const cases: [string, string, string][] = [
     ['webpack', 'webpack://app/./src/Foo.tsx', 'src/Foo.tsx'],
     ['webpack, no namespace', 'webpack:///./src/index.js', 'src/index.js'],
