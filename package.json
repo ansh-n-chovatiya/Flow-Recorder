@@ -37,6 +37,7 @@
     "lint": "eslint .",
     "lint:tokens": "node scripts/check-tokens.mjs",
     "lint:settings-ui": "node scripts/check-settings-ui.mjs",
+    "lint:graphify": "node scripts/check-graphify.mjs",
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "pretest": "npm run build:mcp && npm run build:settings",
@@ -49,7 +50,7 @@
     "sync-version": "node scripts/sync-version.mjs",
     "version": "npm run sync-version && git add public/manifest.json mcp-server/package.json",
     "package": "npm run verify && node scripts/package.mjs",
-    "verify": "npm run typecheck && npm run lint && npm run lint:tokens && npm run lint:settings-ui && npm run test && npm run build",
+    "verify": "npm run typecheck && npm run lint && npm run lint:tokens && npm run lint:settings-ui && npm run lint:graphify && npm run test && npm run build",
     "build:mcp": "vite build --config vite.mcp.config.ts",
     "build:settings": "node scripts/build-settings.mjs"
   },

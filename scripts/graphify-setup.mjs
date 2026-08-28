@@ -8,12 +8,13 @@
 // again is the documented way to repair a half-configured checkout.
 
 import { execFileSync } from 'node:child_process';
-import { accessSync, constants, existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GRAPH = join(ROOT, 'graphify-out', 'graph.json');
+const REPORT = join(ROOT, 'graphify-out', 'GRAPH_REPORT.md');
 
 const args = process.argv.slice(2);
 const rebuild = args.includes('--rebuild');
@@ -73,7 +74,7 @@ const bin = findGraphify();
 
 if (!bin) {
   if (quiet) {
-    say('graphify not found — run `npm run graphify:setup` after installing it for graph-aware AI sessions.');
+    say('graphify not found — `uv tool install graphifyy` then `npm run graphify:setup` enables graph-aware AI sessions.');
   } else {
     say('graphify is not installed, so the knowledge graph was not built.\n');
     say('It is a Python tool (3.10+) and installs on its own:\n');
@@ -103,13 +104,40 @@ if (existsSync(join(ROOT, '.git'))) {
   step('· git hooks skipped (not a git checkout)');
 }
 
+/**
+ * True when the graph on disk was built from a commit other than HEAD.
+ *
+ * "Present" is not the same as "usable". A clone that committed before the
+ * hooks were installed has a graph describing code that has since moved, and a
+ * stale graph is worse than none: it reads as authoritative. Rebuilding costs a
+ * second, so this errs toward rebuilding whenever it cannot prove freshness.
+ */
+function isStale() {
+  if (!existsSync(REPORT)) return true;
+  try {
+    const built = /^- Built from commit: `([0-9a-f]{7,})`/m.exec(readFileSync(REPORT, 'utf8'));
+    if (!built) return true;
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: ROOT,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    }).trim();
+    return !head.startsWith(built[1]);
+  } catch {
+    // Not a checkout, or no commits yet. Nothing to be stale against.
+    return false;
+  }
+}
+
 if (rebuild || !existsSync(GRAPH)) {
   // AST only: no API key, no network, ~1s on this repo. The semantic pass over
   // docs and images is the part that costs anything, and it is opt-in via
   // `/graphify .` inside an assistant.
   graphify(bin, ['update', '.'], 'knowledge graph built at graphify-out/');
+} else if (isStale()) {
+  graphify(bin, ['update', '.'], 'knowledge graph was stale — rebuilt from HEAD');
 } else {
-  step('· graph already present (npm run graphify:update to refresh)');
+  step('· graph already current with HEAD');
 }
 
 say('\nDone. Claude Code and Antigravity will consult the graph before reading files.');

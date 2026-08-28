@@ -44,6 +44,12 @@ jobs:
       - name: No colour outside the tokens
         run: npm run lint:tokens
 
+      # The graph config works on the machine that made it whether or not it is
+      # committed, so local runs prove nothing. This is the step that notices a
+      # clone would come up without CLAUDE.md or the PreToolUse hook.
+      - name: Graph config is committed
+        run: npm run lint:graphify
+
       # `pretest` builds `mcp-server/core.js` first. It is generated rather than
       # committed, and two suites need it on disk — one spawns the real server,
       # which imports it, and one reads it. Hooked onto `test` rather than added

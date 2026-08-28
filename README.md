@@ -371,25 +371,50 @@ taken from the AST rather than inferred — and both Claude Code and Google
 Antigravity are configured to consult it before they start opening files.
 
 The configuration is committed, so a clone already has it. What a clone cannot
-have is the graph itself or the git hooks, and one command fixes both:
+have is the graph itself (git-ignored) or the git hooks (git never clones
+hooks). One command builds both, and `npm install` already calls it.
 
-```sh
-npm run graphify:setup     # also runs from `npm install`
-```
-
-It needs the graphify CLI, which is a Python tool and installs on its own:
+The catch is ordering. graphify is a Python tool, so npm cannot pull it in —
+install it **first** and a plain `npm install` finishes the job:
 
 ```sh
 uv tool install graphifyy      # or: pipx install graphifyy
+git clone … && cd Flow-Recorder
+npm install                    # builds the graph, installs the hooks
 ```
 
-Without it, `npm install` prints one line and carries on — nothing else in
-FlowSnap depends on the graph.
+Install npm first and the `postinstall` step finds no CLI, prints one line and
+carries on rather than failing your install. Nothing is broken; one command
+catches you up, and it is safe to run any number of times:
+
+```sh
+uv tool install graphifyy
+npm run graphify:setup         # idempotent — repairs a half-configured clone
+```
+
+`npm install --ignore-scripts` skips `postinstall` entirely, so it skips this
+too — the same command is the fix. Nothing else in FlowSnap depends on the
+graph, and a checkout without one still works normally.
 
 Once set up, the graph stays current on its own: a post-commit hook rebuilds it
 after every commit and a post-checkout hook rebuilds it when you switch
 branches. Both run detached, so they never hold up a commit. A rebuild is AST
-only — about a second, offline, no API key, no cost. To refresh by hand:
+only — about a second, offline, no API key, no cost.
+
+Until those hooks exist, though, a graph can fall behind the code it describes,
+and a stale graph is worse than no graph: it reads as authoritative while naming
+symbols by where they used to be. So the assistant is told which it has. The
+`PreToolUse` hook in [`.claude/settings.json`](.claude/settings.json) compares
+the commit the graph was built from against `HEAD` and reports one of three
+states — current, stale, or absent — before any search runs. It is plain
+`/bin/sh` on purpose: an earlier version parsed its input with `python3`, which
+silently did nothing for anyone who installed graphify through `uv` and never
+had `python3` on their `PATH`.
+
+`npm run lint:graphify` (part of `npm run verify`, and its own CI step) checks
+that all of this is *committed* rather than merely present in your working tree
+— the distinction that made the wiring invisible to everyone but its author for
+as long as it went untracked. To refresh by hand:
 
 ```sh
 npm run graphify:update

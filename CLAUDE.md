@@ -13,12 +13,18 @@ cross-module relationship, extracted from the AST rather than guessed.
 **Before grepping or opening source files, read `graphify-out/GRAPH_REPORT.md`.**
 It is the map — god nodes, communities, and the concepts worth knowing about.
 
-If `graphify-out/` is missing, build it (about a second, no API key, offline):
+`graphify-out/` is generated and git-ignored, so a fresh clone has no graph
+until it is built — about a second, no API key, offline:
 
 ```sh
 npm run graphify:setup     # first time: also installs git hooks + agent config
 npm run graphify:update    # afterwards: refresh the graph
 ```
+
+The PreToolUse hook says which of three states this checkout is in before any
+search: graph current, graph **stale**, or no graph at all. Take a stale graph
+at face value at your peril — it names symbols by the location they had at the
+commit it was built from. `graphify update .` costs a second and fixes it.
 
 For questions that cross module boundaries, ask the graph instead of scanning
 files — it traverses real edges, and costs a fraction of the tokens:
@@ -35,6 +41,10 @@ identifier you already know the name of. The graph is for *structure*.
 The graph rebuilds automatically after every commit and on branch switch, via
 the git hooks `npm run graphify:setup` installs. After a large refactor that
 deletes code, `graphify update . --force` overrides the shrink guard.
+
+`npm run lint:graphify` checks that this wiring is committed rather than merely
+present — it is part of `npm run verify`, and it exists because the config once
+ran untracked for weeks while working perfectly on the machine that wrote it.
 
 ## Commands
 
