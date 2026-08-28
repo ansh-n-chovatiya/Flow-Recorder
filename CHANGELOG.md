@@ -6,7 +6,12 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [2.7.0] — 2026-08-28
+
+Three things FlowSnap decided on your behalf and then said nothing about: which
+projects the MCP server was registered for, what a send actually costs the
+assistant that reads it, and how much of the settings page was space reserved
+for things that were not there.
 
 ### Added
 
@@ -27,6 +32,61 @@ follow [semantic versioning][semver].
   user-scope registration for anyone in that folder — so the install can
   genuinely succeed and that one project still run something else. Both are now
   reported, with the line that removes them.
+
+### Fixed
+
+- **The context estimate under the Send button is the walkthrough, rendered.**
+  It used to add up step JSON, plus network JSON if that switch was on, plus
+  console JSON if that one was, and every term of it was wrong in a different
+  direction. Network was counted before `leanCalls` — the compaction that took a
+  15-step flow from 93k tokens to 9k — so the figure quoted the number that
+  change exists to avoid. The walkthrough quotes a bounded slice of a body and
+  prints at most `mcp.maxConsoleEntries` lines a step, so the caps in the flow's
+  own stamp moved the real number and not this one. And screenshots were left out
+  entirely, on the grounds that an image costs nothing until it is opened — true
+  of the image, false of the path printed beside it, so the one switch that
+  changes a send by megabytes moved the token figure by exactly zero, which is
+  how a user learns a number is decorative. It now runs the send's own pipeline —
+  prune, attribute, compact, render — and measures the document `get_flow` will
+  return, so what the dialog prices and what the wire carries cannot drift.
+- **The Screenshots row says what the pictures would cost.** Around 1,500 tokens
+  of vision each, so a nine-shot send is a few hundred tokens of text and about
+  fourteen thousand of images — and the estimate beside it can only ever see the
+  few hundred. Two numbers rather than one sum, because they are not the same
+  promise: the walkthrough is paid the moment the flow is read, an image only if
+  it is opened. On the row rather than in the footer, beside the switch being
+  decided, and not gated on that switch — a row has to be able to say what
+  turning it *on* would cost.
+
+### Changed
+
+- **The settings page stops reserving room for what is not there.** The search
+  field moves into the few hundred empty pixels down the middle of the app bar,
+  which gives the page back a whole row of chrome that was present on every load
+  whether or not anybody was searching; the results line — `4 settings`, the
+  filter chips, `Reset all` — keeps its full-width strip, which now appears only
+  when there is something to say in it. The reset button leaves the control row,
+  where it had held a 28px lane open beside all seventy-three settings for a
+  button that is inert on nearly all of them, and hangs under the control it
+  undoes: it appears where the eye already is, and nothing else in the row moves.
+- **The enum control is a listbox FlowSnap draws.** Chrome renders a `<select>`
+  as an operating-system menu — the platform's font, radius and tick, opened
+  *over* the trigger rather than under it, and unstyleable in every part — so on
+  a page whose whole claim is that seventy-three rows are the same object, it was
+  the one control that came from somewhere else. Same roles a native select
+  reports, same keys it answers to, same typeahead, and it opens upward when the
+  row is near the bottom of the page.
+- **A number wears its unit inside the field**, so `500 steps` reads as one
+  control rather than a box with a word floating after it. The field takes its
+  own border to do that, which also retires the platform spinner that sat on top
+  of the digits; ↑/↓ still step the value.
+- **The `{}` view is a pane layout rather than a document.** Two two-line
+  descriptions above the editors came to a hundred and thirty pixels of ragged
+  text saying what the panes are; that is now one line above both and a two-word
+  caption inside each — `read-only` on the left, `edited` on the right while it
+  differs from what is stored. The panes are as tall as the window and scroll
+  their own text, so reading the bottom of the eighty-two-line defaults pane no
+  longer scrolls the Apply button off screen.
 
 ### Removed
 

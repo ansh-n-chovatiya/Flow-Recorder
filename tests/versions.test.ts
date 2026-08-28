@@ -15,6 +15,8 @@ interface PackageFile {
   private?: boolean;
   bin?: Record<string, string>;
   files?: string[];
+  /** A lockfile states its own package's version here as well as at the top. */
+  packages?: Record<string, { version?: string }>;
 }
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,11 +26,26 @@ const read = (file: string) =>
 const pkg = read('package.json');
 const manifest = read('public/manifest.json');
 const server = read('mcp-server/package.json');
+const serverLock = read('mcp-server/package-lock.json');
 
 describe('versions', () => {
   it('agree across package.json, the manifest and the MCP server', () => {
     expect(manifest.version).toBe(pkg.version);
     expect(server.version).toBe(pkg.version);
+  });
+
+  /**
+   * The fourth and fifth places, and the two nothing was watching.
+   *
+   * `mcp-server/` is a second package with its own lockfile, so `npm version`
+   * never touches it — it sat at 2.4.0 through two releases while the package
+   * beside it published correctly, which is drift that costs nothing until the
+   * day somebody reads the lockfile to find out what shipped. `sync-version`
+   * writes both fields now; this is what notices if it stops.
+   */
+  it('agree in the MCP server lockfile, which npm version does not reach', () => {
+    expect(serverLock.version).toBe(pkg.version);
+    expect(serverLock.packages?.['']?.version).toBe(pkg.version);
   });
 });
 
