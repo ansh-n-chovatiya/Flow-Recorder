@@ -43,6 +43,7 @@ import { icon, type IconName } from '../icons.js';
 import {
   DEFAULTS_PANE,
   OVERRIDES_PANE,
+  PANES_NOTE,
   UNKNOWN_LINE_NOTE,
   type ImportView,
 } from './file-view.js';
@@ -137,6 +138,14 @@ export type MenuEntry =
 export interface AppBarOptions {
   readonly title: string;
   readonly onBack: () => void;
+  /**
+   * The one control that belongs in the middle of the bar, if there is one.
+   *
+   * A slot rather than a search box, because the bar should not know what a
+   * search box is — it knows there is a lead, a centre and a set of actions, and
+   * `settingsPage` decides that the centre is where the search field lives.
+   */
+  readonly centre?: HTMLElement;
   /** The `{}` JSON toggle. A toggle, so it says which of the two it is on. */
   readonly json: {
     readonly label: string;
@@ -164,14 +173,35 @@ interface AppBar {
  */
 export function appBar(options: AppBarOptions): AppBar {
   const bar = make('header', 'appbar');
-  const inner = make('div', 'appbar__inner');
 
+  /*
+   * Three zones, not a row of things.
+   *
+   * With a centre slot the bar becomes a grid — lead, centre, actions — because
+   * the centre has to be centred *in the bar*, and a flex row can only centre it
+   * in whatever space the two groups leave. Those groups are not the same width
+   * (`← Flows` and the mark against two buttons), so the field would sit visibly
+   * off to one side, which is worse than not centring it at all.
+   *
+   * The lead is wrapped for the same reason: a grid needs three children to have
+   * three columns, and the back button and the brand are one thing.
+   */
+  const inner = make('div', options.centre ? 'appbar__inner appbar__inner--split' : 'appbar__inner');
+
+  const lead = make('div', 'appbar__lead');
   const back = labelledButton('arrow-left', 'Flows', 'btn btn--ghost', options.onBack);
-  inner.append(back);
+  lead.append(back);
 
   const brand = make('div', 'brand');
   brand.append(mark(), make('h1', 'brand__name', options.title));
-  inner.append(brand);
+  lead.append(brand);
+  inner.append(lead);
+
+  if (options.centre) {
+    const centre = make('div', 'appbar__centre');
+    centre.append(options.centre);
+    inner.append(centre);
+  }
 
   const actions = make('div', 'appbar__actions');
 
@@ -289,22 +319,41 @@ export interface SearchHandlers {
 }
 
 interface SearchRow {
-  readonly element: HTMLElement;
+  /** The box with the magnifier in it. Lives in the middle of the app bar. */
+  readonly field: HTMLElement;
+  /** What the query found, and the chips. Its own strip, under the bar. */
+  readonly results: HTMLElement;
   readonly input: HTMLInputElement;
   readonly update: (state: SearchState) => void;
 }
 
 /**
- * The search row. Sticky, full width, and the primary control on the screen.
+ * The search. Two pieces, in two places, because they are wanted at different
+ * times.
+ *
+ * It used to be one band under the app bar: a full-width field with the results
+ * line under it, sixty-four pixels of chrome on every load whether or not
+ * anybody was searching. Two things were wrong with that. The field was as wide
+ * as the window for a query like `maxSteps` — a control out of all proportion to
+ * what is typed into it, which reads as a band across the page rather than as a
+ * box you type in. And it was the *second* row of chrome under a bar that had a
+ * few hundred empty pixels down its middle.
+ *
+ * So the field moves into that empty middle, capped at a width a query actually
+ * needs, which is where a settings page is expected to keep it. §4's point
+ * survives the move — it is still the widest control on the screen and the first
+ * thing under the cursor — and the page gets its sixty-four pixels back.
+ *
+ * The results line does not go with it. `4 settings`, the filter chips and
+ * `Reset all 1 shown` are a sentence, they only exist while a query is on, and
+ * a sentence does not fit in a bar. It keeps the full-width strip, which now
+ * appears only when there is something to say in it.
  *
  * Built once and updated, rather than rebuilt: the field is where the caret is
  * while the rest of the page is re-rendering under it, and an input element that
  * is replaced between keystrokes loses both the caret and the composition.
  */
 export function searchRow(state: SearchState, handlers: SearchHandlers): SearchRow {
-  const element = make('div', 'search');
-  const frame = make('div', 'search__frame');
-
   const field = make('div', 'search__field');
   const glass = icon('search', 'icon search__icon');
   const input = make('input', 'search__input');
@@ -316,13 +365,15 @@ export function searchRow(state: SearchState, handlers: SearchHandlers): SearchR
   input.addEventListener('input', () => handlers.onQuery(input.value));
   field.append(glass, input);
 
+  const element = make('div', 'search');
+  const frame = make('div', 'search__frame');
   const results = make('div', 'search__results');
   const count = make('span', 'search__count');
   const chips = make('div', 'search__chips');
   const actions = make('div', 'search__actions');
   results.append(count, chips, actions);
 
-  frame.append(field, results);
+  frame.append(results);
   element.append(frame);
 
   const update = (next: SearchState): void => {
@@ -330,6 +381,16 @@ export function searchRow(state: SearchState, handlers: SearchHandlers): SearchR
     // selection in Chrome, which eats a double-click on the field's own text.
     if (input.value !== next.text) input.value = next.text;
 
+    /*
+     * The strip, not the line inside it.
+     *
+     * The two used to be the same element, because the band around it was also
+     * the field's. Now the band is the strip's alone: leaving it in the document
+     * with an empty line inside would put a hairline and its padding under the
+     * app bar on every page load, which is most of what moving the field out was
+     * for.
+     */
+    element.hidden = next.results === null;
     results.hidden = next.results === null;
     if (!next.results) {
       chips.replaceChildren();
@@ -360,7 +421,7 @@ export function searchRow(state: SearchState, handlers: SearchHandlers): SearchR
   };
 
   update(state);
-  return { element, input, update };
+  return { field, results: element, input, update };
 }
 
 function filterChip(filter: Filter, onRemove: () => void): HTMLElement {
@@ -480,7 +541,10 @@ export function settingRow(field: Field, state: RowState, handlers: RowHandlers)
 
   const unit = make('span', 'setting-row__unit', built.unit);
   unit.hidden = built.unit === '';
-  control.append(unit);
+  // A number wears its unit inside the field, so `500 steps` reads as one
+  // control rather than a box with a word floating after it; every other type
+  // has no unit and the empty span stays where it always was.
+  (built.unitHost ?? control).append(unit);
 
   const action = labelledButton(
     state.action?.icon ?? 'refresh-cw',
@@ -492,15 +556,29 @@ export function settingRow(field: Field, state: RowState, handlers: RowHandlers)
   action.disabled = state.action?.busy === true || state.disabled;
   control.append(action);
 
-  const reset = iconButton(
-    'rotate-ccw',
-    `Reset ${field.title} to its default`,
-    'btn btn--ghost btn--icon btn--compact setting-row__reset',
-    () => handlers.onReset(field),
+  /*
+   * §4's reset — inside the control group, and out of the layout.
+   *
+   * It was the last item in this flex row, `visibility: hidden` until the row
+   * was hovered. That reserved a 28px lane beside all seventy-three controls
+   * for a button that can only ever do something on the handful that are
+   * modified, and the reserved lane was the page: every value stopped the same
+   * distance short of the right edge with a column of nothing beside it.
+   *
+   * Taking it out of the flow costs nothing on the rows that never show it and
+   * moves nothing on the rows that do. It is absolutely positioned under the
+   * control it undoes, in the band the description never reaches — so the
+   * moment a value is changed the button appears there, and not one pixel of
+   * the row it appeared in has moved.
+   *
+   * Still in the DOM at rest, disabled, like every other slot: the row is the
+   * same object whether or not anything in it has been changed.
+   */
+  const reset = labelledButton('rotate-ccw', 'Reset', 'setting-row__reset', () =>
+    handlers.onReset(field),
   );
-  // Present for every row so the hover affordance is uniform; hidden only where
-  // pressing it could not do anything.
-  reset.hidden = state.disabled && !state.modified;
+  reset.setAttribute('aria-label', `Reset ${field.title} to its default`);
+  reset.title = `Reset ${field.title} to its default`;
   reset.disabled = !state.modified;
   control.append(reset);
 
@@ -527,6 +605,13 @@ interface BuiltControl {
   readonly nodes: readonly HTMLElement[];
   /** Rendered beside the input; `''` for the types that have no unit. */
   readonly unit: string;
+  /**
+   * Where the unit span is appended, when the control wants it inside itself
+   * rather than after it. One caller — the number field, which owns its unit —
+   * and it is a slot on the primitive rather than a special case in the row, so
+   * the next type that wants the same has it already.
+   */
+  readonly unitHost?: HTMLElement;
 }
 
 /**
@@ -557,7 +642,21 @@ function buildControl(
     }
 
     case 'number': {
-      const input = make('input', 'input input--mono input--number');
+      /*
+       * A field, not a bare `<input type=number>`.
+       *
+       * The bare input drew the platform's spinner inside the box: two stacked
+       * arrows in the OS's own style, which on this page is the one control
+       * that did not look like it belonged to the product — and which sat on
+       * top of the digits at this width. The shell keeps everything the input
+       * was doing, hides the spinner, and takes the border and the focus ring
+       * itself, so the unit can live inside the same box as the number.
+       *
+       * ↑/↓ still step the value: that is the input's behaviour, not the
+       * spinner's, and it survives `appearance: none`.
+       */
+      const wrap = make('div', 'numfield');
+      const input = make('input', 'numfield__input');
       input.type = 'number';
       input.value = String(state.value);
       input.min = String(field.min);
@@ -617,22 +716,12 @@ function buildControl(
         });
       });
 
-      return { nodes: [input], unit: field.unit ?? '' };
+      wrap.append(input);
+      return { nodes: [wrap], unit: field.unit ?? '', unitHost: wrap };
     }
 
     case 'enum': {
-      const select = make('select', 'select');
-      select.disabled = state.disabled;
-      select.dataset.focus = field.key;
-      select.setAttribute('aria-label', field.title);
-      for (const option of field.options) {
-        const node = make('option', undefined, optionLabel(option));
-        node.value = option;
-        select.append(node);
-      }
-      select.value = typeof state.value === 'string' ? state.value : field.default;
-      select.addEventListener('change', () => handlers.onCommit(field, select.value, null));
-      return { nodes: [select], unit: '' };
+      return { nodes: [select(field, state, handlers)], unit: '' };
     }
 
     case 'string': {
@@ -675,6 +764,191 @@ function buildControl(
       return { nodes: [wrap], unit: '' };
     }
   }
+}
+
+/**
+ * The enum control: a listbox this file draws, not the one the browser draws.
+ *
+ * A `<select>` is the correct element and it was the wrong control here. Chrome
+ * renders its open state as an operating-system menu — the platform's font, the
+ * platform's corner radius, the platform's tick — positioned *over* the trigger
+ * rather than under it, so choosing a theme covered up the row you were reading
+ * and looked like it came from a different application. None of that is
+ * styleable, which is why every design system that cares ships its own.
+ *
+ * So: a button that says what is chosen, and a panel of options under it. The
+ * roles are the ones a native select reports (`combobox` over `listbox` over
+ * `option`), the keys are the ones a native select answers to, and the panel
+ * closes on Escape, on Tab, and on a press anywhere outside it.
+ *
+ * The listener for that last one is added when the panel opens and removed when
+ * it closes, never at build time. The list is rebuilt wholesale on every render
+ * — a keystroke in the search box is a new set of rows — and a document-level
+ * listener registered per control would accumulate one copy per render, each
+ * holding a detached row alive. `close` is the only way out of the open state,
+ * and it is what removes it.
+ */
+function select(
+  field: Extract<Field, { readonly type: 'enum' }>,
+  state: RowState,
+  handlers: RowHandlers,
+): HTMLElement {
+  const chosen = typeof state.value === 'string' ? state.value : field.default;
+
+  const wrap = make('div', 'select');
+  wrap.dataset.open = 'false';
+  // Which way the panel opens. Decided when it opens, from the room actually
+  // below the trigger — a row near the bottom of a long page has none.
+  wrap.dataset.drop = 'down';
+
+  const trigger = make('button', 'select__trigger');
+  trigger.type = 'button';
+  trigger.disabled = state.disabled;
+  trigger.dataset.focus = field.key;
+  trigger.setAttribute('role', 'combobox');
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('aria-label', field.title);
+  trigger.append(
+    make('span', 'select__value', optionLabel(chosen)),
+    icon('chevron-down', 'icon select__chevron'),
+  );
+
+  const panel = make('div', 'select__panel');
+  panel.hidden = true;
+  panel.setAttribute('role', 'listbox');
+  panel.setAttribute('aria-label', field.title);
+
+  /* Anywhere outside closes it — including a press on a row that no longer
+   * exists, which is what the `isConnected` arm is for: a render that replaced
+   * this control while its panel was open leaves the listener behind, and this
+   * is where it takes itself off. */
+  const onOutside = (event: Event): void => {
+    if (wrap.isConnected && wrap.contains(event.target as Node)) return;
+    close(false);
+  };
+
+  function open(): void {
+    if (!panel.hidden || trigger.disabled) return;
+    panel.hidden = false;
+    wrap.dataset.open = 'true';
+    trigger.setAttribute('aria-expanded', 'true');
+
+    // Measured after it is visible, because the panel's height is the thing
+    // being asked about and a hidden element does not have one.
+    const box = trigger.getBoundingClientRect();
+    const height = panel.offsetHeight;
+    const gap = 12;
+    const fitsBelow = window.innerHeight - box.bottom >= height + gap;
+    wrap.dataset.drop = fitsBelow || box.top < height + gap ? 'down' : 'up';
+
+    document.addEventListener('pointerdown', onOutside, true);
+    (options.find((option) => option.dataset.value === chosen) ?? options[0])?.focus();
+  }
+
+  function close(refocus = true): void {
+    if (panel.hidden) return;
+    panel.hidden = true;
+    wrap.dataset.open = 'false';
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', onOutside, true);
+    if (refocus) trigger.focus();
+  }
+
+  const options = field.options.map((option) => {
+    const item = make('button', 'select__option');
+    item.type = 'button';
+    // Reached with the arrow keys, not with Tab: the panel is one stop.
+    item.tabIndex = -1;
+    item.dataset.value = option;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(option === chosen));
+    item.append(
+      icon('check', 'icon select__check'),
+      make('span', 'select__label', optionLabel(option)),
+    );
+    item.addEventListener('click', () => {
+      /*
+       * Back to the trigger before the commit, not after it.
+       *
+       * The commit rebuilds the list, and `focusKey` reads `document.activeElement`
+       * to decide what to put focus back on. The option that was just pressed is
+       * about to stop existing and carries no `data-focus`, so leaving focus on
+       * it means a keyboard user picks a theme and lands at the top of the
+       * document. Focusing the trigger first makes the row the thing that is
+       * restored, which is where they already were.
+       */
+      close();
+      handlers.onCommit(field, option, null);
+    });
+    panel.append(item);
+    return item;
+  });
+
+  trigger.addEventListener('click', () => {
+    if (panel.hidden) open();
+    else close();
+  });
+
+  wrap.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (panel.hidden) return;
+      // Otherwise the page's own Escape handler reads it as "leave settings".
+      event.stopPropagation();
+      close();
+      return;
+    }
+
+    // Focus goes back to the trigger and Tab's own default carries on from
+    // there, so the next stop is the control after this one rather than the top
+    // of the page — which is where hiding the focused option would leave it.
+    if (event.key === 'Tab') {
+      close();
+      return;
+    }
+
+    const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+    if (step === 0 && event.key !== 'Home' && event.key !== 'End') return;
+
+    // Arrows move through the options rather than scrolling the page under them.
+    event.preventDefault();
+    if (panel.hidden) {
+      open();
+      return;
+    }
+
+    const at = options.indexOf(document.activeElement as HTMLButtonElement);
+    const to =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? options.length - 1
+          : Math.min(options.length - 1, Math.max(0, at + step));
+    options[to]?.focus();
+  });
+
+  /*
+   * Typeahead, because the control it replaces had it.
+   *
+   * A `<select>` jumps to the next option starting with the letter you press,
+   * and nine editors is exactly the length where somebody types `w` rather than
+   * pressing Down five times. One letter, from wherever the highlight is, so
+   * pressing the same letter again cycles through the options that share it.
+   */
+  wrap.addEventListener('keypress', (event) => {
+    const letter = event.key.toLowerCase();
+    if (letter.length !== 1 || letter === ' ' || event.ctrlKey || event.metaKey) return;
+
+    event.preventDefault();
+    if (panel.hidden) open();
+
+    const from = options.indexOf(document.activeElement as HTMLButtonElement) + 1;
+    const order = [...options.slice(from), ...options.slice(0, Math.max(0, from))];
+    order.find((option) => option.textContent?.trim().toLowerCase().startsWith(letter))?.focus();
+  });
+
+  wrap.append(trigger, panel);
+  return wrap;
 }
 
 /**
@@ -820,7 +1094,7 @@ export function changeList(rows: readonly ChangeRow[]): HTMLElement {
 // ── 8. jsonPane ──────────────────────────────────────────────────────────────
 
 export interface JsonPaneOptions {
-  readonly heading: Heading;
+  readonly title: string;
   /** The defaults pane is read-only: you cannot override what you cannot see. */
   readonly readOnly: boolean;
   /** `data-focus`, so the caret survives a re-render. Absent on the read-only one. */
@@ -834,6 +1108,14 @@ export interface JsonPaneState {
   readonly warned: readonly number[];
   /** Hovered on each marked line: *not a setting in this version*. */
   readonly warnNote: string;
+  /** Top-right of the caption. `''` for a pane with nothing to say about itself. */
+  readonly meta: string;
+  /**
+   * Whether that word is a *state* rather than a standing fact — accent, with
+   * the dot the rail uses for the same thing. `read-only` is always true of the
+   * left pane and never marked; `edited` is true only right now.
+   */
+  readonly marked: boolean;
 }
 
 export interface JsonPane {
@@ -842,7 +1124,15 @@ export interface JsonPane {
 }
 
 /**
- * One pane of the `{}` view: a heading, a warning gutter, and the document.
+ * One pane of the `{}` view: a caption, a warning gutter, and the document.
+ *
+ * The caption is inside the frame, the way an editor puts a filename on the tab
+ * above the file rather than in a paragraph beside it. It replaced a
+ * `groupHeader` and a two-line description per pane — two of those, side by
+ * side, came to a hundred and thirty pixels of ragged text above two editors,
+ * arguing with each other for the top of the screen, saying something nobody
+ * reads twice. What is left is what a person actually needs at a glance: which
+ * pane this is, and whether it is one they can type in.
  *
  * Built once and updated rather than rebuilt, like the search field and for the
  * same reason plus one: the right-hand pane is where the caret is, and it is
@@ -857,9 +1147,22 @@ export interface JsonPane {
 export function jsonPane(options: JsonPaneOptions, state: JsonPaneState): JsonPane {
   const element = make('section', 'json-pane');
   element.dataset.readonly = String(options.readOnly);
-  element.append(groupHeader(options.heading));
 
   const frame = make('div', 'json-pane__frame');
+
+  const caption = make('div', 'json-pane__caption');
+  caption.append(make('span', 'json-pane__title', options.title));
+  const meta = make('span', 'json-pane__meta');
+  meta.append(make('span', 'json-pane__dot'), make('span', 'json-pane__word'));
+  caption.append(meta);
+  frame.append(caption);
+
+  /*
+   * The gutter is absolutely positioned, so it needs a box of its own to be
+   * absolute inside — otherwise it starts at the top of the frame and its first
+   * line numbers run underneath the caption.
+   */
+  const body = make('div', 'json-pane__body');
   const gutter = make('div', 'json-pane__gutter');
   gutter.setAttribute('aria-hidden', 'true');
 
@@ -867,7 +1170,7 @@ export function jsonPane(options: JsonPaneOptions, state: JsonPaneState): JsonPa
   area.spellcheck = false;
   area.autocomplete = 'off';
   area.readOnly = options.readOnly;
-  area.setAttribute('aria-label', options.heading.title);
+  area.setAttribute('aria-label', options.title);
   if (options.focus) area.dataset.focus = options.focus;
   if (options.onInput) {
     area.addEventListener('input', () => options.onInput?.(area.value));
@@ -880,13 +1183,20 @@ export function jsonPane(options: JsonPaneOptions, state: JsonPaneState): JsonPa
     gutter.scrollTop = area.scrollTop;
   });
 
-  frame.append(gutter, area);
+  body.append(gutter, area);
+  frame.append(body);
   element.append(frame);
+
+  const word = meta.querySelector('.json-pane__word');
 
   const update = (next: JsonPaneState): void => {
     // Only when it differs: assigning an identical value moves the caret to the
     // end, which in an editable pane eats the character being typed.
     if (area.value !== next.text) area.value = next.text;
+
+    if (word) word.textContent = next.meta;
+    meta.dataset.marked = String(next.marked);
+    meta.hidden = next.meta === '';
 
     const warned = new Set(next.warned);
     const lines = next.text.split('\n').length;
@@ -958,7 +1268,6 @@ export interface PageProps {
    */
   readonly pending: string | null;
   readonly storage: StorageView;
-  readonly version: string;
   readonly activeRail: string;
   readonly json: JsonView;
 }
@@ -1010,9 +1319,12 @@ export function settingsPage(root: HTMLElement, handlers: PageHandlers): Setting
   const chrome = make('div', 'chrome');
   root.append(chrome);
 
+  const search = searchRow({ text: '', filters: [], results: null }, handlers);
+
   const bar = appBar({
     title: 'Settings',
     onBack: handlers.onBack,
+    centre: search.field,
     json: { label: 'JSON', onToggle: handlers.onJson },
     menu: [
       { label: 'Import settings…', icon: 'upload', onSelect: handlers.onImport },
@@ -1027,9 +1339,7 @@ export function settingsPage(root: HTMLElement, handlers: PageHandlers): Setting
     ],
   });
   chrome.append(bar.element);
-
-  const search = searchRow({ text: '', filters: [], results: null }, handlers);
-  chrome.append(search.element);
+  chrome.append(search.results);
 
   const recording = make('div', 'recording');
   const recordingFrame = make('div', 'recording__frame');
@@ -1069,11 +1379,6 @@ export function settingsPage(root: HTMLElement, handlers: PageHandlers): Setting
 
   const json = jsonView(handlers);
   page.append(json.element);
-
-  const foot = make('footer', 'settings__foot');
-  const version = make('span');
-  foot.append(version);
-  page.append(foot);
   root.append(page);
 
   const render = (props: PageProps): void => {
@@ -1081,10 +1386,12 @@ export function settingsPage(root: HTMLElement, handlers: PageHandlers): Setting
 
     bar.update({ jsonOpen: props.json.open });
 
-    // The search row is gated on a query being possible at all. It searches the
+    // The search is gated on a query being possible at all. It searches the
     // rows, and while the `{}` view is on there are none — a box that filtered
-    // nothing visible would be a control that had quietly stopped working.
-    search.element.hidden = props.json.open;
+    // nothing visible would be a control that had quietly stopped working. The
+    // field is in the app bar now, so it is hidden on its own; `update` decides
+    // the strip, which has nothing to show under a view with no rows either.
+    search.field.hidden = props.json.open;
     search.update({
       text: props.model.query.text,
       filters: props.model.query.filters,
@@ -1094,10 +1401,25 @@ export function settingsPage(root: HTMLElement, handlers: PageHandlers): Setting
     recording.hidden = !props.recording;
     pending.hidden = props.pending === null;
     if (pendingText && props.pending) pendingText.textContent = props.pending;
-    version.textContent = props.version;
 
     body.hidden = props.json.open;
     json.element.hidden = !props.json.open;
+
+    /*
+     * The `{}` view is a pane layout, not a document.
+     *
+     * The list is as tall as seventy-three settings and the page scrolls it, so
+     * `.settings` is sized by its content. The two JSON panes are the opposite
+     * thing: two editors that should be as tall as the window and scroll their
+     * own text. Sized by their content, the defaults pane — eighty-two lines —
+     * made the *page* scroll, so reading the bottom of it meant scrolling the
+     * headings and the Apply button off screen, and the pane beside it was six
+     * lines of empty box the whole way down.
+     *
+     * The attribute is what lets one stylesheet hold both. CSS cannot ask "is
+     * the JSON view open"; it can ask what this element says it is.
+     */
+    page.dataset.json = String(props.json.open);
 
     if (props.json.open) {
       json.update(props.json);
@@ -1105,6 +1427,8 @@ export function settingsPage(root: HTMLElement, handlers: PageHandlers): Setting
       rail.replaceChildren(...railRows(props, handlers));
       list.replaceChildren(...listBlocks(props, handlers));
     }
+
+    if (props.json.open) search.results.hidden = true;
 
     restoreFocus(root, focus);
   };
@@ -1137,6 +1461,17 @@ interface JsonViewParts {
 function jsonView(handlers: PageHandlers): JsonViewParts {
   const element = make('div', 'json-view');
 
+  /*
+   * One line for both panes, where there used to be a paragraph over each.
+   *
+   * It says the only thing about this screen that is not visible on it: the
+   * editable pane is not a way to write straight to storage. Everything else
+   * the descriptions carried — which pane is which, which one is read-only —
+   * is now two words in each pane's own caption, where it is next to the thing
+   * it describes instead of above it.
+   */
+  element.append(make('p', 'json-view__lede', PANES_NOTE));
+
   const notes = make('div', 'json-view__notes');
   const unknown = banner('warn', '');
   const unknownText = unknown.querySelector('p');
@@ -1146,10 +1481,10 @@ function jsonView(handlers: PageHandlers): JsonViewParts {
   element.append(notes);
 
   const panes = make('div', 'json-view__panes');
-  const defaults = jsonPane({ heading: DEFAULTS_PANE, readOnly: true }, EMPTY_PANE);
+  const defaults = jsonPane({ title: DEFAULTS_PANE.title, readOnly: true }, EMPTY_PANE);
   const overrides = jsonPane(
     {
-      heading: OVERRIDES_PANE,
+      title: OVERRIDES_PANE.title,
       readOnly: false,
       focus: 'json-overrides',
       onInput: handlers.onJsonInput,
@@ -1171,13 +1506,27 @@ function jsonView(handlers: PageHandlers): JsonViewParts {
     // Constant for the life of the page, and long: laid out once.
     if (paintedDefaults !== state.defaults) {
       paintedDefaults = state.defaults;
-      defaults.update({ text: state.defaults, warned: [], warnNote: '' });
+      defaults.update({
+        text: state.defaults,
+        warned: [],
+        warnNote: '',
+        meta: DEFAULTS_PANE.meta,
+        marked: false,
+      });
     }
 
     overrides.update({
       text: state.text,
       warned: state.warned,
       warnNote: UNKNOWN_LINE_NOTE,
+      /*
+       * Said on the pane as well as by the buttons under it. `dirty` is what
+       * enables Revert and Apply, and those are at the bottom-right of the
+       * screen — a long way from the pane whose state they are about, and the
+       * one place a person looks while typing is the box they are typing in.
+       */
+      meta: state.dirty ? OVERRIDES_PANE.meta : '',
+      marked: state.dirty,
     });
 
     unknown.hidden = state.unknownNote === null;
@@ -1196,7 +1545,13 @@ function jsonView(handlers: PageHandlers): JsonViewParts {
   return { element, update };
 }
 
-const EMPTY_PANE: JsonPaneState = { text: '', warned: [], warnNote: '' };
+const EMPTY_PANE: JsonPaneState = {
+  text: '',
+  warned: [],
+  warnNote: '',
+  meta: '',
+  marked: false,
+};
 
 function activeResults(model: SettingsModel): SearchState['results'] {
   if (model.query.text === '' && model.query.filters.length === 0) return null;
@@ -1225,11 +1580,41 @@ function railRows(props: PageProps, handlers: PageHandlers): HTMLElement[] {
 
     button.append(make('span', 'rail__name', item.title));
 
+    /*
+     * The mark: a dot, then a number.
+     *
+     * §4 asks for the count of modified settings to replace the group's total,
+     * and it did that as an accent-filled pill — which put a solid accent
+     * circle inside a row whose *selected* state is already a soft accent fill
+     * and an accent bar. Three weights of one colour in thirty-six pixels, and
+     * the loudest of the three was the least important thing in the row: a
+     * filled counter is the shape unread mail uses, and this is not mail.
+     *
+     * So the number stops shouting and the dot does the saying. Accent text
+     * carries the same substitution §4 asks for, the dot is what tells you the
+     * number changed meaning — without it, an accent `1` beside a faint `3` is
+     * two different quantities distinguished only by colour — and neither
+     * competes with the row it is sitting in when that row is the current one.
+     */
     const markClass =
       item.mark.kind === 'modified' ? 'rail__mark rail__mark--modified' : 'rail__mark';
     const badge = make('span', markClass);
+
+    const dot = make('span', 'rail__dot');
+    dot.hidden = item.mark.kind !== 'modified';
+    badge.append(dot);
+
     if (item.mark.kind === 'chevron') badge.append(icon('chevron-right'));
-    else if (item.mark.kind !== 'none') badge.textContent = String(item.mark.count);
+    else if (item.mark.kind !== 'none') {
+      badge.append(make('span', 'rail__count', String(item.mark.count)));
+      // The words the dot is short for. The rail has room for a number, not for
+      // a sentence, and the sentence is what makes the number unambiguous.
+      badge.title =
+        item.mark.kind === 'modified'
+          ? `${item.mark.count} changed in ${item.title}`
+          : `${item.mark.count} in ${item.title}`;
+    }
+
     badge.hidden = item.mark.kind === 'none';
     button.append(badge);
 

@@ -8,8 +8,10 @@
  */
 
 import { callFailed, renumber, startUrl } from '../../core/flow/index.js';
+import { exportToMarkdown } from '../../core/export/markdown.js';
 import { attributeSteps, pruneComponents, stripReactRef } from '../../core/react/attribution.js';
 import { compactBody, type BodyLimits } from '../../core/schema/index.js';
+import { describeStamp } from '../settings/stamp.js';
 import { renderLimits, type RenderLimits } from '../settings/render.js';
 import { load as loadSettings, resolve } from '../settings/index.js';
 import { readRecordingStamp, renderedOverrides } from '../settings/recording.js';
@@ -154,6 +156,77 @@ export function leanCalls(step: Step, bodies?: BodyLimits): Step {
       };
     }),
   };
+}
+
+/*
+ * A stand-in for the absolute path the server writes beside each step.
+ *
+ * `get_flow` names every screenshot by its path on disk — that is the whole
+ * reason an image costs nothing until it is opened — and those paths are text
+ * in the document like any other. Nine of them is about a hundred and fifty
+ * tokens, which is the difference the Screenshots switch makes to what Claude
+ * reads, and the difference a user is entitled to see move when they touch it.
+ *
+ * The real path is `<home>/.flowsnap/flows/<id>/screenshots/step-NN.jpg` and the
+ * home directory is the server's, not something the browser can know. This is
+ * that shape at a representative length, which is what an estimate prefixed
+ * with `~` is allowed to be.
+ */
+const SCREENSHOT_DIR = '/Users/you/.flowsnap/flows/flow-1700000000000/screenshots';
+
+const screenshotPath = (index: number): string =>
+  `${SCREENSHOT_DIR}/step-${String(index + 1).padStart(2, '0')}.jpg`;
+
+/**
+ * The document `get_flow` will hand back for this send.
+ *
+ * Rendered rather than estimated, by the same `exportToMarkdown` the MCP server
+ * calls on the flow it stores — so the number under the Send button is the size
+ * of the actual walkthrough, not the size of the JSON that produced it.
+ *
+ * It used to be a sum of byte counts: step JSON, plus network JSON if that
+ * switch was on, plus console JSON if that one was. Every term of it was wrong
+ * in a different direction. Network arrived pre-compaction, when `leanCalls`
+ * turns a response body into its schema and drops every header — the change
+ * that made a 15-step flow 93k tokens instead of 9k, counted here at the 93k.
+ * The walkthrough quotes a bounded slice of a body and prints at most
+ * `mcp.maxConsoleEntries` lines a step, so the caps in the flow's own stamp
+ * moved the real figure and not this one. And screenshots were left out
+ * entirely on the grounds that an image costs nothing until it is opened, which
+ * is true of the image and not of the path printed next to it — so the one
+ * switch that changes a flow's weight by megabytes moved the token figure by
+ * exactly zero, which is how a user learns the number is decorative.
+ *
+ * Pure, and every step of it is the send's own path: prune, attribute, compact,
+ * render. What the dialog prices and what the wire carries cannot drift,
+ * because they are the same three functions in the same order.
+ */
+export function walkthroughFor(
+  steps: Step[],
+  include: ExportOptions,
+  react?: FlowReact | null,
+  settings: Overrides = {},
+  name = 'Flow Recording',
+): string {
+  const limits = bodyLimits(settings);
+  const sending = pruneSteps(renumber(steps), include);
+  const components = react ? pruneComponents(sending, react.components) : {};
+  const carries = react !== null && react !== undefined && Object.keys(components).length > 0;
+  const attributed = carries ? attributeSteps(sending, components) : sending;
+
+  return exportToMarkdown(
+    attributed.map((step) => leanCalls(step, limits)),
+    {
+      title: name,
+      images: {
+        kind: 'file',
+        names: attributed.map((step, index) => (step.screenshot ? screenshotPath(index) : null)),
+      },
+      ...(carries && react ? { react: { ...react, components } } : {}),
+      settings: describeStamp(settings),
+      limits,
+    },
+  );
 }
 
 export interface SendResult {

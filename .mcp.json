@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "flowsnap": {
-      "command": "node",
-      "args": ["./mcp-server/server.js"],
-      "type": "stdio"
-    }
-  }
-}

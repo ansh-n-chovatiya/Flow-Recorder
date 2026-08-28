@@ -56,6 +56,22 @@ function control<T extends HTMLElement>(key: string): T {
   return row(key).querySelector<T>('[data-focus]')!;
 }
 
+/**
+ * Choose an enum value the way a person does.
+ *
+ * The control is no longer a `<select>` whose `value` can be assigned — it is a
+ * trigger and a panel of buttons, so the test presses both, which is also the
+ * only way to find out that the panel is reachable at all.
+ */
+function choose(key: string, value: string): void {
+  control<HTMLButtonElement>(key).click();
+  const option = row(key).querySelector<HTMLButtonElement>(
+    `.select__option[data-value="${value}"]`,
+  );
+  expect(option, `no ${value} option in ${key}`).not.toBeNull();
+  option!.click();
+}
+
 function search(): HTMLInputElement {
   return document.querySelector<HTMLInputElement>('.search__input')!;
 }
@@ -209,24 +225,37 @@ describe('the eight settings that already existed', () => {
   it('offers the editors from EDITORS and stores the value, not the label', async () => {
     await openSettings();
 
-    const select = control<HTMLSelectElement>('editor');
-    expect(select.options.length).toBeGreaterThan(2);
+    const options = [...row('editor').querySelectorAll('.select__option')];
+    expect(options.length).toBeGreaterThan(2);
     // Built from the shared table so this extension and its sibling cannot
     // drift into offering different editors.
-    expect([...select.options].some((option) => option.textContent === 'VS Code')).toBe(true);
+    expect(options.some((option) => option.textContent === 'VS Code')).toBe(true);
 
-    select.value = 'webstorm';
-    select.dispatchEvent(new Event('change'));
+    choose('editor', 'webstorm');
     await settle();
     expect(chromeFake.area()).toEqual({ editor: 'webstorm' });
+    // The trigger says what is chosen, in the words the list used.
+    expect(control<HTMLElement>('editor').textContent).toContain('WebStorm');
+  });
+
+  it('closes the enum panel on Escape without leaving the value changed', async () => {
+    await openSettings();
+
+    const trigger = control<HTMLButtonElement>('theme');
+    trigger.click();
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settle();
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(chromeFake.area()).toEqual({});
   });
 
   it('applies the theme to the document and mirrors it, not just to storage', async () => {
     await openSettings();
 
-    const select = control<HTMLSelectElement>('theme');
-    select.value = 'dark';
-    select.dispatchEvent(new Event('change'));
+    choose('theme', 'dark');
     await settle();
 
     expect(chromeFake.area()).toEqual({ theme: 'dark' });

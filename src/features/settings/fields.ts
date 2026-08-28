@@ -64,6 +64,7 @@ import {
   MCP_MAX_FLOW_BYTES,
   MCP_MAX_FLOWS,
   MCP_MAX_IMAGES,
+  VISION_TOKENS_PER_IMAGE,
   MCP_MAX_TOKENS,
   MCP_PORT,
   MCP_RAW_DEFAULT,
@@ -1338,7 +1339,7 @@ export const FIELDS = [
     title: "Screenshots per MCP call",
     description: "Vision-heavy workflows want more.",
     consequence:
-      "At zero, get_flow_screenshots returns paths and no pictures. Each image is around 1,500 tokens of vision budget.",
+      `At zero, get_flow_screenshots returns paths and no pictures. Each image is around ${VISION_TOKENS_PER_IMAGE.toLocaleString("en-US")} tokens of vision budget.`,
     consequenceWhen: { below: 1 },
     consumers: ["mcp"],
     rendered: true,

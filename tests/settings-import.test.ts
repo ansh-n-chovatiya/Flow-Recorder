@@ -158,8 +158,16 @@ describe('the two-pane JSON view', () => {
 
     expect(document.querySelector<HTMLElement>('.json-view')!.hidden).toBe(false);
     expect(document.querySelector<HTMLElement>('.settings__body')!.hidden).toBe(true);
-    // The search box searches rows, and there are none on screen. A control that
-    // had quietly stopped working is worse than one that is not there.
+    /*
+     * The search box searches rows, and there are none on screen. A control that
+     * had quietly stopped working is worse than one that is not there.
+     *
+     * Two elements since the field moved into the app bar: the field in the bar,
+     * and the strip under it that says what a query found. Asserting only the
+     * strip would pass on a page that never had a query, which is every page
+     * this case opens — so the field is the one that matters here.
+     */
+    expect(document.querySelector<HTMLElement>('.search__field')!.hidden).toBe(true);
     expect(document.querySelector<HTMLElement>('.search')!.hidden).toBe(true);
     expect(jsonToggle().getAttribute('aria-pressed')).toBe('true');
   });

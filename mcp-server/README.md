@@ -9,11 +9,28 @@ Pairs with the [FlowSnap Chrome extension](https://github.com/ansh-n-chovatiya/F
 ## Install
 
 ```sh
-claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp
+npx flowsnap-mcp install
 ```
 
-`--scope user` registers it once for every project you open, in both the Claude
-Code CLI and the VS Code extension. Nothing to clone, nothing to build.
+Once, for every project you open — the Claude Code CLI and the VS Code extension
+alike. Nothing to clone, nothing to build, and safe to run again.
+
+It runs `claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp` for you.
+That flag is the whole reason this command exists: `claude mcp add` defaults to
+`local` scope, which is *the current directory*, so the same line typed without
+it gives you a FlowSnap that works in one folder and is silently missing from
+every other project. This never takes a scope — there is one right answer and it
+is compiled in.
+
+| | |
+| --- | --- |
+| `npx flowsnap-mcp install` | Register for every project |
+| `npx flowsnap-mcp install --force` | Replace a user-scope registration pointing elsewhere |
+| `npx flowsnap-mcp uninstall` | Remove the user-scope registration |
+| `npx flowsnap-mcp` | Run the server — what Claude Code does |
+
+If a project has its own `.mcp.json` naming `flowsnap`, that wins inside that
+directory. `install` says so and gives you the line that removes it.
 
 Then record a flow in the extension and press **Send**. It lands in
 `~/.flowsnap/flows` and Claude can read it immediately.

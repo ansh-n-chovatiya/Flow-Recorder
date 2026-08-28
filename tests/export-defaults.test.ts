@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { openingOptions, openingValue } from '../src/features/export/defaults.js';
 import { driftFromDefaults } from '../src/ui/viewer/export-view.js';
+import type * as SendModule from '../src/features/mcp/send.js';
 import type { ExportOptions, Step } from '../src/shared/types.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -133,7 +134,18 @@ vi.mock('../src/features/export/download.js', () => ({
   suggestFilename: () => 'flowsnap-test',
 }));
 
-vi.mock('../src/features/mcp/send.js', () => ({
+/*
+ * Only `sendFlow` is replaced — a POST that never settles, so the dialog stays
+ * in its busy state without a server.
+ *
+ * Partial, not wholesale. The module is also where the send's own pipeline
+ * lives, and `send-view.ts` runs that pipeline to price the context estimate:
+ * a mock that returned one function left the dialog unable to paint at all.
+ * Keeping the rest real is what this file wants anyway — it is about which
+ * switches the dialog opens on, which is a question about the real derivation.
+ */
+vi.mock('../src/features/mcp/send.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof SendModule>()),
   sendFlow: () => new Promise(() => {}),
 }));
 

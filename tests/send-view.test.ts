@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { pruneSteps, SEND_EVERYTHING } from '../src/features/mcp/send.js';
+import { VISION_TOKENS_PER_IMAGE } from '../src/shared/constants.js';
 import type {
   ConsoleEntry,
   ExportOptions,
@@ -129,18 +130,102 @@ describe('the upload total', () => {
 });
 
 describe('the context estimate', () => {
-  /**
-   * The server writes images to disk and `get_flow` hands back paths, so a
-   * screenshot costs nothing until Claude opens it. Counting it would push the
-   * user to switch off the one part that is already free.
+  /*
+   * It is the walkthrough, rendered. `deriveSendView` runs the send's own
+   * pipeline — prune, attribute, compact, render — and measures the document
+   * `get_flow` will return, rather than adding up the JSON that produced it.
+   *
+   * These cases are about the two ways the old arithmetic lied. A switch that
+   * changes what Claude reads has to move this number, and a switch that
+   * changes it a lot less than the upload has to move it a lot less: those are
+   * the two halves of a figure anybody believes.
    */
-  it('ignores screenshots, which cost nothing until they are opened', () => {
-    expect(view({ ...ALL, images: false }).context).toBe(view(ALL).context);
+  it('charges a screenshot for its path, not for its bytes and not for nothing', () => {
+    const on = view(ALL).context;
+    const off = view({ ...ALL, images: false }).context;
+
+    /*
+     * It used to be exactly equal, on the grounds that an image costs nothing
+     * until it is opened. True of the image; false of the line naming it. The
+     * one switch that changes a send by megabytes moved the token figure by
+     * zero, which is how a user learns a number is decorative.
+     */
+    expect(off).toBeLessThan(on);
+
+    // And nowhere near the data URL: two paths, not two base64 images. The
+    // whole point of writing them to disk is that this stays small.
+    expect(on - off).toBeLessThan(IMAGE.length);
   });
 
   it('falls with the parts that are read alongside the steps', () => {
     expect(view({ ...ALL, network: false }).context).toBeLessThan(view(ALL).context);
     expect(view({ ...ALL, logs: false }).context).toBeLessThan(view(ALL).context);
+  });
+
+  /**
+   * The reason the estimate is rendered rather than summed. `leanCalls` turns a
+   * response body into its schema and drops every header before anything is
+   * sent — the change that took a 15-step recording from 93k tokens to 9k — so
+   * counting the raw call JSON priced the send at the number that change exists
+   * to avoid.
+   */
+  it('prices network at what compaction leaves, not at what was captured', () => {
+    const network = view(ALL).context - view({ ...ALL, network: false }).context;
+    const captured = view(ALL).includes.find((row) => row.id === 'network')!.bytes;
+
+    expect(network).toBeGreaterThan(0);
+    expect(network).toBeLessThan(captured);
+  });
+
+  /*
+   * The half of the cost the estimate cannot see, and used not to mention.
+   *
+   * A screenshot is a path in the walkthrough — about fifty characters — and a
+   * picture on disk worth around fifteen hundred tokens when it is opened. So
+   * `context` alone described a nine-shot send as a few hundred tokens while it
+   * was really handing over something nearer fourteen thousand, and the switch
+   * that dominates what a send costs was the one the cost line was blind to.
+   *
+   * Two numbers rather than one sum, because they are not the same promise: the
+   * walkthrough is paid the moment the flow is read, an image only if it is
+   * opened.
+   */
+  it('names what the images would cost, which the walkthrough cannot', () => {
+    const vision = view(ALL).vision;
+
+    expect(vision).not.toBeNull();
+    expect(vision!.images).toBe(2);
+    expect(vision!.tokens).toBe(2 * VISION_TOKENS_PER_IMAGE);
+  });
+
+  it('dwarfs the text, which is the whole reason it is shown', () => {
+    const { context, vision } = view(ALL);
+
+    // Not a tuning knob — an order-of-magnitude claim. If these ever converge,
+    // the walkthrough has started carrying the pictures and this line is wrong.
+    expect(vision!.tokens).toBeGreaterThan((context / 4) * 5);
+  });
+
+  it('is a fact about the recording, not about the switch', () => {
+    /*
+     * Like `IncludeRow.bytes` beside it, and for the same reason: the figure
+     * lives on the Screenshots row, and a row has to be able to say what
+     * turning it *on* would cost. Gated on the switch it would read `—` at
+     * exactly the moment somebody is deciding whether to flip it.
+     */
+    expect(view({ ...ALL, images: false }).vision).toEqual(view(ALL).vision);
+  });
+
+  it('says nothing for a recording that has no screenshots', () => {
+    const bare = [step(), step()];
+    expect(deriveSendView({ steps: bare, options: ALL, busy: false }).vision).toBeNull();
+  });
+
+  it('is never larger than the upload it is a part of', () => {
+    // A sanity floor rather than a claim about a ratio: the walkthrough is a
+    // rendering of the payload, so a context figure above the upload would mean
+    // the estimate had stopped being about the same flow.
+    expect(view(ALL).context).toBeLessThan(view(ALL).total);
   });
 });
 

@@ -206,7 +206,6 @@ function paint(): void {
     recording: state.recording,
     pending: state.pending ? pendingNote(state.pending.changes) : null,
     storage: state.storage,
-    version: `FlowSnap ${chrome.runtime.getManifest().version}`,
     activeRail: state.activeRail,
     json: {
       open: state.json.open,

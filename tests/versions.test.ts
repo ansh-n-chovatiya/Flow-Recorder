@@ -43,11 +43,18 @@ describe('the published MCP server', () => {
   });
 
   it('publishes the server and nothing else', () => {
-    // Without `files`, npm packs the whole directory — including flows/, which
-    // is 125 real recordings of someone's browsing. `core.js` is `src/core/`
-    // bundled in by `npm run build:mcp`; the server imports it, so a publish
-    // that leaves it out ships something that throws on its first tool call.
-    expect(server.files).toEqual(['server.js', 'core.js', 'README.md']);
+    /*
+     * Without `files`, npm packs the whole directory — including flows/, which
+     * is 125 real recordings of someone's browsing. `core.js` is `src/core/`
+     * bundled in by `npm run build:mcp`; the server imports it, so a publish
+     * that leaves it out ships something that throws on its first tool call.
+     *
+     * `install.js` is the same kind of hazard from the other direction: it is
+     * imported only on the `npx flowsnap-mcp install` path, so a publish without
+     * it passes every test that runs the server and fails the one command a
+     * person types before they have a server at all.
+     */
+    expect(server.files).toEqual(['server.js', 'install.js', 'core.js', 'README.md']);
   });
 
   it('is not private, unlike the extension package', () => {

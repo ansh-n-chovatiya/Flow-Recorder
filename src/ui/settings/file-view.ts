@@ -169,18 +169,35 @@ function clampNote(plan: ImportPlan): string | null {
 
 // ── The JSON view ────────────────────────────────────────────────────────────
 
-/** Defaults on the left, read-only; the user's sparse overrides on the right. */
-export const DEFAULTS_PANE = {
-  title: 'Default settings',
-  description:
-    'Every setting this version has, at the value it ships with. Read-only, and generated — it is what public/settings.default.json contains.',
-} as const;
+/**
+ * Defaults on the left, read-only; the user's sparse overrides on the right.
+ *
+ * `meta` is the word in the top-right of each pane's caption bar. The left
+ * one's is standing — it is read-only for the life of the page — and the right
+ * one's appears only while the pane differs from what is stored.
+ *
+ * Both used to carry a `description` as well, and the two of them side by side
+ * were a hundred and thirty pixels of ragged two-line paragraph above two
+ * editors. They said what the panes are, which the captions now say in two
+ * words each, and one thing that is genuinely not obvious — which is `PANES_NOTE`
+ * below, said once for both.
+ */
+export const DEFAULTS_PANE = { title: 'Default settings', meta: 'read-only' } as const;
 
-export const OVERRIDES_PANE = {
-  title: 'Your settings',
-  description:
-    'Only what you have changed. Edit it and apply, or paste somebody else’s file in — either way it goes through the same diff an imported file does.',
-} as const;
+export const OVERRIDES_PANE = { title: 'Your settings', meta: 'edited' } as const;
+
+/**
+ * The one line above both panes.
+ *
+ * Not "this is JSON" — anybody who opened the `{}` view knows that, and not
+ * which pane is which, which the captions say two inches lower. The fact worth
+ * the line is that the editable pane is not a way to write straight to storage:
+ * whatever is typed or pasted here goes through the same parse, validate,
+ * resolve, diff and confirm that a picked file does, so nothing here can quietly
+ * replace a setting the way it looks like it could.
+ */
+export const PANES_NOTE =
+  'Edit the right pane or paste a file in — applying goes through the same review an import does.';
 
 /** The note under an edited pane that no longer parses. */
 export function paneProblem(message: string): string {

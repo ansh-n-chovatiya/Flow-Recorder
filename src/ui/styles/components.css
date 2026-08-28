@@ -231,8 +231,7 @@
 }
 
 .input,
-.textarea,
-.select {
+.textarea {
   width: 100%;
   padding: 0 var(--space-3);
   background: var(--surface-raised);
@@ -243,8 +242,7 @@
   transition: border-color var(--transition);
 }
 
-.input,
-.select {
+.input {
   height: var(--control-height);
 }
 
@@ -256,8 +254,7 @@
 }
 
 .input:hover,
-.textarea:hover,
-.select:hover {
+.textarea:hover {
   border-color: var(--border-strong);
 }
 
@@ -272,8 +269,7 @@
 }
 
 .input:disabled,
-.textarea:disabled,
-.select:disabled {
+.textarea:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -443,6 +439,26 @@
 .banner__action {
   margin-left: auto;
   flex: none;
+}
+
+/*
+ * A banner with an action centres; one without still hangs from its first line.
+ *
+ * `flex-start` is right for text alone — the icon belongs beside the first line
+ * of a sentence, not halfway down a paragraph. It is wrong the moment a button
+ * joins them: the button is 28px, the sentence beside it is 19px, and the
+ * tallest item is the one setting the height, so the sentence and the icon sat
+ * pinned to the top of a box the button defined. The words read a few pixels
+ * above the words next to them, which is the kind of wrong that looks like
+ * nothing in particular until you notice it and then cannot stop.
+ */
+.banner:has(.banner__action) {
+  align-items: center;
+}
+
+/* Nothing to hang from once the row is centred. */
+.banner:has(.banner__action) .banner__icon {
+  margin-top: 0;
 }
 /* ── Empty state ────────────────────────────────────────────────────────────
  * Never a bare sentence: an icon, what this is, why it is empty, and the one

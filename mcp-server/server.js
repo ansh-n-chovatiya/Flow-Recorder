@@ -5,7 +5,10 @@
  * LOCAL (default): stdio MCP, plus an HTTP receiver on 127.0.0.1:7734 that the
  * Chrome extension POSTs recordings to.
  *
- *   claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp
+ *   npx flowsnap-mcp install
+ *
+ * which is `claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp` with
+ * the scope no longer something a person can leave off. See `install.js`.
  *
  * REMOTE: SSE MCP and the receiver on $PORT, for a hosted deployment.
  *
@@ -45,6 +48,26 @@ import {
   resolve as resolveSettings,
   urlPath,
 } from './core.js';
+
+/*
+ * The CLI verbs, before anything else in this file happens.
+ *
+ * Everything below makes a directory, reads a config file and binds a port, all
+ * at the top level, because that is what a server started by an MCP client
+ * should do the moment it is started. `npx flowsnap-mcp install` should do none
+ * of it: it is a person at a terminal registering the server, not Claude Code
+ * launching it, and a setup command that leaves a listener behind is a setup
+ * command with a side effect nobody asked for.
+ *
+ * So the fork is here, above the first `const` that reads the environment, and
+ * `install.js` is imported only on the path that needs it. An argument that is
+ * not a verb prints the usage rather than starting a server that would then sit
+ * on a stdio transport nobody is speaking: a typo should say so, not hang.
+ */
+if (process.argv.length > 2) {
+  const { run } = await import('./install.js');
+  process.exit(run(process.argv[2], process.argv.slice(3)));
+}
 
 const { version: VERSION } = createRequire(import.meta.url)('./package.json');
 const REMOTE = process.env.MCP_MODE === 'remote';

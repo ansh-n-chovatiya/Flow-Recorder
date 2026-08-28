@@ -19,12 +19,12 @@ import { getLocal, setLocal } from '../../chrome/storage.js';
 import { banner } from '../settings/components.js';
 import { flowHost } from '../../core/flow/index.js';
 import type { ExportOptions, FlowReact, Overrides, Step } from '../../shared/types.js';
-import { formatBytes, formatTokens } from '../format.js';
+import { formatBytes, formatTokenCount, formatTokens } from '../format.js';
 import { setIcon } from '../icons.js';
 import { showToast } from '../toast.js';
 import { clone, el, find, show } from './dom.js';
 import { driftFromDefaults, type IncludeRow } from './export-view.js';
-import { deriveSendView } from './send-view.js';
+import { deriveSendView, type SendView } from './send-view.js';
 
 const dom = {
   dialog: el<HTMLDialogElement>('send-dialog'),
@@ -72,6 +72,11 @@ function paint(): void {
     steps: session.steps,
     options: session.options,
     react: session.react,
+    // Both feed the context estimate, which is the walkthrough rendered rather
+    // than guessed: the stamp supplies the body and console caps it is rendered
+    // under, and the name is its title line.
+    settings: session.settings,
+    name: session.name,
     busy: session.busy,
   });
 
@@ -83,7 +88,7 @@ function paint(): void {
     .filter(Boolean)
     .join(' · ');
 
-  dom.includes.replaceChildren(...view.includes.map(buildInclude));
+  dom.includes.replaceChildren(...view.includes.map((row) => buildInclude(row, view)));
   paintDefaults();
 
   show(dom.note, view.note !== null);
@@ -149,7 +154,28 @@ const NOTE: Record<keyof ExportOptions, string> = {
   react: 'Read with the steps',
 };
 
-function buildInclude(row: IncludeRow): HTMLElement {
+/**
+ * The row's second line: what this part is, and — for screenshots — what it
+ * costs to read.
+ *
+ * The image figure was a third line in the footer, under the upload and the
+ * context. Three stacked mono lines read as a paragraph rather than a summary,
+ * and they left the buttons beside them floating against the middle of a block
+ * they had nothing to do with.
+ *
+ * It belongs here anyway. Every other per-part number in this dialog is on the
+ * part's own row — `3.6 MB`, `312 KB` — and this is the same kind of fact about
+ * the same part, next to the switch the person is actually deciding about. The
+ * footer goes back to being the total and the actions.
+ */
+function noteFor(row: IncludeRow, view: SendView): string {
+  if (row.id !== 'images' || view.vision === null) return NOTE[row.id];
+  // Not gated on the switch, like the size beside it: a row has to say what
+  // turning it on would cost, or the switch is a decision made blind.
+  return `Saved to disk · ~${formatTokenCount(view.vision.tokens)} if opened`;
+}
+
+function buildInclude(row: IncludeRow, view: SendView): HTMLElement {
   const node = clone<HTMLLabelElement>('tpl-include');
 
   node.dataset.ignored = String(row.ignored !== null);
@@ -162,7 +188,7 @@ function buildInclude(row: IncludeRow): HTMLElement {
   // The ignored reason wins when there is one: "no React was recorded" is the
   // answer to the question the note would otherwise be answering.
   const note = find(node, '.include__note');
-  note.textContent = row.ignored ?? NOTE[row.id];
+  note.textContent = row.ignored ?? noteFor(row, view);
   // The note is one line and truncates; the title is what a narrow dialog owes
   // whoever wants the rest of the sentence.
   note.title = note.textContent;

@@ -19,8 +19,10 @@ import {
   SEND_DEFAULT_LOGS,
   SEND_DEFAULT_NETWORK,
   SEND_DEFAULT_REACT,
+  VISION_TOKENS_PER_IMAGE,
 } from '../../shared/constants.js';
-import type { ExportOptions, FlowReact, Step } from '../../shared/types.js';
+import { walkthroughFor } from '../../features/mcp/send.js';
+import type { ExportOptions, FlowReact, Overrides, Step } from '../../shared/types.js';
 import {
   INCLUDE_LABEL,
   measure,
@@ -55,6 +57,15 @@ export interface SendInput {
   options: ExportOptions;
   /** The flow's component table, so the React row can price itself. */
   react?: FlowReact;
+  /**
+   * The flow's stamp, so the context estimate is rendered under the same body
+   * and walkthrough caps the server will render it under. Absent for the live
+   * recording, whose stamp `sendFlow` reads at send time — `{}` then means this
+   * build's defaults, which is what an unstamped flow is rendered at anyway.
+   */
+  settings?: Overrides;
+  /** The flow's name: the walkthrough's title, and its `#` line. */
+  name?: string;
   /** True while the POST is in flight. */
   busy: boolean;
 }
@@ -63,8 +74,24 @@ export interface SendView {
   includes: IncludeRow[];
   /** Bytes on the wire — what the POST body will weigh. */
   total: number;
-  /** Bytes of text Claude actually reads back, for the token estimate. */
+  /** Characters of the walkthrough `get_flow` returns — the token estimate. */
   context: number;
+  /**
+   * The flow's screenshots, and what opening all of them would cost.
+   *
+   * A property of the recording, not of the switches — the same thing
+   * `IncludeRow.bytes` is, and for the same reason: a row has to be able to say
+   * what turning it *on* would cost, or the switch is a decision made blind.
+   * `null` only when the recording has no screenshots at all.
+   *
+   * Separate from `context` because it is a different kind of number. The
+   * walkthrough is paid the moment Claude reads the flow; an image is paid only
+   * if it is opened, and a flow is often answered without opening one. It exists
+   * because leaving it out made the headline wrong by thirty times: a nine-shot
+   * send is a few hundred tokens of text and about fourteen thousand of
+   * pictures, and the dialog showed the few hundred.
+   */
+  vision: { readonly images: number; readonly tokens: number } | null;
   /** Bodies are not redacted, and this is the moment that matters. */
   warnBodies: boolean;
   /** Set when every switch is off, because a flow can still be sent that way. */
@@ -85,25 +112,6 @@ function uploadBytes(parts: Parts, options: ExportOptions): number {
     (options.images ? parts.screenshotsInline : 0) +
     (options.network ? parts.network : 0) +
     (options.logs ? parts.logs : 0) +
-    (options.react ? parts.react : 0)
-  );
-}
-
-/**
- * What lands in the conversation.
- *
- * Screenshots are excluded on purpose: the server writes them to disk and
- * `get_flow` hands back paths, so an image costs nothing until Claude opens
- * one. Counting them here would tell the user to switch off the one part that
- * is already free.
- */
-function contextBytes(parts: Parts, options: ExportOptions): number {
-  return (
-    parts.base +
-    (options.network ? parts.network : 0) +
-    (options.logs ? parts.logs : 0) +
-    // Counted, unlike screenshots: the component table is read back with the
-    // steps, so it is context the assistant pays for on every turn.
     (options.react ? parts.react : 0)
   );
 }
@@ -146,6 +154,8 @@ export function deriveSendView(input: SendInput): SendView {
     },
   ];
 
+  const images = steps.filter((step) => step.screenshot).length;
+
   // A React switch left on over a flow that recorded none is still a bare send:
   // the note describes what Claude will get, not which boxes are ticked.
   const bare =
@@ -154,7 +164,15 @@ export function deriveSendView(input: SendInput): SendView {
   return {
     includes,
     total: uploadBytes(parts, options),
-    context: contextBytes(parts, options),
+    /*
+     * Rendered, not summed. `walkthroughFor` runs the send's own pipeline —
+     * prune, attribute, compact, render — and measures the document that comes
+     * out, which is the one `get_flow` will return. The arithmetic it replaces
+     * added up the raw JSON and was wrong in three directions at once; that
+     * function says which.
+     */
+    context: walkthroughFor(steps, options, input.react, input.settings, input.name).length,
+    vision: images > 0 ? { images, tokens: images * VISION_TOKENS_PER_IMAGE } : null,
     // Headers are redacted at capture; bodies are not. Saying so belongs at the
     // moment the bodies are about to leave the machine.
     warnBodies: options.network && parts.network > 0,

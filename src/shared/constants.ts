@@ -339,6 +339,25 @@ export const MAX_RESOLVE_MS_PER_FLOW = 30_000;
  */
 export const RESOLVE_DEBOUNCE_MS = 1500;
 
+/**
+ * What one screenshot costs an assistant that opens it.
+ *
+ * Not a setting and not a measurement — a working figure for a 1280-wide JPEG,
+ * accurate enough to answer the only question anybody asks of it: *is sending
+ * nine screenshots expensive?* It is, and nothing on the send dialog said so.
+ *
+ * The dialog's other number is the walkthrough, which is text and is priced by
+ * rendering it. Images are not in that document at all — they are paths in it,
+ * and a path is fifty characters where the picture it names is fifteen hundred
+ * tokens. So a nine-shot send read `~470 tokens of context` while handing over
+ * something closer to fourteen thousand, and the one part of a flow that
+ * dominates its cost was the one part the estimate could not see.
+ *
+ * Here rather than in the dialog because `mcp.maxImages` says the same number
+ * in its consequence line, and two hardcoded 1,500s are two numbers that drift.
+ */
+export const VISION_TOKENS_PER_IMAGE = 1500;
+
 /** Bundle texts held in the worker's cache at once, and their total size. */
 export const BUNDLE_CACHE_ENTRIES = 24;
 export const BUNDLE_CACHE_BYTES = 48 * 1024 * 1024;

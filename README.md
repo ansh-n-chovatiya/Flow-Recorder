@@ -50,14 +50,32 @@ if you'd rather not build.
 
 ## Using it with Claude Code
 
-This is the part the rest of it exists for. One command:
+This is the part the rest of it exists for. One command, once:
+
+```sh
+npx flowsnap-mcp install
+```
+
+No clone, no build. It registers FlowSnap at **user scope**, so every Claude Code
+session has it — every project, every directory, the CLI and the VS Code
+extension alike. Run it again any time; it is safe to repeat and tells you what
+it found.
+
+It is doing this, and the reason it exists is that the scope is easy to get
+wrong by hand:
 
 ```sh
 claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp
 ```
 
-No clone, no build. `--scope user` registers it for every project you open, in
-both the CLI and the VS Code extension.
+`claude mcp add` defaults to `local` scope, which means *the directory you are
+standing in*. Drop `--scope user` and FlowSnap works in that one folder and is
+silently absent everywhere else — no error, just a session that reports no
+flowsnap tools, which reads as the extension being broken. The installer takes
+the flag out of your hands: it never accepts a scope, because there is only one
+right answer.
+
+To undo it: `npx flowsnap-mcp uninstall`.
 
 Record a flow, press **Send**, and paste the prompt it puts on your clipboard.
 Claude reads the steps, the console errors, the failed requests and their bodies,
@@ -138,8 +156,20 @@ claude mcp list | grep flowsnap
 at a path that has since moved. Re-register against the published package:
 
 ```sh
-claude mcp remove flowsnap --scope user
-claude mcp add flowsnap --scope user -- npx -y flowsnap-mcp
+npx flowsnap-mcp install --force
+```
+
+**Connected everywhere except one project?** That project has a narrower
+registration shadowing the user-scope one — a `.mcp.json` committed in the repo,
+or a `local`-scope entry someone added while standing there. `claude mcp list`
+reports it as a scope conflict, and `npx flowsnap-mcp install` names it and gives
+you the line that removes it:
+
+```
+! a project-scope flowsnap is also registered here
+  .mcp.json -> node ./mcp-server/server.js
+  it wins inside this directory. remove it with:
+    claude mcp remove flowsnap -s project
 ```
 
 The failure is quiet from inside a session — Claude reports that no flowsnap
@@ -313,6 +343,18 @@ npm run core:drift # what has changed in the files shared with react-source-loca
 `src/ui/styles/tokens.css` is the only file allowed to name a colour, enforced by
 `npm run lint:tokens`; the reasoning behind the palette is in
 [`docs/design/README.md`](docs/design/README.md).
+
+To point Claude at the server in your clone rather than the published package,
+register it for that directory only — and remember it will shadow the user-scope
+one while you are in there:
+
+```sh
+claude mcp add flowsnap -s local -- node ./mcp-server/server.js
+```
+
+Deliberately not a committed `.mcp.json`: that file applied to everyone who
+cloned the repo, shadowed their real installation without saying so, and made
+`claude mcp list` report a scope conflict on a fresh checkout.
 
 `mcp-server/` is a second npm package with its own lockfile — it is published to
 npm on its own, so it is deliberately not a workspace. The root `postinstall`

@@ -6,6 +6,38 @@ follow [semantic versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Added
+
+- **`npx flowsnap-mcp install` — setup that cannot land in one directory.** The
+  documented command was always `claude mcp add flowsnap --scope user -- npx -y
+  flowsnap-mcp`, and it was always one flag away from being wrong: `claude mcp
+  add` defaults to `local` scope, which means the folder you happen to be
+  standing in. Typed without `--scope user` — copied from a snippet, retyped from
+  memory — it produced a FlowSnap that worked in that one project and was
+  silently absent from every other one. Nothing reports that. Other sessions just
+  have no flowsnap tools, which reads as the extension being broken rather than
+  the registration being narrow. The installer never takes a scope, because there
+  is one right answer; it is safe to re-run, it refuses to overwrite a
+  registration somebody pinned deliberately unless asked with `--force`, and
+  `npx flowsnap-mcp uninstall` reverses it.
+- **The install names what would shadow it.** A `.mcp.json` in the working
+  directory, or a `local`-scope entry added while standing there, beats the
+  user-scope registration for anyone in that folder — so the install can
+  genuinely succeed and that one project still run something else. Both are now
+  reported, with the line that removes them.
+
+### Removed
+
+- **The repository's own `.mcp.json`.** It registered `flowsnap` at project scope
+  pointing at `./mcp-server/server.js`, which applied to everyone who cloned the
+  repo: it shadowed their real installation without saying so, and made
+  `claude mcp list` report a scope conflict on a fresh checkout. Developing
+  against the clone is now an explicit per-directory registration —
+  `claude mcp add flowsnap -s local -- node ./mcp-server/server.js` — made by the
+  person who wants it.
+
 ## [2.6.0] — 2026-08-25
 
 Two costs nobody was paying attention to: what a recorded flow weighs in the

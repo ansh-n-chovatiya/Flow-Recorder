@@ -25,10 +25,22 @@ export function formatBytes(bytes: number): string {
  * about context.
  */
 export function formatTokens(bytes: number): string {
-  const tokens = Math.round(Math.max(0, bytes) / 4);
-  if (tokens < 1000) return `${tokens}`;
-  if (tokens < 10_000) return `${(tokens / 1000).toFixed(1)}k`;
-  return `${Math.round(tokens / 1000)}k`;
+  return formatTokenCount(Math.max(0, bytes) / 4);
+}
+
+/**
+ * A token count that is already a token count.
+ *
+ * Split out from `formatTokens` when the send dialog gained a second figure it
+ * does not derive from a length: an image's cost is a per-image constant, not
+ * four characters to the token, and reaching it through the bytes formatter
+ * meant multiplying by four to have it divided by four again.
+ */
+export function formatTokenCount(tokens: number): string {
+  const rounded = Math.round(Math.max(0, tokens));
+  if (rounded < 1000) return `${rounded}`;
+  if (rounded < 10_000) return `${(rounded / 1000).toFixed(1)}k`;
+  return `${Math.round(rounded / 1000)}k`;
 }
 
 const MINUTE = 60_000;
