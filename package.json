@@ -25,7 +25,7 @@
     "node": ">=20.11"
   },
   "scripts": {
-    "postinstall": "npm --prefix mcp-server ci",
+    "postinstall": "npm --prefix mcp-server ci && node scripts/graphify-setup.mjs --quiet",
     "build": "npm run build:settings && npm run build:main && npm run build:content && npm run build:agent && npm run build:mcp",
     "build:main": "vite build",
     "build:content": "vite build --config vite.content.config.ts",
@@ -43,6 +43,8 @@
     "pretest:watch": "npm run build:mcp && npm run build:settings",
     "test:watch": "vitest",
     "core:drift": "node scripts/core-drift.mjs",
+    "graphify:setup": "node scripts/graphify-setup.mjs",
+    "graphify:update": "graphify update .",
     "render": "node scripts/render.mjs",
     "sync-version": "node scripts/sync-version.mjs",
     "version": "npm run sync-version && git add public/manifest.json mcp-server/package.json",

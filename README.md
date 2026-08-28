@@ -362,6 +362,62 @@ runs `npm --prefix mcp-server ci` so a plain `npm install` sets up both; the
 tests spawn the real server, and skipping that install fails them. If you
 installed with `--ignore-scripts`, run that command yourself.
 
+### The knowledge graph
+
+The repo is wired for AI assistants that navigate by structure rather than by
+grep. [graphify](https://github.com/Graphify-Labs/graphify) parses the codebase
+into a queryable graph — every symbol, every import, every cross-module edge,
+taken from the AST rather than inferred — and both Claude Code and Google
+Antigravity are configured to consult it before they start opening files.
+
+The configuration is committed, so a clone already has it. What a clone cannot
+have is the graph itself or the git hooks, and one command fixes both:
+
+```sh
+npm run graphify:setup     # also runs from `npm install`
+```
+
+It needs the graphify CLI, which is a Python tool and installs on its own:
+
+```sh
+uv tool install graphifyy      # or: pipx install graphifyy
+```
+
+Without it, `npm install` prints one line and carries on — nothing else in
+FlowSnap depends on the graph.
+
+Once set up, the graph stays current on its own: a post-commit hook rebuilds it
+after every commit and a post-checkout hook rebuilds it when you switch
+branches. Both run detached, so they never hold up a commit. A rebuild is AST
+only — about a second, offline, no API key, no cost. To refresh by hand:
+
+```sh
+npm run graphify:update
+graphify update . --force   # after a refactor that deleted a lot of code
+```
+
+Ask the graph structural questions instead of grepping for them:
+
+```sh
+graphify query "how does a recorded step reach the MCP server?"
+graphify path "recordStep()" "get_flow_errors"
+graphify explain "FlowStep"
+```
+
+`graphify-out/` is generated and git-ignored. It is not committed because
+graphify's community detection is not deterministic: two runs over identical
+source disagree on clustering and differ by thousands of lines, so committing
+it would put that churn in every diff and a conflict on every branch — in
+exchange for a file that is useless without the CLI anyway. The
+[Knowledge graph workflow](.github/workflows/graphify.yml) rebuilds it on every
+push and attaches `graph.html` to the run, so the interactive view of any commit
+is a download away.
+
+[`CLAUDE.md`](CLAUDE.md) is what Claude Code reads each session;
+`.agent/rules/` and `.agent/workflows/` are the Antigravity equivalent. Project
+rules live in `.agent/rules/flowsnap.md` rather than `graphify.md`, because the
+latter is rewritten in full every time the installer runs.
+
 ## Releases
 
 [`CHANGELOG.md`](CHANGELOG.md) records what changed. Tagging a commit `v2.0.1`
