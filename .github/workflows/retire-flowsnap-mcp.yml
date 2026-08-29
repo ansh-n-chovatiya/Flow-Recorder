@@ -1,0 +1,66 @@
+name: Retire flowsnap-mcp
+
+# Last use of this repo's NPM_TOKEN before the repo is deleted.
+#
+# flowsnap-mcp was superseded by devflow-mcp-server@3.0.0. The intent is to
+# remove it outright. npm's unpublish policy allows that for a package older
+# than 72 hours only if it has no dependents, one maintainer, AND under 300
+# downloads in the last week — this one reports ~1000/week, which is mirror and
+# bot traffic on a package with zero GitHub engagement, but the policy reads the
+# number rather than its cause. So the unpublish is attempted and, when the
+# registry refuses, deprecation carries the same message instead.
+#
+# Deprecation is the durable half anyway: it is what makes `npm install
+# flowsnap-mcp` print where the package went, which an unpublish cannot do
+# because there is nothing left to print it.
+#
+# DELETE THIS FILE, AND THIS REPO, once the run is green.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  retire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Unpublish, or deprecate if the registry refuses
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          # Hardcoded, and asserted, because the blast radius of a typo here is
+          # the *replacement* package. devflow-mcp-server must never be reachable
+          # from this job.
+          TARGET=flowsnap-mcp
+          if [ "$TARGET" = "devflow-mcp-server" ]; then
+            echo "::error::Refusing to run against the live package."
+            exit 1
+          fi
+
+          MESSAGE="Renamed to devflow-mcp-server. Install: npx -y devflow-mcp-server install --force"
+
+          echo "::group::Attempting unpublish of ${TARGET}"
+          if npm unpublish "$TARGET" --force; then
+            echo "::notice::${TARGET} unpublished."
+            UNPUBLISHED=yes
+          else
+            echo "::notice::Registry refused the unpublish — falling back to deprecate."
+            UNPUBLISHED=no
+          fi
+          echo "::endgroup::"
+
+          if [ "$UNPUBLISHED" = "no" ]; then
+            # Every version, so no one lands on an older tag without the notice.
+            npm deprecate "$TARGET" "$MESSAGE"
+            echo "::notice::${TARGET} deprecated."
+          fi
+
+          echo "--- final registry state ---"
+          npm view "$TARGET" version deprecated 2>&1 | head -5 || \
+            echo "gone from the registry"
